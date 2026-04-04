@@ -31,21 +31,22 @@ This matches the Fortran convention where the 'Laplacian' field is
 `ctemp = ctemp * ak**2` (positive k², no sign flip), used for the
 `d2F` diagnostic in the extended catalog.
 """
-function _compute_laplacian(delta_k::Array{Complex{Float32},3}, n::Int, boxsize::Float64)
-    dk = Float32(2π / boxsize)
+function _compute_laplacian(delta_k, n::Int, boxsize::Float64)
+    Tf = real(eltype(delta_k))
+    dk = Tf(2π / boxsize)
     nk = n ÷ 2 + 1
     nyq = n ÷ 2
 
     lapd_k = similar(delta_k)
     for iz in 1:n, iy in 1:n, ix in 1:nk
-        kx = Float32(ix - 1) * dk
-        ky = Float32(iy <= nyq + 1 ? iy - 1 : iy - 1 - n) * dk
-        kz = Float32(iz <= nyq + 1 ? iz - 1 : iz - 1 - n) * dk
+        kx = Tf(ix - 1) * dk
+        ky = Tf(iy <= nyq + 1 ? iy - 1 : iy - 1 - n) * dk
+        kz = Tf(iz <= nyq + 1 ? iz - 1 : iz - 1 - n) * dk
         k2 = kx^2 + ky^2 + kz^2
         lapd_k[ix, iy, iz] = k2 * delta_k[ix, iy, iz]
     end
-    lapd = irfft(lapd_k, n) ./ Float32(n)^3
-    return Float32.(lapd)
+    lapd = irfft(lapd_k, n) ./ Tf(n)^3
+    return Tf.(lapd)
 end
 
 """
@@ -83,7 +84,7 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
     a_out = 1.0 / (1.0 + z_out)
     ZZon = 1.0 + z_out
 
-    fcrit = Float32(fsc_of_z(z_out, growth_tables))
+    fcrit_val = fsc_of_z(z_out, growth_tables)
 
     _, _, D_out = Dlinear_ab(a_out, growth_tables)
 
@@ -94,7 +95,7 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
     Omnr = cosmo.Om
     vTHvir0 = 100.0 * cosmo.h * sqrt(Omnr)
 
-    verbose && @info "Phase 0 done: n=$n, box=$boxsize, z=$z_out, fcrit=$fcrit, $(length(filters)) filters"
+    verbose && @info "Phase 0 done: n=$n, box=$boxsize, z=$z_out, fcrit=$fcrit_val, $(length(filters)) filters"
 
     # ---- Phase 1: Field generation ----
     NonGauss = Int(sp.NonGauss)
@@ -104,6 +105,8 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
     else
         generate_grf(n, pk, boxsize, seed; fortran_compat=fortran_compat)
     end
+    Tf = eltype(delta)  # field precision (Float32 or Float64)
+    fcrit = Tf(fcrit_val)
     delta_k = rfft(delta)
 
     # Apply non-Gaussian corrections (modes 1-2)
@@ -135,8 +138,8 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
     mask = zeros(Int8, n, n, n)
     all_peaks = PeakCandidate[]
     peak_Rf = Float64[]
-    peak_FcollvRf = Float32[]   # smoothed delta at peak location (per filter)
-    peak_d2FRf = Float32[]      # Laplacian of smoothed delta at peak location
+    peak_FcollvRf = Tf[]   # smoothed delta at peak location (per filter)
+    peak_d2FRf = Tf[]      # Laplacian of smoothed delta at peak location
 
     ioutshear = Int(sp.ioutshear)
 
@@ -164,7 +167,7 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
             if lapd_s !== nothing
                 push!(peak_d2FRf, lapd_s[i, j, k])
             else
-                push!(peak_d2FRf, 0.0f0)
+                push!(peak_d2FRf, zero(Tf))
             end
         end
 

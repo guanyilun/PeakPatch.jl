@@ -1,6 +1,6 @@
 module PeakFind
 
-struct PeakCandidate
+struct PeakCandidate{T<:AbstractFloat}
     i::Int           # 1-based grid x-index
     j::Int           # 1-based grid y-index
     k::Int           # 1-based grid z-index
@@ -8,15 +8,15 @@ struct PeakCandidate
     x::Float64       # physical x coordinate (Mpc/h)
     y::Float64       # physical y coordinate (Mpc/h)
     z::Float64       # physical z coordinate (Mpc/h)
-    delta::Float32   # overdensity at peak
+    delta::T         # overdensity at peak
     Rsmooth::Float64 # smoothing scale that found this peak
 end
 
-function find_peaks(delta::Array{Float32,3}, mask::Array{Int8,3},
+function find_peaks(delta::Array{T,3}, mask::Array{Int8,3},
                     xbx::Float64, ybx::Float64, zbx::Float64,
-                    alatt::Float64, nbuff::Int, fcrit::Float32,
+                    alatt::Float64, nbuff::Int, fcrit,
                     Rsmooth::Float64;
-                    max_peaks::Int=200000)
+                    max_peaks::Int=200000) where {T<:AbstractFloat}
     n1, n2, n3 = size(delta)
     cen1 = 0.5 * (n1 + 1)
     cen2 = 0.5 * (n2 + 1)

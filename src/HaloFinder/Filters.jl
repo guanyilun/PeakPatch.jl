@@ -71,23 +71,25 @@ Arguments:
 - `boxsize`: side length in Mpc/h
 - `Rf`: smoothing radius
 - `wsmooth`: window type
+- `fortran_compat`: when true, compute k-values in Float32 (Fortran validation)
 
-Returns an `n×n×n` Float32 real-space array.
+Returns an `n×n×n` real-space array (element type matches input).
 """
 function smooth_field(delta_k, n::Int, boxsize::Float64, Rf::Float64, wsmooth::Int;
                       fortran_compat::Bool=false)
-    T = fortran_compat ? Float32 : Float64
-    dk = T(2π / boxsize)
-    kx = dk .* T.(FFTW.rfftfreq(n, n))
-    ky = dk .* T.(FFTW.fftfreq(n, n))
-    kz = dk .* T.(FFTW.fftfreq(n, n))
-    Rf_use = T(Rf)
+    Tf = real(eltype(delta_k))   # field precision (Float32 or Float64)
+    Tk = fortran_compat ? Float32 : Float64  # k-space computation precision
+    dk = Tk(2π / boxsize)
+    kx = dk .* Tk.(FFTW.rfftfreq(n, n))
+    ky = dk .* Tk.(FFTW.fftfreq(n, n))
+    kz = dk .* Tk.(FFTW.fftfreq(n, n))
+    Rf_use = Tk(Rf)
 
     smoothed_k = copy(delta_k)
     for iz in eachindex(kz), iy in eachindex(ky), ix in eachindex(kx)
         k = sqrt(kx[ix]^2 + ky[iy]^2 + kz[iz]^2)
         fkR = k * Rf_use
-        fkR == zero(T) && continue
+        fkR == zero(Tk) && continue
         if wsmooth == 0
             w = gaussian_window_fortran(fkR)
         elseif wsmooth == 3
@@ -95,7 +97,7 @@ function smooth_field(delta_k, n::Int, boxsize::Float64, Rf::Float64, wsmooth::I
         else
             w = tophat_window(fkR)
         end
-        smoothed_k[ix, iy, iz] *= Float32(w)
+        smoothed_k[ix, iy, iz] *= Tf(w)
     end
     return irfft(smoothed_k, n)
 end

@@ -14,21 +14,22 @@ Fourier space.
 - `boxsize`: side length in Mpc/h
 
 # Returns
-- `(psi_x, psi_y, psi_z)`: three `n×n×n` Float32 arrays of displacements
+- `(psi_x, psi_y, psi_z)`: three `n×n×n` arrays of displacements (same precision as input)
 
 Formula: ψᵢ(k) = im * kᵢ / k² * δ̃(k)
 """
 function displacements_1lpt(delta_k, n::Int, boxsize::Real)
     dk = 2π / Float64(boxsize)
     nk = size(delta_k, 1)  # n÷2+1
+    CT = eltype(delta_k)   # Complex{Float32} or Complex{Float64}
 
     kx_arr = Float64.(FFTW.rfftfreq(n, n * dk))
     ky_arr = Float64.(FFTW.fftfreq(n, n * dk))
     kz_arr = Float64.(FFTW.fftfreq(n, n * dk))
 
-    psi_x_k = similar(delta_k, ComplexF32)
-    psi_y_k = similar(delta_k, ComplexF32)
-    psi_z_k = similar(delta_k, ComplexF32)
+    psi_x_k = similar(delta_k, CT)
+    psi_y_k = similar(delta_k, CT)
+    psi_z_k = similar(delta_k, CT)
 
     for iz in 1:n, iy in 1:n, ix in 1:nk
         kx = kx_arr[ix]
@@ -85,18 +86,19 @@ Algorithm:
 function displacements_2lpt(delta_k, n::Int, boxsize::Real)
     dk = 2π / Float64(boxsize)
     nk = size(delta_k, 1)
+    CT = eltype(delta_k)
 
     kx_arr = Float64.(FFTW.rfftfreq(n, n * dk))
     ky_arr = Float64.(FFTW.fftfreq(n, n * dk))
     kz_arr = Float64.(FFTW.fftfreq(n, n * dk))
 
     # Compute phi_ij in k-space and transform to real space
-    phi11_k = similar(delta_k, ComplexF32)
-    phi22_k = similar(delta_k, ComplexF32)
-    phi33_k = similar(delta_k, ComplexF32)
-    phi12_k = similar(delta_k, ComplexF32)
-    phi13_k = similar(delta_k, ComplexF32)
-    phi23_k = similar(delta_k, ComplexF32)
+    phi11_k = similar(delta_k, CT)
+    phi22_k = similar(delta_k, CT)
+    phi33_k = similar(delta_k, CT)
+    phi12_k = similar(delta_k, CT)
+    phi13_k = similar(delta_k, CT)
+    phi23_k = similar(delta_k, CT)
 
     for iz in 1:n, iy in 1:n, ix in 1:nk
         kx = kx_arr[ix]
@@ -144,9 +146,9 @@ function displacements_2lpt(delta_k, n::Int, boxsize::Real)
     src2_k = fwdplan * src2
 
     # Gradient of source → 2LPT displacement
-    psi2_x_k = similar(src2_k, ComplexF32)
-    psi2_y_k = similar(src2_k, ComplexF32)
-    psi2_z_k = similar(src2_k, ComplexF32)
+    psi2_x_k = similar(src2_k, CT)
+    psi2_y_k = similar(src2_k, CT)
+    psi2_z_k = similar(src2_k, CT)
 
     for iz in 1:n, iy in 1:n, ix in 1:nk
         kx = kx_arr[ix]

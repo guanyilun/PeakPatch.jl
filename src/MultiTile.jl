@@ -30,21 +30,22 @@ end
 Matches the Fortran convention where the 'Laplacian' field uses positive k²
 (no sign flip), used for the d2F diagnostic in the extended catalog.
 """
-function _compute_laplacian(delta_k::Array{Complex{Float32},3}, n::Int, boxsize::Float64)
-    dk = Float32(2π / boxsize)
+function _compute_laplacian(delta_k, n::Int, boxsize::Float64)
+    Tf = real(eltype(delta_k))
+    dk = Tf(2π / boxsize)
     nk = n ÷ 2 + 1
     nyq = n ÷ 2
 
     lapd_k = similar(delta_k)
     for iz in 1:n, iy in 1:n, ix in 1:nk
-        kx = Float32(ix - 1) * dk
-        ky = Float32(iy <= nyq + 1 ? iy - 1 : iy - 1 - n) * dk
-        kz = Float32(iz <= nyq + 1 ? iz - 1 : iz - 1 - n) * dk
+        kx = Tf(ix - 1) * dk
+        ky = Tf(iy <= nyq + 1 ? iy - 1 : iy - 1 - n) * dk
+        kz = Tf(iz <= nyq + 1 ? iz - 1 : iz - 1 - n) * dk
         k2 = kx^2 + ky^2 + kz^2
         lapd_k[ix, iy, iz] = k2 * delta_k[ix, iy, iz]
     end
-    lapd = irfft(lapd_k, n) ./ Float32(n)^3
-    return Float32.(lapd)
+    lapd = irfft(lapd_k, n) ./ Tf(n)^3
+    return Tf.(lapd)
 end
 
 """
@@ -129,7 +130,7 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
     a_out = 1.0 / (1.0 + z_out)
     ZZon = 1.0 + z_out
 
-    fcrit = Float32(fsc_of_z(z_out, growth_tables))
+    fcrit_val = fsc_of_z(z_out, growth_tables)
     _, _, D_out = Dlinear_ab(a_out, growth_tables)
 
     Rfclmax = filters[1][3]
@@ -141,7 +142,7 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
     ioutshear = Int(sp.ioutshear)
     wsmooth = Int(sp.wsmooth)
 
-    verbose && @info "Phase 0: N=$N, box=$(round(boxsize_full;digits=2)), ntile=$ntile, nsub=$nsub, nmesh=$nmesh, fcrit=$fcrit"
+    verbose && @info "Phase 0: N=$N, box=$(round(boxsize_full;digits=2)), ntile=$ntile, nsub=$nsub, nmesh=$nmesh, fcrit=$fcrit_val"
 
     # ---- Phase 1: Field generation on full grid ----
     pk = load_pk(sp.pkfile)
@@ -150,6 +151,8 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
     else
         generate_grf(N, pk, boxsize_full, seed; fortran_compat=fortran_compat)
     end
+    Tf = eltype(delta_full)  # field precision
+    fcrit = Tf(fcrit_val)
     delta_k_full = rfft(delta_full)
 
     # Non-Gaussian corrections (modes 1-2)
@@ -193,8 +196,8 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
     tile_masks      = Dict(tid => zeros(Int8, nmesh, nmesh, nmesh) for tid in tile_ids)
     tile_peaks      = Dict(tid => PeakCandidate[] for tid in tile_ids)
     tile_peak_Rf    = Dict(tid => Float64[] for tid in tile_ids)
-    tile_peak_FcRf  = Dict(tid => Float32[] for tid in tile_ids)
-    tile_peak_d2Rf  = Dict(tid => Float32[] for tid in tile_ids)
+    tile_peak_FcRf  = Dict(tid => Tf[] for tid in tile_ids)
+    tile_peak_d2Rf  = Dict(tid => Tf[] for tid in tile_ids)
 
     for ic in 1:length(filters)
         Rf = filters[ic][3]
@@ -212,7 +215,7 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
         filter_peak_count = 0
         for tid in tile_ids
             it, jt, kt = tid
-            delta_s_tile = extract_tile(Float32.(delta_s_full), it, jt, kt, nsub, nmesh)
+            delta_s_tile = extract_tile(Tf.(delta_s_full), it, jt, kt, nsub, nmesh)
             xbx, ybx, zbx = tile_center(it, jt, kt, ntile, dcore_box)
 
             new_peaks = find_peaks(delta_s_tile, tile_masks[tid],
@@ -225,13 +228,13 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
             if !isempty(new_peaks)
                 lapd_s_tile = nothing
                 if lapd_s_full !== nothing
-                    lapd_s_tile = extract_tile(Float32.(lapd_s_full), it, jt, kt, nsub, nmesh)
+                    lapd_s_tile = extract_tile(Tf.(lapd_s_full), it, jt, kt, nsub, nmesh)
                 end
 
                 for pk in new_peaks
                     i, j, k = _ipp_to_ijk(pk.ipp, nmesh)
                     push!(tile_peak_FcRf[tid], delta_s_tile[i, j, k])
-                    push!(tile_peak_d2Rf[tid], lapd_s_tile !== nothing ? lapd_s_tile[i, j, k] : 0.0f0)
+                    push!(tile_peak_d2Rf[tid], lapd_s_tile !== nothing ? lapd_s_tile[i, j, k] : zero(Tf))
                 end
             end
 

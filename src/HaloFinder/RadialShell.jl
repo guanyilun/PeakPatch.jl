@@ -42,17 +42,17 @@ struct ShellCell
     r2::Int32
 end
 
-struct PeakGrid
-    delta::Array{Float32,3}
-    etax::Array{Float32,3}
-    etay::Array{Float32,3}
-    etaz::Array{Float32,3}
-    eta2x::Union{Nothing,Array{Float32,3}}
-    eta2y::Union{Nothing,Array{Float32,3}}
-    eta2z::Union{Nothing,Array{Float32,3}}
+struct PeakGrid{T<:AbstractFloat}
+    delta::Array{T,3}
+    etax::Array{T,3}
+    etay::Array{T,3}
+    etaz::Array{T,3}
+    eta2x::Union{Nothing,Array{T,3}}
+    eta2y::Union{Nothing,Array{T,3}}
+    eta2z::Union{Nothing,Array{T,3}}
     mask::Union{Nothing,Array{Int8,3}}
     nn::NTuple{3,Int}
-    lapd::Union{Nothing,Array{Float32,3}}  # Laplacian of unsmoothed delta (for ioutshear≥1)
+    lapd::Union{Nothing,Array{T,3}}  # Laplacian of unsmoothed delta (for ioutshear≥1)
 end
 
 struct PeakResult

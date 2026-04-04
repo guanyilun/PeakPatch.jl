@@ -140,12 +140,12 @@ function _convolve_noise!(noise, pk, boxsize, n; fortran_compat::Bool=false)
     noise_k = plan * noise
 
     # --- Convolve with √P(k) in Fourier space ---
-    T = fortran_compat ? Float32 : Float64
-    dk = T(2π / boxsize)
+    Tk = fortran_compat ? Float32 : Float64  # k-space computation precision
+    dk = Tk(2π / boxsize)
 
-    kx_arr = T.(FFTW.rfftfreq(n, n * dk))   # [0, dk, 2dk, ..., n/2*dk]
-    ky_arr = T.(FFTW.fftfreq(n, n * dk))     # [0, dk, ..., n/2*dk, ..., -dk]
-    kz_arr = T.(FFTW.fftfreq(n, n * dk))
+    kx_arr = Tk.(FFTW.rfftfreq(n, n * dk))   # [0, dk, 2dk, ..., n/2*dk]
+    ky_arr = Tk.(FFTW.fftfreq(n, n * dk))     # [0, dk, ..., n/2*dk, ..., -dk]
+    kz_arr = Tk.(FFTW.fftfreq(n, n * dk))
 
     nk = size(noise_k, 1)  # n÷2 + 1
 
@@ -154,22 +154,16 @@ function _convolve_noise!(noise, pk, boxsize, n; fortran_compat::Bool=false)
         ky = ky_arr[iy]
         kz = kz_arr[iz]
         k2 = kx^2 + ky^2 + kz^2
-        if k2 == zero(T)
+        if k2 == zero(Tk)
             noise_k[ix, iy, iz] = 0  # zero DC mode
             continue
         end
         k = sqrt(k2)
-        # Forward rfft is unnormalized (coeffs scale as n³).
-        # irfft divides by n³.
-        # Net normalisation: delta(x) = (1/n³) Σ_k noise_k * amp * e^{ikx}
-        # To match Fortran: amp = sqrt(P(k) * dk³ * n³)  (the n³ factor
-        # compensates the 1/n³ from irfft, giving correct field variance).
-        amp = sqrt(T(pk(Float64(k))) * dk^3 * T(n)^3)
+        amp = sqrt(Tk(pk(Float64(k))) * dk^3 * Tk(n)^3)
         noise_k[ix, iy, iz] *= amp
     end
 
     # --- Inverse FFT ---
-    # irfft divides by n³ (product of all dims), matching the unnormalized forward
     dummy_k = similar(noise_k)
     invplan = plan_irfft(dummy_k, n; flags=FFTW.MEASURE)
     field = invplan * noise_k
