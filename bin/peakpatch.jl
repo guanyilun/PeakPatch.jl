@@ -38,6 +38,8 @@ function main()
     ntile   = get(run_cfg, "ntile", 1)
     use_mpi = get(run_cfg, "use_mpi", false)
     merge   = get(run_cfg, "merge", true)
+    gen_table  = get(run_cfg, "generate_table", false)
+    ode_solver = Symbol(get(run_cfg, "ode_solver", "rk4"))
 
     # Output parameters
     out_cfg = get(config, "output", Dict{String,Any}())
@@ -46,6 +48,19 @@ function main()
     isdir(outdir) || mkpath(outdir)
 
     verbose && @info "PeakPatch driver" config=config_path ntile seed format
+
+    # ---- Optional: generate collapse table on-the-fly ----
+    if gen_table
+        Om_total = Float64(sp.Omx) + Float64(sp.OmB)
+        cosmo_tab = CosmologyParams(Om_total, Float64(sp.OmB), Float64(sp.Omvac),
+                                    Float64(sp.h), 0.965, 0.808)
+        ep = EllipsoidParams(cosmo_tab; solver=ode_solver)
+        tp = CollapseTableParams()
+        verbose && @info "Generating collapse table (solver=$ode_solver)..."
+        table = make_table_threaded(ep, tp; verbose=verbose)
+        write_homeltab(sp.TabInterpFile, table, tp)
+        verbose && @info "Wrote collapse table: $(sp.TabInterpFile)"
+    end
 
     # ---- Run pipeline ----
     halos = if use_mpi

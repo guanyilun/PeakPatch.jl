@@ -36,7 +36,7 @@ using .RadialShell: ShellCell, PeakGrid, PeakResult, no_collapse,
 using .Parameters: SimParams, read_params_bin, write_params_bin
 using .Catalog: HaloRecord, ExtHaloRecord, write_pksc, read_pksc
 using .EllipsoidalCollapse: EllipsoidParams, evolve_ellipse_full,
-    get_b_2, _elliptic_rd
+    get_b_2, _elliptic_rd, _evolve_diffeq
 using .CollapseTable: CollapseTableParams, CollapseTableInterp,
     make_table, make_table_threaded,
     write_homeltab, read_homeltab, interpolate

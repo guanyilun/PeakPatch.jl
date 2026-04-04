@@ -18,6 +18,7 @@ struct EllipsoidParams
     zinit_fac::Float64   # 20.0
     iwant_rd::Int        # 1 (use Carlson RD)
     dlin_tables::DlinearTables
+    solver::Symbol       # :rk4 (default) or :diffeq (OrdinaryDiffEq.jl)
 end
 
 function EllipsoidParams(cosmo::CosmologyParams;
@@ -29,10 +30,11 @@ function EllipsoidParams(cosmo::CosmologyParams;
     tfac::Float64 = 0.01,
     nstepmax::Int = 10000,
     zinit_fac::Float64 = 20.0,
-    iwant_rd::Int = 1)
+    iwant_rd::Int = 1,
+    solver::Symbol = :rk4)
     tables = Dlinear_tables(cosmo)
     EllipsoidParams(cosmo, iforce_strat, ivir_strat,
-        fcoll_1, fcoll_2, fcoll_3, tfac, nstepmax, zinit_fac, iwant_rd, tables)
+        fcoll_1, fcoll_2, fcoll_3, tfac, nstepmax, zinit_fac, iwant_rd, tables, solver)
 end
 
 # Pre-computed cosmology ratios
@@ -345,7 +347,13 @@ end
 # Main evolution loop
 # Port from HomogeneousEllipsoid.f90 lines 10-228
 # -------------------------------------------------------------------------
+function _evolve_diffeq end
+
 function evolve_ellipse_full(Frho, e_v, p_v, ep::EllipsoidParams; idynax::Int = 1)
+    if ep.solver == :diffeq
+        return _evolve_diffeq(Frho, e_v, p_v, ep; idynax=idynax)
+    end
+
     cc = CosmoCache(ep)
 
     # Strain eigenvalues

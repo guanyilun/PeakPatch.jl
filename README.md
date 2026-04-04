@@ -20,6 +20,7 @@ This code is developed by a coding agent, so use with more care!
 - **Binary-compatible `.pksc` I/O** (downstream tools unchanged)
 - **HDF5 catalog output** with ra/dec/redshift/mass for XGPaint.jl sky map painting
 - **TOML-based configuration** and CLI driver
+- **OrdinaryDiffEq.jl integration** (optional) for adaptive ellipsoidal collapse ODE solving
 
 ## Installation
 
@@ -93,6 +94,30 @@ write_catalog_hdf5("catalog.h5", halos, cosmo)
 The HDF5 output includes comoving positions, ra/dec, redshift, and M200m, and is
 directly compatible with XGPaint.jl's `read_halo_catalog_hdf5()`.
 
+### Adaptive ODE solver (optional)
+
+The ellipsoidal collapse ODE can optionally use OrdinaryDiffEq.jl's Tsit5() solver
+with adaptive stepping, instead of the default hand-rolled RK4:
+
+```julia
+using OrdinaryDiffEq, PeakPatch
+
+cosmo = CosmologyParams(0.315, 0.049, 0.685, 0.674, 0.965, 0.808)
+ep = EllipsoidParams(cosmo; solver=:diffeq)
+table = make_table_threaded(ep, CollapseTableParams(); verbose=true)
+```
+
+Or via TOML config:
+
+```toml
+[run]
+generate_table = true
+ode_solver = "diffeq"
+```
+
+OrdinaryDiffEq.jl is a weak dependency -- it is only loaded when explicitly
+imported, and does not affect users who don't need it.
+
 ## Package Structure
 
 ```
@@ -111,8 +136,8 @@ PeakPatch.jl/
       PeakFind.jl                  # 3x3x3 local maximum detection
       RadialShell.jl               # Radial shell integration around peaks
     EllipsoidalCollapse/
-      EllipsoidalCollapse.jl       # Triaxial ellipsoid ODE (RK4)
-      CollapseTable.jl             # zvir(F, e, p) interpolation table
+      EllipsoidalCollapse.jl       # Triaxial ellipsoid ODE (RK4 or OrdinaryDiffEq)
+      CollapseTable.jl             # zvir(F, e, p) interpolation table (Interpolations.jl)
     IO/
       Parameters.jl                # SimParams: binary + TOML configuration
       Catalog.jl                   # .pksc catalog I/O (11-field and 33-field)
@@ -124,11 +149,12 @@ PeakPatch.jl/
   ext/
     MPIExt.jl                      # MPI-distributed driver (PencilFFTs)
     HDF5Ext.jl                     # HDF5 catalog output (for XGPaint.jl)
+    DiffEqExt.jl                   # Adaptive ODE solver (OrdinaryDiffEq.jl)
   bin/
     peakpatch.jl                   # CLI driver (TOML config)
   examples/
     config.toml                    # Example configuration
-  test/                            # ~490 tests
+  test/                            # ~495 tests
 ```
 
 ## Pipeline
@@ -145,6 +171,27 @@ Multi-tile (`run_multitile`) generates the GRF on the full periodic grid and
 extracts overlapping tiles for per-tile halo finding. The MPI extension
 (`run_multitile_mpi`) distributes all FFT and k-space operations across ranks
 using pencil decomposition, with point-to-point tile redistribution.
+
+## Differences from Fortran
+
+Beyond being a direct port, PeakPatch.jl incorporates several modernizations:
+
+- **StaticArrays** for 3-vectors and 3x3 matrices (`SVector{3}`, `SMatrix{3,3}`)
+  in `PeakResult`, `kernel_strain`, and `analyse_peak` -- eliminates heap
+  allocations and enables value semantics (no defensive `copy()` calls)
+- **Pre-allocated RK4 workspace** in the ellipsoidal collapse integrator,
+  eliminating up to 30k allocations per halo
+- **Cached collapse kernel table** (`atab4`) at module load time instead of
+  recomputing the 1101-element vector per peak
+- **Threaded peak analysis** (`Threads.@threads`) in both `Pipeline.jl` and
+  `MultiTile.jl` with thread-safe atomic diagnostic counters
+- **Parametric precision types** -- `PeakGrid{T}`, `PeakCandidate{T}`, and
+  generic `smooth_field`/LPT/NonGaussian functions that propagate field
+  precision (`Float32` or `Float64`) instead of hardcoding `Float32`
+- **Interpolations.jl** for collapse table lookup (replaces hand-coded
+  trilinear interpolation)
+- **Optional OrdinaryDiffEq.jl** solver for the ellipsoidal collapse ODE with
+  adaptive stepping (Tsit5), available as a package extension
 
 ## Validation
 

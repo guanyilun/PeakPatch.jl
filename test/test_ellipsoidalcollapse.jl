@@ -151,4 +151,44 @@ end
     @test PeakPatch.interpolate(ct, 1.1, 0.0, 0.0) == -1.0
 end
 
+@testset "OrdinaryDiffEq solver" begin
+    using OrdinaryDiffEq
+
+    ep_rk4 = EllipsoidParams(cosmo; solver=:rk4)
+    ep_deq = EllipsoidParams(cosmo; solver=:diffeq)
+
+    # Spherical collapse: RK4 vs DiffEq agree within ~3%
+    # (spherical case is sensitive to step size near singularity)
+    z_rk4, D_rk4, fc_rk4 = evolve_ellipse_full(1.686, 0.0, 0.0, ep_rk4)
+    z_deq, D_deq, fc_deq = evolve_ellipse_full(1.686, 0.0, 0.0, ep_deq)
+    @test z_deq ≈ z_rk4 rtol=3e-2
+    @test D_deq ≈ D_rk4 rtol=3e-2
+
+    # High overdensity (early collapse)
+    z_rk4, _, _ = evolve_ellipse_full(5.0, 0.0, 0.0, ep_rk4)
+    z_deq, _, _ = evolve_ellipse_full(5.0, 0.0, 0.0, ep_deq)
+    @test z_deq ≈ z_rk4 rtol=3e-2
+
+    # Triaxial case (better agreement since axes are distinct)
+    z_rk4, _, _ = evolve_ellipse_full(3.0, 0.3, 0.0, ep_rk4)
+    z_deq, _, _ = evolve_ellipse_full(3.0, 0.3, 0.0, ep_deq)
+    @test z_deq ≈ z_rk4 rtol=1e-2
+
+    # With prolaticity
+    z_rk4, _, _ = evolve_ellipse_full(5.0, 0.1, 0.05, ep_rk4)
+    z_deq, _, _ = evolve_ellipse_full(5.0, 0.1, 0.05, ep_deq)
+    @test z_deq ≈ z_rk4 rtol=1e-2
+
+    # No-collapse case (low overdensity)
+    z_rk4, _, _ = evolve_ellipse_full(0.5, 0.0, 0.0, ep_rk4)
+    z_deq, _, _ = evolve_ellipse_full(0.5, 0.0, 0.0, ep_deq)
+    @test z_rk4 == -1.0
+    @test z_deq == -1.0
+
+    # Higher Frho should give higher z_vir (same ordering as RK4)
+    z_high, _, _ = evolve_ellipse_full(5.0, 0.0, 0.0, ep_deq)
+    z_low, _, _ = evolve_ellipse_full(1.5, 0.0, 0.0, ep_deq)
+    @test z_high > z_low
+end
+
 end # EllipsoidalCollapse testset
