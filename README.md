@@ -114,7 +114,14 @@ ep_rk4 = EllipsoidParams(cosmo; solver=:rk4)
 table_rk4 = make_table_threaded(ep_rk4, CollapseTableParams(); verbose=true)
 ```
 
-Or via TOML config with on-the-fly table generation:
+Standalone CLI script:
+
+```sh
+julia --project=. bin/generate_table.jl -o HomelTab.dat -v
+julia --project=. bin/generate_table.jl --solver rk4 -o HomelTab.dat -v
+```
+
+Or via TOML config with on-the-fly table generation before the pipeline:
 
 ```toml
 [run]
