@@ -338,15 +338,15 @@ function analyse_peak(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
     nshell[1] = 1
 
     ilpt2 = pg.eta2x !== nothing
-    etavec = @MVector zeros(3)
-    eta2vec = @MVector zeros(3)
-    etavec[1] = pg.etax[ipk[1], ipk[2], ipk[3]]
-    etavec[2] = pg.etay[ipk[1], ipk[2], ipk[3]]
-    etavec[3] = pg.etaz[ipk[1], ipk[2], ipk[3]]
-    if ilpt2
-        eta2vec[1] = pg.eta2x[ipk[1], ipk[2], ipk[3]]
-        eta2vec[2] = pg.eta2y[ipk[1], ipk[2], ipk[3]]
-        eta2vec[3] = pg.eta2z[ipk[1], ipk[2], ipk[3]]
+    etavec = SVector(pg.etax[ipk[1], ipk[2], ipk[3]],
+                     pg.etay[ipk[1], ipk[2], ipk[3]],
+                     pg.etaz[ipk[1], ipk[2], ipk[3]])
+    eta2vec = if ilpt2
+        SVector(pg.eta2x[ipk[1], ipk[2], ipk[3]],
+                pg.eta2y[ipk[1], ipk[2], ipk[3]],
+                pg.eta2z[ipk[1], ipk[2], ipk[3]])
+    else
+        @SVector zeros(3)
     end
 
     for L in 1:3
@@ -429,15 +429,15 @@ function analyse_peak(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
         nsh += 1
         delta_val = pg.delta[iv[1], iv[2], iv[3]]
         Fshell += delta_val
-        etavec[1] = pg.etax[iv[1], iv[2], iv[3]]
-        etavec[2] = pg.etay[iv[1], iv[2], iv[3]]
-        etavec[3] = pg.etaz[iv[1], iv[2], iv[3]]
-        if ilpt2
-            eta2vec[1] = pg.eta2x[iv[1], iv[2], iv[3]]
-            eta2vec[2] = pg.eta2y[iv[1], iv[2], iv[3]]
-            eta2vec[3] = pg.eta2z[iv[1], iv[2], iv[3]]
+        etavec = SVector(pg.etax[iv[1], iv[2], iv[3]],
+                         pg.etay[iv[1], iv[2], iv[3]],
+                         pg.etaz[iv[1], iv[2], iv[3]])
+        eta2vec = if ilpt2
+            SVector(pg.eta2x[iv[1], iv[2], iv[3]],
+                    pg.eta2y[iv[1], iv[2], iv[3]],
+                    pg.eta2z[iv[1], iv[2], iv[3]])
         else
-            eta2vec .= 0.0
+            @SVector zeros(3)
         end
 
         ixsvec = (shells[jp].di, shells[jp].dj, shells[jp].dk)
