@@ -29,7 +29,7 @@ rmax2rs   = 1.0   # max shell radius / filter radius
 NonGauss  = 0     # non-Gaussian mode (0=none, 1=correlated fNL, 2=uncorrelated)
 fNL       = 0.0   # fNL parameter
 generate_table = false  # generate collapse table on-the-fly (default: read from file)
-ode_solver = "rk4"      # ODE solver for table generation: "rk4" (default) or "diffeq" (OrdinaryDiffEq.jl)
+ode_solver = "diffeq"   # ODE solver for table generation: "diffeq" (default, adaptive Tsit5) or "rk4" (Fortran-compatible)
 
 [files]
 pk         = "test/data/test_pk.dat"

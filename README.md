@@ -20,7 +20,7 @@ This code is developed by a coding agent, so use with more care!
 - **Binary-compatible `.pksc` I/O** (downstream tools unchanged)
 - **HDF5 catalog output** with ra/dec/redshift/mass for XGPaint.jl sky map painting
 - **TOML-based configuration** and CLI driver
-- **OrdinaryDiffEq.jl integration** (optional) for adaptive ellipsoidal collapse ODE solving
+- **Adaptive ODE solver** (OrdinaryDiffEq.jl Tsit5) for ellipsoidal collapse, with RK4 fallback for Fortran validation
 
 ## Installation
 
@@ -94,29 +94,33 @@ write_catalog_hdf5("catalog.h5", halos, cosmo)
 The HDF5 output includes comoving positions, ra/dec, redshift, and M200m, and is
 directly compatible with XGPaint.jl's `read_halo_catalog_hdf5()`.
 
-### Adaptive ODE solver (optional)
+### Collapse table generation
 
-The ellipsoidal collapse ODE can optionally use OrdinaryDiffEq.jl's Tsit5() solver
-with adaptive stepping, instead of the default hand-rolled RK4:
+The ellipsoidal collapse ODE uses OrdinaryDiffEq.jl's Tsit5() solver with
+adaptive stepping by default. The original hand-rolled RK4 is available via
+`solver=:rk4` for Fortran validation:
 
 ```julia
-using OrdinaryDiffEq, PeakPatch
+using PeakPatch
 
 cosmo = CosmologyParams(0.315, 0.049, 0.685, 0.674, 0.965, 0.808)
-ep = EllipsoidParams(cosmo; solver=:diffeq)
+
+# Default: adaptive Tsit5 (more accurate)
+ep = EllipsoidParams(cosmo)
 table = make_table_threaded(ep, CollapseTableParams(); verbose=true)
+
+# Fortran-compatible: hand-rolled RK4
+ep_rk4 = EllipsoidParams(cosmo; solver=:rk4)
+table_rk4 = make_table_threaded(ep_rk4, CollapseTableParams(); verbose=true)
 ```
 
-Or via TOML config:
+Or via TOML config with on-the-fly table generation:
 
 ```toml
 [run]
 generate_table = true
-ode_solver = "diffeq"
+ode_solver = "diffeq"   # or "rk4" for Fortran compatibility
 ```
-
-OrdinaryDiffEq.jl is a weak dependency -- it is only loaded when explicitly
-imported, and does not affect users who don't need it.
 
 ## Package Structure
 
@@ -136,7 +140,7 @@ PeakPatch.jl/
       PeakFind.jl                  # 3x3x3 local maximum detection
       RadialShell.jl               # Radial shell integration around peaks
     EllipsoidalCollapse/
-      EllipsoidalCollapse.jl       # Triaxial ellipsoid ODE (RK4 or OrdinaryDiffEq)
+      EllipsoidalCollapse.jl       # Triaxial ellipsoid ODE (Tsit5 default, RK4 fallback)
       CollapseTable.jl             # zvir(F, e, p) interpolation table (Interpolations.jl)
     IO/
       Parameters.jl                # SimParams: binary + TOML configuration
@@ -149,7 +153,6 @@ PeakPatch.jl/
   ext/
     MPIExt.jl                      # MPI-distributed driver (PencilFFTs)
     HDF5Ext.jl                     # HDF5 catalog output (for XGPaint.jl)
-    DiffEqExt.jl                   # Adaptive ODE solver (OrdinaryDiffEq.jl)
   bin/
     peakpatch.jl                   # CLI driver (TOML config)
   examples/
@@ -190,8 +193,8 @@ Beyond being a direct port, PeakPatch.jl incorporates several modernizations:
   precision (`Float32` or `Float64`) instead of hardcoding `Float32`
 - **Interpolations.jl** for collapse table lookup (replaces hand-coded
   trilinear interpolation)
-- **Optional OrdinaryDiffEq.jl** solver for the ellipsoidal collapse ODE with
-  adaptive stepping (Tsit5), available as a package extension
+- **Adaptive ODE solver** (OrdinaryDiffEq.jl Tsit5) as default for ellipsoidal
+  collapse, with the original RK4 retained for Fortran validation (`solver=:rk4`)
 
 ## Validation
 
