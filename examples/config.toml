@@ -1,0 +1,40 @@
+# PeakPatch configuration file
+#
+# Usage:
+#   julia --project=. bin/peakpatch.jl examples/config.toml --verbose
+#
+# All paths are relative to the working directory.
+
+[cosmology]
+Om = 0.315      # total Omega_matter (CDM + baryon)
+OB = 0.049      # Omega_baryon
+OL = 0.685      # Omega_Lambda
+h  = 0.674      # H0 / (100 km/s/Mpc)
+
+[grid]
+n      = 142     # grid cells per dimension
+dL_box = 200.0   # box size [Mpc/h]
+nbuff  = 4       # buffer cells per side
+
+[run]
+z_out     = 0.0   # output redshift
+ilpt      = 2     # LPT order (1 or 2)
+seed      = 42    # RNG seed
+ntile     = 1     # number of tiles per dimension (1 = single tile)
+use_mpi   = false  # use MPI-distributed pipeline
+merge     = true   # run Lagrangian exclusion + volume reduction
+ioutshear = 0     # 0: basic 11-field catalog, >=1: extended 33-field catalog
+wsmooth   = 0     # smoothing window (0=Gaussian, 1=tophat)
+rmax2rs   = 1.0   # max shell radius / filter radius
+NonGauss  = 0     # non-Gaussian mode (0=none, 1=correlated fNL, 2=uncorrelated)
+fNL       = 0.0   # fNL parameter
+
+[files]
+pk         = "test/data/test_pk.dat"
+filterbank = "test/data/test_filters.dat"
+homeltab   = "test/data/test_HomelTab.dat"
+output     = "catalog.pksc"
+
+[output]
+format = "pksc"    # "pksc", "hdf5", or "both"
+path   = "output"  # output directory
