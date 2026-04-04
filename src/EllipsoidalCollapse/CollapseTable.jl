@@ -3,6 +3,8 @@ module CollapseTable
 import ..Cosmology: CosmologyParams
 import ..EllipsoidalCollapse: EllipsoidParams, evolve_ellipse_full
 
+using Interpolations: Interpolations, BSpline, Linear, scale, extrapolate
+
 # Table grid parameters
 struct CollapseTableParams
     Nx::Int; Ny::Int; Nz::Int
@@ -120,61 +122,26 @@ function read_homeltab(path::String)
 end
 
 # -------------------------------------------------------------------------
-# Trilinear interpolation (matches TabInterpInterpolate from TabInterp.f90)
+# Trilinear interpolation via Interpolations.jl
+# (replaces hand-coded trilinear; matches TabInterpInterpolate from TabInterp.f90)
 # -------------------------------------------------------------------------
-struct CollapseTableInterp
-    array::Array{Float32,3}
-    X1::Float64; X2::Float64
-    Y1::Float64; Y2::Float64
-    Z1::Float64; Z2::Float64
-    dX::Float64; dY::Float64; dZ::Float64
-    Nx::Int; Ny::Int; Nz::Int
-    out_val::Float32  # value to return for out-of-bounds queries
+struct CollapseTableInterp{I}
+    itp::I       # scaled, extrapolated interpolant
+    out_val::Float32
 end
 
 function CollapseTableInterp(table::Array{Float32,3}, tp::CollapseTableParams)
-    dX = (tp.X2 - tp.X1) / (tp.Nx - 1)
-    dY = (tp.Y2 - tp.Y1) / (tp.Ny - 1)
-    dZ = (tp.Z2 - tp.Z1) / (tp.Nz - 1)
-    CollapseTableInterp(table, tp.X1, tp.X2, tp.Y1, tp.Y2, tp.Z1, tp.Z2,
-        dX, dY, dZ, tp.Nx, tp.Ny, tp.Nz, Float32(-1.0))
+    xs = range(tp.X1, tp.X2, length=tp.Nx)
+    ys = range(tp.Y1, tp.Y2, length=tp.Ny)
+    zs = range(tp.Z1, tp.Z2, length=tp.Nz)
+    raw = Interpolations.interpolate(table, BSpline(Linear()))
+    sitp = scale(raw, xs, ys, zs)
+    eitp = extrapolate(sitp, Float32(-1.0))
+    CollapseTableInterp(eitp, Float32(-1.0))
 end
 
 function interpolate(ct::CollapseTableInterp, x, y, z)
-    if x > ct.X2 || x < ct.X1 || y > ct.Y2 || y < ct.Y1 || z > ct.Z2 || z < ct.Z1
-        return ct.out_val
-    end
-
-    i1 = floor(Int, (x - ct.X1) / ct.dX) + 1
-    j1 = floor(Int, (y - ct.Y1) / ct.dY) + 1
-    k1 = floor(Int, (z - ct.Z1) / ct.dZ) + 1
-
-    # Clamp to valid range
-    i1 = min(i1, ct.Nx - 1)
-    j1 = min(j1, ct.Ny - 1)
-    k1 = min(k1, ct.Nz - 1)
-    i1 = max(i1, 1)
-    j1 = max(j1, 1)
-    k1 = max(k1, 1)
-
-    i2 = i1 + 1
-    j2 = j1 + 1
-    k2 = k1 + 1
-
-    fx = (x - (i1 - 1) * ct.dX - ct.X1) / ct.dX
-    fy = (y - (j1 - 1) * ct.dY - ct.Y1) / ct.dY
-    fz = (z - (k1 - 1) * ct.dZ - ct.Z1) / ct.dZ
-
-    return Float64(
-        ct.array[i1, j1, k1] * (1 - fx) * (1 - fy) * (1 - fz) +
-        ct.array[i2, j1, k1] * fx * (1 - fy) * (1 - fz) +
-        ct.array[i1, j2, k1] * (1 - fx) * fy * (1 - fz) +
-        ct.array[i2, j2, k1] * fx * fy * (1 - fz) +
-        ct.array[i1, j1, k2] * (1 - fx) * (1 - fy) * fz +
-        ct.array[i2, j1, k2] * fx * (1 - fy) * fz +
-        ct.array[i1, j2, k2] * (1 - fx) * fy * fz +
-        ct.array[i2, j2, k2] * fx * fy * fz
-    )
+    return Float64(ct.itp(x, y, z))
 end
 
 end # module CollapseTable
