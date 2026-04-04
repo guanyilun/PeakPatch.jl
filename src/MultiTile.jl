@@ -14,6 +14,7 @@ import ..Catalog: HaloRecord, ExtHaloRecord, write_pksc, read_pksc
 import ..CollapseTable: CollapseTableInterp, read_homeltab
 
 using FFTW
+using StaticArrays
 
 """Convert 1-based flat index to (i,j,k) for column-major n×n×n array."""
 function _ipp_to_ijk(ipp::Int, n::Int)
@@ -278,57 +279,71 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
                        psi2_x_tile, psi2_y_tile, psi2_z_tile,
                        mask_tile, (nmesh, nmesh, nmesh), lapd_tile)
 
-        for idx in 1:length(peaks)
-            peak = peaks[idx]
-            Rf = tile_peak_Rf[tid][idx]
+        # Analyse peaks in parallel within tile
+        npeaks_tile = length(peaks)
+        tile_results = Vector{PeakResult}(undef, npeaks_tile)
+        tile_Rfs = tile_peak_Rf[tid]
+        rmax2rs_f = Float64(sp.rmax2rs)
 
+        Threads.@threads for idx in 1:npeaks_tile
+            Rf = tile_Rfs[idx]
             ir2min = min(floor(Int, (1.75 * Rf / alatt)^2),
                          floor(Int, (40.0 / alatt - 1)^2))
+            tile_results[idx] = analyse_peak(pg, peaks[idx].ipp, alatt, ir2min,
+                                             ZZon, Rf, ct, shells;
+                                             nbuff=nbuff,
+                                             growth_tables=growth_tables,
+                                             rmax2rs=rmax2rs_f,
+                                             fortran_compat=fortran_compat)
+        end
 
-            result = analyse_peak(pg, peak.ipp, alatt, ir2min, ZZon, Rf, ct, shells;
-                                  nbuff=nbuff, growth_tables=growth_tables,
-                                  rmax2rs=Float64(sp.rmax2rs),
-                                  fortran_compat=fortran_compat)
+        # Pre-compute 2LPT velocity factor
+        Om_a_factor = if psi2_x_full !== nothing
+            Om_a = Omnr * a_out^3 / (Omnr * a_out^3 + cosmo.OL)
+            -(-3.0/7.0 * Om_a^(-1.0/143) * D_out^2)
+        else
+            0.0
+        end
 
-            if result.RTHL > 0
-                RTHL_phys = Float32(result.RTHL * alatt)
-                Sbar_vel = result.Sbar .* D_out
+        # Collect halos sequentially
+        for idx in 1:npeaks_tile
+            result = tile_results[idx]
+            result.RTHL <= 0 && continue
 
-                Sbar2_vel = zeros(3)
-                if psi2_x_full !== nothing
-                    Om_a = Omnr * a_out^3 / (Omnr * a_out^3 + cosmo.OL)
-                    Sbar2_vel = -result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_out^2)
-                end
+            peak = peaks[idx]
+            Rf = tile_Rfs[idx]
+            RTHL_phys = Float32(result.RTHL * alatt)
+            Sbar_vel = result.Sbar .* D_out
+            Sbar2_vel = psi2_x_full !== nothing ? result.Sbar2 .* Om_a_factor : @SVector zeros(3)
 
-                if ioutshear >= 1
-                    sm = result.strain_mat
-                    push!(halos_ext, ExtHaloRecord(
-                        Float32(peak.x), Float32(peak.y), Float32(peak.z),
-                        Float32(Sbar_vel[1]), Float32(Sbar_vel[2]), Float32(Sbar_vel[3]),
-                        RTHL_phys,
-                        Float32(Sbar2_vel[1]), Float32(Sbar2_vel[2]), Float32(Sbar2_vel[3]),
-                        Float32(result.Fbarx),
-                        Float32(result.e_v), Float32(result.p_v),
-                        Float32(sm[1,1]), Float32(sm[2,2]), Float32(sm[3,3]),
-                        Float32(sm[2,3]), Float32(sm[1,3]), Float32(sm[1,2]),
-                        Float32(result.d2F),
-                        Float32(result.zvir_half),
-                        Float32(result.gradpk[1]), Float32(result.gradpk[2]), Float32(result.gradpk[3]),
-                        Float32(result.gradpkf[1]), Float32(result.gradpkf[2]), Float32(result.gradpkf[3]),
-                        Float32(Rf),
-                        tile_peak_FcRf[tid][idx],
-                        tile_peak_d2Rf[tid][idx],
-                        Float32(result.gradpkrf[1]), Float32(result.gradpkrf[2]), Float32(result.gradpkrf[3])
-                    ))
-                else
-                    push!(halos_basic, HaloRecord(
-                        Float32(peak.x), Float32(peak.y), Float32(peak.z),
-                        Float32(Sbar_vel[1]), Float32(Sbar_vel[2]), Float32(Sbar_vel[3]),
-                        RTHL_phys,
-                        Float32(Sbar2_vel[1]), Float32(Sbar2_vel[2]), Float32(Sbar2_vel[3]),
-                        Float32(result.Fbarx)
-                    ))
-                end
+            if ioutshear >= 1
+                sm = result.strain_mat
+                push!(halos_ext, ExtHaloRecord(
+                    Float32(peak.x), Float32(peak.y), Float32(peak.z),
+                    Float32(Sbar_vel[1]), Float32(Sbar_vel[2]), Float32(Sbar_vel[3]),
+                    RTHL_phys,
+                    Float32(Sbar2_vel[1]), Float32(Sbar2_vel[2]), Float32(Sbar2_vel[3]),
+                    Float32(result.Fbarx),
+                    Float32(result.e_v), Float32(result.p_v),
+                    Float32(sm[1,1]), Float32(sm[2,2]), Float32(sm[3,3]),
+                    Float32(sm[2,3]), Float32(sm[1,3]), Float32(sm[1,2]),
+                    Float32(result.d2F),
+                    Float32(result.zvir_half),
+                    Float32(result.gradpk[1]), Float32(result.gradpk[2]), Float32(result.gradpk[3]),
+                    Float32(result.gradpkf[1]), Float32(result.gradpkf[2]), Float32(result.gradpkf[3]),
+                    Float32(Rf),
+                    tile_peak_FcRf[tid][idx],
+                    tile_peak_d2Rf[tid][idx],
+                    Float32(result.gradpkrf[1]), Float32(result.gradpkrf[2]), Float32(result.gradpkrf[3])
+                ))
+            else
+                push!(halos_basic, HaloRecord(
+                    Float32(peak.x), Float32(peak.y), Float32(peak.z),
+                    Float32(Sbar_vel[1]), Float32(Sbar_vel[2]), Float32(Sbar_vel[3]),
+                    RTHL_phys,
+                    Float32(Sbar2_vel[1]), Float32(Sbar2_vel[2]), Float32(Sbar2_vel[3]),
+                    Float32(result.Fbarx)
+                ))
             end
         end
 

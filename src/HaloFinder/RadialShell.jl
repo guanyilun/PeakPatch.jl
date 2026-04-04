@@ -11,19 +11,19 @@ const FOURPI = 4.0 * PI
 const ONE_THIRD = 1.0 / 3.0
 const TWO_THIRDS = 2.0 / 3.0
 
-# ---------- dump-reason diagnostics ----------
-const _dump_premask    = Ref{Int}(0)
-const _dump_no_fcrit   = Ref{Int}(0)
-const _dump_m0_one     = Ref{Int}(0)
-const _dump_no_collapse = Ref{Int}(0)
-const _dump_rthl_neg   = Ref{Int}(0)
+# ---------- dump-reason diagnostics (thread-safe) ----------
+const _dump_premask    = Threads.Atomic{Int}(0)
+const _dump_no_fcrit   = Threads.Atomic{Int}(0)
+const _dump_m0_one     = Threads.Atomic{Int}(0)
+const _dump_no_collapse = Threads.Atomic{Int}(0)
+const _dump_rthl_neg   = Threads.Atomic{Int}(0)
 
 function reset_dump_counters!()
-    _dump_premask[]    = 0
-    _dump_no_fcrit[]   = 0
-    _dump_m0_one[]     = 0
-    _dump_no_collapse[] = 0
-    _dump_rthl_neg[]   = 0
+    Threads.atomic_xchg!(_dump_premask, 0)
+    Threads.atomic_xchg!(_dump_no_fcrit, 0)
+    Threads.atomic_xchg!(_dump_m0_one, 0)
+    Threads.atomic_xchg!(_dump_no_collapse, 0)
+    Threads.atomic_xchg!(_dump_rthl_neg, 0)
     return nothing
 end
 
@@ -130,7 +130,7 @@ end
 # Precompute cubic spline (Schoenberg M4) SPH kernel
 # akk[i] for i=1..1100, u = (i-1)*0.01, ru = sqrt(u)
 
-function atab4()
+function _build_atab4()
     akk = Vector{Float64}(undef, 1101)
     ca = 3.0 / (2.0 * PI)
     cb = 1.0 / (4.0 * PI)
@@ -148,6 +148,11 @@ function atab4()
     akk[1101] = 0.0
     return akk
 end
+
+const _AKK_TAB = _build_atab4()
+
+"""Return the cached SPH kernel table (1101-element Vector{Float64})."""
+atab4() = _AKK_TAB
 
 # ---------- precompute_shells (icloud) ----------
 # Generate all lattice cells within radius rmax, sorted by r^2
@@ -305,7 +310,7 @@ function analyse_peak(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
     # rmax2rs pre-mask check: skip if already masked by larger halo
     if rmax2rs > 0.0 && pg.mask !== nothing
         if pg.mask[ipk[1], ipk[2], ipk[3]] > floor(Int, Rfclvi / alatt * rmax2rs)
-            _dump_premask[] += 1
+            Threads.atomic_add!(_dump_premask, 1)
             return no_collapse()
         end
     end
@@ -479,7 +484,7 @@ function analyse_peak(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
         rad[m1] < rupp_rf && (mupp_rf = m1)
     end
 
-    akk_tab = atab4()
+    akk_tab = _AKK_TAB
     _, gradpkrf, _ = kernel_strain(rad, Gshell, Gshellf, SRshell,
                                     mrf, mlow_rf, mupp_rf, akk_tab,
                                     wRnor, aRnor, 1.0, 1.0)
@@ -520,7 +525,7 @@ function analyse_peak(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
             m0 = mp
         end
         if !found
-            _dump_no_fcrit[] += 1
+            Threads.atomic_add!(_dump_no_fcrit, 1)
             return no_collapse()
         end
         rupp_m0 = rad[m0] + 2.0
@@ -612,7 +617,7 @@ function analyse_peak(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
         gradpkf_last = gradpkf_m0
 
         if m0 == 1
-            _dump_m0_one[] += 1
+            Threads.atomic_add!(_dump_m0_one, 1)
             return no_collapse()
         end
 
@@ -694,7 +699,7 @@ function analyse_peak(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
     end
 
     if !collapsed
-        _dump_no_collapse[] += 1
+        Threads.atomic_add!(_dump_no_collapse, 1)
         return no_collapse()
     end
 
@@ -708,7 +713,7 @@ function analyse_peak(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
     end
 
     if RTHL <= 0.0
-        _dump_rthl_neg[] += 1
+        Threads.atomic_add!(_dump_rthl_neg, 1)
         return no_collapse()
     end
 

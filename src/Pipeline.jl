@@ -14,6 +14,7 @@ import ..Catalog: HaloRecord, ExtHaloRecord, write_pksc, read_pksc
 import ..CollapseTable: CollapseTableInterp, read_homeltab
 
 using FFTW
+using StaticArrays
 
 """Convert 1-based flat index to (i,j,k) tuple for column-major n×n×n array."""
 function _ipp_to_ijk(ipp::Int, n::Int)
@@ -186,67 +187,87 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
                   psi2_x, psi2_y, psi2_z,
                   mask, (n, n, n), lapd)
 
+    # Analyse peaks in parallel — results stored per-peak, then filtered
+    npeaks = length(all_peaks)
+    results = Vector{PeakResult}(undef, npeaks)
+
+    # Pre-compute per-peak ir2min
+    ir2min_vec = Vector{Int}(undef, npeaks)
+    nbuff_int = Int(sp.nbuff)
+    rmax2rs_f = Float64(sp.rmax2rs)
+    for idx in 1:npeaks
+        Rf = peak_Rf[idx]
+        ir2min_vec[idx] = min(floor(Int, (1.75 * Rf / alatt)^2),
+                              floor(Int, (40.0 / alatt - 1)^2))
+    end
+
+    Threads.@threads for idx in 1:npeaks
+        results[idx] = analyse_peak(pg, all_peaks[idx].ipp, alatt,
+                                    ir2min_vec[idx], ZZon, peak_Rf[idx],
+                                    ct, shells;
+                                    nbuff=nbuff_int,
+                                    growth_tables=growth_tables,
+                                    rmax2rs=rmax2rs_f,
+                                    fortran_compat=fortran_compat)
+    end
+
+    # Collect halos sequentially (deterministic ordering)
     halos_basic = HaloRecord[]
     halos_ext = ExtHaloRecord[]
 
-    for idx in 1:length(all_peaks)
+    # Pre-compute 2LPT velocity factor
+    Om_a_factor = if psi2_x !== nothing
+        Om_a = Omnr * a_out^3 / (Omnr * a_out^3 + cosmo.OL)
+        -(-3.0/7.0 * Om_a^(-1.0/143) * D_out^2)
+    else
+        0.0
+    end
+
+    for idx in 1:npeaks
+        result = results[idx]
+        result.RTHL <= 0 && continue
+
         peak = all_peaks[idx]
         Rf = peak_Rf[idx]
+        RTHL_phys = Float32(result.RTHL * alatt)
 
-        ir2min = min(floor(Int, (1.75 * Rf / alatt)^2),
-                     floor(Int, (40.0 / alatt - 1)^2))
+        # 1LPT velocity: Sbar × D(z_out)
+        Sbar_vel = result.Sbar .* D_out
 
-        result = analyse_peak(pg, peak.ipp, alatt, ir2min, ZZon, Rf, ct, shells;
-                              nbuff=Int(sp.nbuff), growth_tables=growth_tables,
-                              rmax2rs=Float64(sp.rmax2rs),
-                              fortran_compat=fortran_compat)
+        # 2LPT velocity
+        Sbar2_vel = psi2_x !== nothing ? result.Sbar2 .* Om_a_factor : @SVector zeros(3)
 
-        if result.RTHL > 0
-            RTHL_phys = Float32(result.RTHL * alatt)
+        # Virial velocity: v² = vTHvir0² × Fbarx × Srb × RTHL²
+        vE2 = vTHvir0^2 * result.Fbarx * result.Srb * Float64(RTHL_phys)^2
 
-            # 1LPT velocity: Sbar × D(z_out)
-            Sbar_vel = result.Sbar .* D_out
-
-            # 2LPT velocity: -Sbar2 × (-3/7) × Ω_m(a)^{-1/143} × D²
-            Sbar2_vel = zeros(3)
-            if psi2_x !== nothing
-                Om_a = Omnr * a_out^3 / (Omnr * a_out^3 + cosmo.OL)
-                Sbar2_vel = -result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_out^2)
-            end
-
-            # Virial velocity: v² = vTHvir0² × Fbarx × Srb × RTHL²
-            vE2 = vTHvir0^2 * result.Fbarx * result.Srb * Float64(RTHL_phys)^2
-
-            if ioutshear >= 1
-                # Strain tensor: (1,1),(2,2),(3,3),(2,3),(1,3),(1,2)
-                sm = result.strain_mat
-                push!(halos_ext, ExtHaloRecord(
-                    Float32(peak.x), Float32(peak.y), Float32(peak.z),
-                    Float32(Sbar_vel[1]), Float32(Sbar_vel[2]), Float32(Sbar_vel[3]),
-                    RTHL_phys,
-                    Float32(Sbar2_vel[1]), Float32(Sbar2_vel[2]), Float32(Sbar2_vel[3]),
-                    Float32(result.Fbarx),
-                    Float32(result.e_v), Float32(result.p_v),
-                    Float32(sm[1,1]), Float32(sm[2,2]), Float32(sm[3,3]),
-                    Float32(sm[2,3]), Float32(sm[1,3]), Float32(sm[1,2]),
-                    Float32(result.d2F),
-                    Float32(result.zvir_half),
-                    Float32(result.gradpk[1]), Float32(result.gradpk[2]), Float32(result.gradpk[3]),
-                    Float32(result.gradpkf[1]), Float32(result.gradpkf[2]), Float32(result.gradpkf[3]),
-                    Float32(Rf),
-                    peak_FcollvRf[idx],
-                    peak_d2FRf[idx],
-                    Float32(result.gradpkrf[1]), Float32(result.gradpkrf[2]), Float32(result.gradpkrf[3])
-                ))
-            else
-                push!(halos_basic, HaloRecord(
-                    Float32(peak.x), Float32(peak.y), Float32(peak.z),
-                    Float32(Sbar_vel[1]), Float32(Sbar_vel[2]), Float32(Sbar_vel[3]),
-                    RTHL_phys,
-                    Float32(Sbar2_vel[1]), Float32(Sbar2_vel[2]), Float32(Sbar2_vel[3]),
-                    Float32(result.Fbarx)
-                ))
-            end
+        if ioutshear >= 1
+            sm = result.strain_mat
+            push!(halos_ext, ExtHaloRecord(
+                Float32(peak.x), Float32(peak.y), Float32(peak.z),
+                Float32(Sbar_vel[1]), Float32(Sbar_vel[2]), Float32(Sbar_vel[3]),
+                RTHL_phys,
+                Float32(Sbar2_vel[1]), Float32(Sbar2_vel[2]), Float32(Sbar2_vel[3]),
+                Float32(result.Fbarx),
+                Float32(result.e_v), Float32(result.p_v),
+                Float32(sm[1,1]), Float32(sm[2,2]), Float32(sm[3,3]),
+                Float32(sm[2,3]), Float32(sm[1,3]), Float32(sm[1,2]),
+                Float32(result.d2F),
+                Float32(result.zvir_half),
+                Float32(result.gradpk[1]), Float32(result.gradpk[2]), Float32(result.gradpk[3]),
+                Float32(result.gradpkf[1]), Float32(result.gradpkf[2]), Float32(result.gradpkf[3]),
+                Float32(Rf),
+                peak_FcollvRf[idx],
+                peak_d2FRf[idx],
+                Float32(result.gradpkrf[1]), Float32(result.gradpkrf[2]), Float32(result.gradpkrf[3])
+            ))
+        else
+            push!(halos_basic, HaloRecord(
+                Float32(peak.x), Float32(peak.y), Float32(peak.z),
+                Float32(Sbar_vel[1]), Float32(Sbar_vel[2]), Float32(Sbar_vel[3]),
+                RTHL_phys,
+                Float32(Sbar2_vel[1]), Float32(Sbar2_vel[2]), Float32(Sbar2_vel[3]),
+                Float32(result.Fbarx)
+            ))
         end
     end
 

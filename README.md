@@ -25,7 +25,7 @@ This code is developed by a coding agent, so use with more care!
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/your-org/PeakPatch.jl")
+Pkg.add(url="https://github.com/guanyilun/PeakPatch.jl")
 ```
 
 Requires Julia 1.11+.
