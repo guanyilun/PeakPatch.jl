@@ -32,3 +32,23 @@ jobs:
       - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
+
+      # MPI tests (run separately via mpiexec)
+      - name: Install MPI
+        run: sudo apt-get update && sudo apt-get install -y openmpi-bin libopenmpi-dev
+
+      - name: Configure MPI.jl to use system MPI
+        run: julia --project=. -e 'using MPIPreferences; MPIPreferences.use_system_binary()'
+
+      - name: Install mpiexecjl
+        run: julia --project=. -e 'using MPI; MPI.install_mpiexecjl()'
+
+      - name: Run MPI tests (np=1)
+        run: |
+          export PATH="$HOME/.julia/bin:$PATH"
+          mpiexecjl -np 1 julia --project=. test/test_mpi_multitile.jl
+
+      - name: Run MPI tests (np=2)
+        run: |
+          export PATH="$HOME/.julia/bin:$PATH"
+          mpiexecjl -np 2 julia --project=. test/test_mpi_multitile.jl
