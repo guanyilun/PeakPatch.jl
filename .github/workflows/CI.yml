@@ -38,7 +38,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y openmpi-bin libopenmpi-dev
 
       - name: Configure MPI.jl to use system MPI
-        run: julia --project=. -e 'using MPIPreferences; MPIPreferences.use_system_binary()'
+        run: julia --project=. -e 'import Pkg; Pkg.add("MPIPreferences"); using MPIPreferences; MPIPreferences.use_system_binary()'
 
       - name: Install mpiexecjl
         run: julia --project=. -e 'using MPI; MPI.install_mpiexecjl()'
