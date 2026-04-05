@@ -30,16 +30,18 @@ jobs:
           version: ${{ matrix.version }}
           arch: ${{ matrix.arch }}
       - uses: julia-actions/cache@v2
-      - uses: julia-actions/julia-buildpkg@v1
-      - uses: julia-actions/julia-runtest@v1
 
-      # MPI tests (run separately via mpiexec)
-      - name: Install MPI
+      # Set up system MPI before building so all packages resolve consistently
+      - name: Install system MPI
         run: sudo apt-get update && sudo apt-get install -y openmpi-bin libopenmpi-dev
 
       - name: Configure MPI.jl to use system MPI
         run: julia --project=. -e 'import Pkg; Pkg.add("MPIPreferences"); using MPIPreferences; MPIPreferences.use_system_binary()'
 
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-runtest@v1
+
+      # MPI tests (run separately via mpiexec)
       - name: Install mpiexecjl
         run: julia --project=. -e 'using MPI; MPI.install_mpiexecjl()'
 
