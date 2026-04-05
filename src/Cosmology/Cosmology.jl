@@ -2,7 +2,7 @@ module Cosmology
 
 using QuadGK
 
-struct CosmologyParams
+Base.@kwdef struct CosmologyParams
     Om::Float64  # total matter Ω_m (CDM + baryons)
     OB::Float64  # baryon density Ω_b
     OL::Float64  # dark energy Ω_Λ
