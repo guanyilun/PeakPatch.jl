@@ -284,6 +284,8 @@ function SimParams(config::Dict{String,Any})
 
     # Run parameters
     z_out     = Float32(get(run, "z_out",     0.0))
+    z_max     = Float32(get(run, "z_max",     z_out))
+    ievol     = Int32(get(run, "ievol",       0))
     ilpt      = Int32(get(run, "ilpt",        2))
     ioutshear = Int32(get(run, "ioutshear",   0))
     wsmooth   = Int32(get(run, "wsmooth",     0))
@@ -313,20 +315,25 @@ function SimParams(config::Dict{String,Any})
         end
     end
 
+    # Observer position (defaults to grid center)
+    cenx = Float32(get(grid, "cenx", 0.0))
+    ceny = Float32(get(grid, "ceny", 0.0))
+    cenz = Float32(get(grid, "cenz", 0.0))
+
     SimParams(
         Int32(0),           # ireadfield
         ioutshear,
         z_out,
-        Float32(get(run, "z_max", z_out)),  # maximum_redshift
+        z_max,              # maximum_redshift
         Int32(1),           # num_redshifts
         Omx, OmB, Omvac, h,
         n, n, n,            # nlx, nly, nlz
         Float32((n - 2*nbuff) * Float64(dL) / n),  # dcore_box
         dL,
-        Float32(0), Float32(0), Float32(0),  # cenx, ceny, cenz
+        cenx, ceny, cenz,
         nbuff,
         Int32(0),           # next
-        Int32(0),           # ievol
+        ievol,
         Int32(1),           # ivir_strat
         Float32(1.686), Float32(1.686), Float32(1.686),  # fcoll_3, _2, _1
         Float32(1.686),     # dcrit

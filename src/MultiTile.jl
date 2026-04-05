@@ -1,6 +1,7 @@
 module MultiTile
 
-import ..Cosmology: CosmologyParams, Dlinear_tables, Dlinear_ab
+import ..Cosmology: CosmologyParams, Dlinear_tables, Dlinear_ab, chi,
+    ChiToZTable, build_chi_to_z, chi_to_z, peak_redshift
 import ..PowerSpectrum: load_pk, load_pk_nongaussian
 import ..NonGaussian: apply_fnl_correlated!, apply_fnl_uncorrelated!
 import ..RandomField: generate_grf, generate_grf_lcg
@@ -142,7 +143,13 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
     ioutshear = Int(sp.ioutshear)
     wsmooth = Int(sp.wsmooth)
 
-    verbose && @info "Phase 0: N=$N, box=$(round(boxsize_full;digits=2)), ntile=$ntile, nsub=$nsub, nmesh=$nmesh, fcrit=$fcrit_val"
+    # Lightcone mode
+    ievol = Int(sp.ievol)
+    obs = (Float64(sp.cenx), Float64(sp.ceny), Float64(sp.cenz))
+    z_max = Float64(sp.maximum_redshift)
+    chi2z = ievol == 1 ? build_chi_to_z(cosmo; z_max=z_max + 1.0) : nothing
+
+    verbose && @info "Phase 0: N=$N, box=$(round(boxsize_full;digits=2)), ntile=$ntile, nsub=$nsub, nmesh=$nmesh, fcrit=$fcrit_val$(ievol == 1 ? ", lightcone mode" : "")"
 
     # ---- Phase 1: Field generation on full grid ----
     pk = load_pk(sp.pkfile)
@@ -192,6 +199,22 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
         push!(tile_ids, (it, jt, kt))
     end
 
+    # Lightcone: prune tiles beyond maximum_redshift
+    if ievol == 1
+        chi_max = chi(z_max, cosmo)
+        half = dcore_box / 2.0
+        ntiles_before = length(tile_ids)
+        filter!(tile_ids) do tid
+            it, jt, kt = tid
+            xbx, ybx, zbx = tile_center(it, jt, kt, ntile, dcore_box)
+            dx = max(abs(xbx - obs[1]) - half, 0.0)
+            dy = max(abs(ybx - obs[2]) - half, 0.0)
+            dz = max(abs(zbx - obs[3]) - half, 0.0)
+            sqrt(dx^2 + dy^2 + dz^2) <= chi_max
+        end
+        verbose && @info "  Lightcone: $(length(tile_ids)) of $ntiles_before tiles within z_max=$z_max"
+    end
+
     # Per-tile state
     tile_masks      = Dict(tid => zeros(Int8, nmesh, nmesh, nmesh) for tid in tile_ids)
     tile_peaks      = Dict(tid => PeakCandidate[] for tid in tile_ids)
@@ -218,8 +241,15 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
             delta_s_tile = extract_tile(Tf.(delta_s_full), it, jt, kt, nsub, nmesh)
             xbx, ybx, zbx = tile_center(it, jt, kt, ntile, dcore_box)
 
+            # Per-tile fcrit in lightcone mode
+            fcrit_tile = fcrit
+            if ievol == 1
+                z_tile = peak_redshift(obs[1], obs[2], obs[3], xbx, ybx, zbx, chi2z)
+                fcrit_tile = Tf(fsc_of_z(z_tile, growth_tables))
+            end
+
             new_peaks = find_peaks(delta_s_tile, tile_masks[tid],
-                                   xbx, ybx, zbx, alatt, nbuff, fcrit, Rf)
+                                   xbx, ybx, zbx, alatt, nbuff, fcrit_tile, Rf)
 
             append!(tile_peaks[tid], new_peaks)
             append!(tile_peak_Rf[tid], fill(Rf, length(new_peaks)))
@@ -282,30 +312,33 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
                        psi2_x_tile, psi2_y_tile, psi2_z_tile,
                        mask_tile, (nmesh, nmesh, nmesh), lapd_tile)
 
-        # Analyse peaks in parallel within tile
+        # Pre-compute per-peak ZZon for lightcone mode
         npeaks_tile = length(peaks)
         tile_results = Vector{PeakResult}(undef, npeaks_tile)
         tile_Rfs = tile_peak_Rf[tid]
         rmax2rs_f = Float64(sp.rmax2rs)
+
+        ZZon_tile = Vector{Float64}(undef, npeaks_tile)
+        for idx in 1:npeaks_tile
+            if ievol == 1
+                pk = peaks[idx]
+                z_pk = peak_redshift(obs[1], obs[2], obs[3], pk.x, pk.y, pk.z, chi2z)
+                ZZon_tile[idx] = 1.0 + z_pk
+            else
+                ZZon_tile[idx] = ZZon
+            end
+        end
 
         Threads.@threads for idx in 1:npeaks_tile
             Rf = tile_Rfs[idx]
             ir2min = min(floor(Int, (1.75 * Rf / alatt)^2),
                          floor(Int, (40.0 / alatt - 1)^2))
             tile_results[idx] = analyse_peak(pg, peaks[idx].ipp, alatt, ir2min,
-                                             ZZon, Rf, ct, shells;
+                                             ZZon_tile[idx], Rf, ct, shells;
                                              nbuff=nbuff,
                                              growth_tables=growth_tables,
                                              rmax2rs=rmax2rs_f,
                                              fortran_compat=fortran_compat)
-        end
-
-        # Pre-compute 2LPT velocity factor
-        Om_a_factor = if psi2_x_full !== nothing
-            Om_a = Omnr * a_out^3 / (Omnr * a_out^3 + cosmo.OL)
-            -(-3.0/7.0 * Om_a^(-1.0/143) * D_out^2)
-        else
-            0.0
         end
 
         # Collect halos sequentially
@@ -313,11 +346,26 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
             result = tile_results[idx]
             result.RTHL <= 0 && continue
 
+            # Lightcone: skip peaks beyond maximum redshift
+            z_pk = ZZon_tile[idx] - 1.0
+            if ievol == 1 && z_pk > z_max
+                continue
+            end
+
+            # Per-peak growth factor and velocity scaling
+            a_pk = 1.0 / ZZon_tile[idx]
+            _, _, D_pk = Dlinear_ab(a_pk, growth_tables)
+
             peak = peaks[idx]
             Rf = tile_Rfs[idx]
             RTHL_phys = Float32(result.RTHL * alatt)
-            Sbar_vel = result.Sbar .* D_out
-            Sbar2_vel = psi2_x_full !== nothing ? result.Sbar2 .* Om_a_factor : @SVector zeros(3)
+            Sbar_vel = result.Sbar .* D_pk
+            Sbar2_vel = if psi2_x_full !== nothing
+                Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
+                result.Sbar2 .* (-(-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2))
+            else
+                @SVector zeros(3)
+            end
 
             if ioutshear >= 1
                 sm = result.strain_mat

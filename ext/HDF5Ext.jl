@@ -5,41 +5,9 @@ using HDF5
 
 import PeakPatch: write_catalog_hdf5
 
-import PeakPatch.Cosmology: CosmologyParams, chi, E2
+import PeakPatch.Cosmology: CosmologyParams, chi, E2,
+    ChiToZTable, build_chi_to_z, chi_to_z
 import PeakPatch.Catalog: HaloRecord, ExtHaloRecord
-
-using QuadGK
-
-"""
-    _build_chi_to_z(cosmo; z_max=10.0, npts=2000)
-
-Build an interpolation table for chi(z) → z inversion.
-Returns a closure `chi_val -> z` using bisection on the tabulated values.
-"""
-function _build_chi_to_z(cosmo::CosmologyParams; z_max::Float64=10.0, npts::Int=2000)
-    zs = range(0.0, z_max; length=npts)
-    chis = [chi(z, cosmo) for z in zs]
-    return function(chi_val::Float64)
-        # Bisection on the monotonic chi(z) table
-        if chi_val <= chis[1]
-            return 0.0
-        elseif chi_val >= chis[end]
-            return z_max
-        end
-        lo, hi = 1, npts
-        while hi - lo > 1
-            mid = (lo + hi) ÷ 2
-            if chis[mid] < chi_val
-                lo = mid
-            else
-                hi = mid
-            end
-        end
-        # Linear interpolation between lo and hi
-        f = (chi_val - chis[lo]) / (chis[hi] - chis[lo])
-        return zs[lo] + f * (zs[hi] - zs[lo])
-    end
-end
 
 """
     _rect_to_radec(x, y, z)
@@ -82,7 +50,7 @@ function PeakPatch.write_catalog_hdf5(path::String,
                                        z_max::Float64=10.0)
     isempty(halos) && (h5open(path, "w") do f; end; return)
 
-    chi_to_z = _build_chi_to_z(cosmo; z_max=z_max)
+    chi2z_table = build_chi_to_z(cosmo; z_max=z_max)
 
     nhalo = length(halos)
 
@@ -96,7 +64,7 @@ function PeakPatch.write_catalog_hdf5(path::String,
     rthl  = Float32[h.RTHL for h in halos]
 
     chi_arr = Float32[sqrt(Float64(h.x)^2 + Float64(h.y)^2 + Float64(h.z)^2) for h in halos]
-    z_arr   = Float32[chi_to_z(Float64(c)) for c in chi_arr]
+    z_arr   = Float32[chi_to_z(chi2z_table, Float64(c)) for c in chi_arr]
     mass    = Float32[Float32(4.0/3.0 * π * rho_m * Float64(h.RTHL)^3) for h in halos]
 
     ra_arr  = Vector{Float32}(undef, nhalo)

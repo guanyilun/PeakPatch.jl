@@ -315,4 +315,60 @@ function Dfnofa(ai, tables::DlinearTables)
     end
 end
 
+# -------------------------------------------------------------------------
+# Chi-to-z inversion: comoving distance → redshift lookup table
+# -------------------------------------------------------------------------
+
+struct ChiToZTable
+    zs::Vector{Float64}
+    chis::Vector{Float64}
+    z_max::Float64
+end
+
+"""
+    build_chi_to_z(cosmo; z_max=10.0, npts=2000)
+
+Build a monotonic lookup table for inverting χ(z) → z via bisection.
+"""
+function build_chi_to_z(cosmo::CosmologyParams; z_max::Float64=10.0, npts::Int=2000)
+    zs = collect(range(0.0, z_max; length=npts))
+    chis = [chi(z, cosmo) for z in zs]
+    return ChiToZTable(zs, chis, z_max)
+end
+
+"""
+    chi_to_z(table, chi_val)
+
+Convert comoving distance [Mpc/h] to redshift using a precomputed lookup table.
+"""
+function chi_to_z(table::ChiToZTable, chi_val::Float64)
+    chi_val <= table.chis[1] && return 0.0
+    chi_val >= table.chis[end] && return table.z_max
+    lo, hi = 1, length(table.zs)
+    while hi - lo > 1
+        mid = (lo + hi) >>> 1
+        if table.chis[mid] <= chi_val
+            lo = mid
+        else
+            hi = mid
+        end
+    end
+    frac = (chi_val - table.chis[lo]) / (table.chis[hi] - table.chis[lo])
+    return table.zs[lo] + frac * (table.zs[hi] - table.zs[lo])
+end
+
+"""
+    peak_redshift(obs_x, obs_y, obs_z, pk_x, pk_y, pk_z, chi2z)
+
+Compute redshift of a peak at (pk_x, pk_y, pk_z) as seen by an observer at
+(obs_x, obs_y, obs_z), using the precomputed chi-to-z table.
+"""
+function peak_redshift(obs_x, obs_y, obs_z, pk_x, pk_y, pk_z, chi2z::ChiToZTable)
+    dx = Float64(pk_x) - Float64(obs_x)
+    dy = Float64(pk_y) - Float64(obs_y)
+    dz = Float64(pk_z) - Float64(obs_z)
+    r = sqrt(dx^2 + dy^2 + dz^2)
+    return chi_to_z(chi2z, r)
+end
+
 end # module Cosmology

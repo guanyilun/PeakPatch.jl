@@ -84,6 +84,32 @@
         @test delta_c(0.0, c_test) ≈ expected rtol=1e-10
     end
 
+    @testset "Chi-to-z inversion" begin
+        chi2z = build_chi_to_z(c; z_max=6.0, npts=2000)
+
+        # Round-trip: chi(z) → chi_to_z should recover z
+        for z_test in [0.0, 0.1, 0.5, 1.0, 2.0, 4.0, 5.9]
+            chi_val = chi(z_test, c)
+            z_recovered = chi_to_z(chi2z, chi_val)
+            @test z_recovered ≈ z_test atol=0.005
+        end
+
+        # Boundary: chi=0 → z=0
+        @test chi_to_z(chi2z, 0.0) == 0.0
+
+        # Boundary: chi beyond table → z_max
+        @test chi_to_z(chi2z, 1e10) == 6.0
+
+        # peak_redshift: observer at origin, peak at known distance
+        chi_z1 = chi(1.0, c)
+        z_pk = peak_redshift(0.0, 0.0, 0.0, chi_z1, 0.0, 0.0, chi2z)
+        @test z_pk ≈ 1.0 atol=0.005
+
+        # peak_redshift: observer offset
+        z_pk2 = peak_redshift(100.0, 0.0, 0.0, 100.0 + chi_z1, 0.0, 0.0, chi2z)
+        @test z_pk2 ≈ 1.0 atol=0.005
+    end
+
     @testset "Self-consistency: D(z) and f(z)" begin
         # Numerical derivative of D(z) should match growth rate
         # f(z) = -d ln D / d ln(1+z) = -(1+z)/D * dD/dz

@@ -21,7 +21,8 @@ include("MultiTile.jl")
 
 # Re-export public API
 using .Cosmology: CosmologyParams, E2, H, chi, growth_factor, growth_rate, delta_c,
-    DlinearTables, Dlinear_tables, Dlinear_ab, Dfnofa
+    DlinearTables, Dlinear_tables, Dlinear_ab, Dfnofa,
+    ChiToZTable, build_chi_to_z, chi_to_z, peak_redshift
 using .PowerSpectrum: load_pk, load_pk_nongaussian
 using .LCG: LCG
 using .NonGaussian: apply_fnl_correlated!, apply_fnl_uncorrelated!
@@ -55,6 +56,7 @@ function write_catalog_hdf5 end
 export
     CosmologyParams, E2, H, chi, growth_factor, growth_rate, delta_c,
     DlinearTables, Dlinear_tables, Dlinear_ab, Dfnofa,
+    ChiToZTable, build_chi_to_z, chi_to_z, peak_redshift,
     load_pk, load_pk_nongaussian,
     apply_fnl_correlated!, apply_fnl_uncorrelated!,
     generate_grf,

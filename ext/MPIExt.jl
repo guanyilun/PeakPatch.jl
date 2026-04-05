@@ -410,9 +410,29 @@ function PeakPatch.run_multitile_mpi(sp::PeakPatch.SimParams;
     NonGauss = Int(sp.NonGauss)
     NonGauss != 0 && error("run_multitile_mpi: NonGauss=$NonGauss not yet supported (only 0)")
 
+    # Lightcone mode
+    ievol = Int(sp.ievol)
+    obs = (Float64(sp.cenx), Float64(sp.ceny), Float64(sp.cenz))
+    z_max = Float64(sp.maximum_redshift)
+    chi2z = ievol == 1 ? PeakPatch.build_chi_to_z(cosmo; z_max=z_max + 1.0) : nothing
+
     my_tiles = _assign_tiles(ntile, nranks, rank)
 
-    rank == 0 && verbose && @info "Phase 0: N=$N, ntile=$ntile, nranks=$nranks, tiles/rank=$(length(my_tiles))"
+    # Lightcone: prune tiles beyond maximum_redshift
+    if ievol == 1
+        chi_max = PeakPatch.chi(z_max, cosmo)
+        half = dcore_box / 2.0
+        filter!(my_tiles) do tid
+            it, jt, kt = tid
+            xbx, ybx, zbx = PeakPatch.tile_center(it, jt, kt, ntile, dcore_box)
+            dx = max(abs(xbx - obs[1]) - half, 0.0)
+            dy = max(abs(ybx - obs[2]) - half, 0.0)
+            dz = max(abs(zbx - obs[3]) - half, 0.0)
+            sqrt(dx^2 + dy^2 + dz^2) <= chi_max
+        end
+    end
+
+    rank == 0 && verbose && @info "Phase 0: N=$N, ntile=$ntile, nranks=$nranks, tiles/rank=$(length(my_tiles))$(ievol == 1 ? ", lightcone mode" : "")"
 
     # ---- PencilFFT setup ----
     proc_dims = _factor_procs(nranks)
@@ -541,8 +561,15 @@ function PeakPatch.run_multitile_mpi(sp::PeakPatch.SimParams;
             delta_s_tile = delta_s_tiles[tid]
             xbx, ybx, zbx = PeakPatch.tile_center(it, jt, kt, ntile, dcore_box)
 
+            # Per-tile fcrit in lightcone mode
+            fcrit_tile = fcrit
+            if ievol == 1
+                z_tile = PeakPatch.peak_redshift(obs[1], obs[2], obs[3], xbx, ybx, zbx, chi2z)
+                fcrit_tile = Float32(PeakPatch.fsc_of_z(z_tile, growth_tables))
+            end
+
             new_peaks = PeakPatch.find_peaks(delta_s_tile, tile_masks[tid],
-                                              xbx, ybx, zbx, alatt, nbuff, fcrit, Rf)
+                                              xbx, ybx, zbx, alatt, nbuff, fcrit_tile, Rf)
 
             append!(tile_peaks[tid], new_peaks)
             append!(tile_peak_Rf[tid], fill(Rf, length(new_peaks)))
@@ -603,18 +630,32 @@ function PeakPatch.run_multitile_mpi(sp::PeakPatch.SimParams;
             ir2min = min(floor(Int, (1.75 * Rf / alatt)^2),
                          floor(Int, (40.0 / alatt - 1)^2))
 
-            result = PeakPatch.analyse_peak(pg, peak.ipp, alatt, ir2min, ZZon, Rf, ct, shells;
+            # Per-peak ZZon in lightcone mode
+            ZZon_pk = ZZon
+            if ievol == 1
+                z_pk = PeakPatch.peak_redshift(obs[1], obs[2], obs[3], peak.x, peak.y, peak.z, chi2z)
+                ZZon_pk = 1.0 + z_pk
+                if z_pk > z_max
+                    continue
+                end
+            end
+
+            result = PeakPatch.analyse_peak(pg, peak.ipp, alatt, ir2min, ZZon_pk, Rf, ct, shells;
                                              nbuff=nbuff, growth_tables=growth_tables,
                                              rmax2rs=Float64(sp.rmax2rs))
 
             if result.RTHL > 0
+                # Per-peak growth factor and velocity scaling
+                a_pk = 1.0 / ZZon_pk
+                _, _, D_pk = PeakPatch.Dlinear_ab(a_pk, growth_tables)
+
                 RTHL_phys = Float32(result.RTHL * alatt)
-                Sbar_vel = result.Sbar .* D_out
+                Sbar_vel = result.Sbar .* D_pk
 
                 Sbar2_vel = zeros(3)
                 if psi2_tiles !== nothing
-                    Om_a = Omnr * a_out^3 / (Omnr * a_out^3 + cosmo.OL)
-                    Sbar2_vel = -result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_out^2)
+                    Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
+                    Sbar2_vel = -result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)
                 end
 
                 if ioutshear >= 1

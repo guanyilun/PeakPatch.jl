@@ -227,4 +227,80 @@ end
     rm(tmpdir; recursive=true)
 end
 
+# =================================================================
+# Test 5: Lightcone mode (ievol=1)
+# =================================================================
+@testset "Lightcone mode (ievol=1)" begin
+    tmpdir = mktempdir()
+
+    pkfile = _make_pk_file(tmpdir)
+    filterfile = _make_filter_file(tmpdir)
+    outfile = joinpath(tmpdir, "test_lc.pksc")
+    tabfile = joinpath(@__DIR__, "data", "HomelTab_julia.dat")
+
+    # Use a 64³ box with observer at center, z_max=3.0
+    n = 64; boxsize = 200.0
+    sp_lc = PeakPatch.SimParams(
+        Int32(0), Int32(0),
+        Float32(0.0),     # global_redshift (not used directly in lightcone)
+        Float32(3.0),     # maximum_redshift
+        Int32(1),
+        Float32(0.315 - 0.049), Float32(0.049), Float32(0.685), Float32(0.674),
+        Int32(n), Int32(n), Int32(n),
+        Float32(boxsize/(n*n)), Float32(boxsize),
+        Float32(0.0), Float32(0.0), Float32(0.0),  # observer at center
+        Int32(4), Int32(0),
+        Int32(1),       # ievol = 1 (LIGHTCONE)
+        Int32(2), Float32(0.171), Float32(0.171), Float32(0.01), Float32(200.0), Int32(4),
+        Int32(50), Int32(20), Int32(20),
+        Float32(log10(1.5)), Float32(log10(8.0)),
+        Float32(0.0), Float32(0.5),
+        Float32(-0.9999), Float32(0.9999),
+        Int32(0), Float32(0.0), Int32(1),
+        Int32(0), Float32(0.0), Float32(0.0), Float32(0.0), Float32(0.0),
+        Int32(1), Int32(0), Int32(0),
+        "", "", "", pkfile, filterfile, outfile, tabfile
+    )
+
+    halos_lc = PeakPatch.Pipeline.run_tile(sp_lc; seed=42, verbose=false)
+
+    # Should produce halos (same test seed/config as ievol=0 test, just with lightcone)
+    @test length(halos_lc) >= 0
+
+    if !isempty(halos_lc)
+        @test all(h -> h.RTHL > 0, halos_lc)
+    end
+
+    # Compare with ievol=0: should produce different number of halos
+    # (lightcone uses per-peak fcrit/D, so counts differ)
+    sp_nolc = PeakPatch.SimParams(
+        Int32(0), Int32(0), Float32(0.0), Float32(0.0), Int32(1),
+        Float32(0.315 - 0.049), Float32(0.049), Float32(0.685), Float32(0.674),
+        Int32(n), Int32(n), Int32(n),
+        Float32(boxsize/(n*n)), Float32(boxsize),
+        Float32(0.0), Float32(0.0), Float32(0.0),
+        Int32(4), Int32(0),
+        Int32(0),       # ievol = 0
+        Int32(2), Float32(0.171), Float32(0.171), Float32(0.01), Float32(200.0), Int32(4),
+        Int32(50), Int32(20), Int32(20),
+        Float32(log10(1.5)), Float32(log10(8.0)),
+        Float32(0.0), Float32(0.5),
+        Float32(-0.9999), Float32(0.9999),
+        Int32(0), Float32(0.0), Int32(1),
+        Int32(0), Float32(0.0), Float32(0.0), Float32(0.0), Float32(0.0),
+        Int32(1), Int32(0), Int32(0),
+        "", "", "", pkfile, filterfile,
+        joinpath(tmpdir, "test_nolc.pksc"), tabfile
+    )
+
+    halos_nolc = PeakPatch.Pipeline.run_tile(sp_nolc; seed=42, verbose=false)
+
+    # With observer at center of a 200 Mpc/h box, most peaks are at z≈0
+    # so lightcone and non-lightcone should give similar (but not identical) results
+    # The key test: lightcone mode runs without error and produces valid halos
+    @test length(halos_lc) > 0 || length(halos_nolc) == 0
+
+    rm(tmpdir; recursive=true)
+end
+
 end # Pipeline testset

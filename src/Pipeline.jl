@@ -1,6 +1,7 @@
 module Pipeline
 
-import ..Cosmology: CosmologyParams, Dlinear_tables, Dlinear_ab
+import ..Cosmology: CosmologyParams, Dlinear_tables, Dlinear_ab,
+    ChiToZTable, build_chi_to_z, chi_to_z, peak_redshift
 import ..PowerSpectrum: load_pk, load_pk_nongaussian
 import ..NonGaussian: apply_fnl_correlated!, apply_fnl_uncorrelated!
 import ..RandomField: generate_grf, generate_grf_lcg
@@ -95,7 +96,13 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
     Omnr = cosmo.Om
     vTHvir0 = 100.0 * cosmo.h * sqrt(Omnr)
 
-    verbose && @info "Phase 0 done: n=$n, box=$boxsize, z=$z_out, fcrit=$fcrit_val, $(length(filters)) filters"
+    # Lightcone mode
+    ievol = Int(sp.ievol)
+    obs = (Float64(sp.cenx), Float64(sp.ceny), Float64(sp.cenz))
+    z_max = Float64(sp.maximum_redshift)
+    chi2z = ievol == 1 ? build_chi_to_z(cosmo; z_max=z_max + 1.0) : nothing
+
+    verbose && @info "Phase 0 done: n=$n, box=$boxsize, z=$z_out, fcrit=$fcrit_val, $(length(filters)) filters$(ievol == 1 ? ", lightcone mode" : "")"
 
     # ---- Phase 1: Field generation ----
     NonGauss = Int(sp.NonGauss)
@@ -194,19 +201,27 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
     npeaks = length(all_peaks)
     results = Vector{PeakResult}(undef, npeaks)
 
-    # Pre-compute per-peak ir2min
+    # Pre-compute per-peak ir2min and per-peak ZZon (for lightcone mode)
     ir2min_vec = Vector{Int}(undef, npeaks)
+    ZZon_vec = Vector{Float64}(undef, npeaks)
     nbuff_int = Int(sp.nbuff)
     rmax2rs_f = Float64(sp.rmax2rs)
     for idx in 1:npeaks
         Rf = peak_Rf[idx]
         ir2min_vec[idx] = min(floor(Int, (1.75 * Rf / alatt)^2),
                               floor(Int, (40.0 / alatt - 1)^2))
+        if ievol == 1
+            peak = all_peaks[idx]
+            z_pk = peak_redshift(obs[1], obs[2], obs[3], peak.x, peak.y, peak.z, chi2z)
+            ZZon_vec[idx] = 1.0 + z_pk
+        else
+            ZZon_vec[idx] = ZZon
+        end
     end
 
     Threads.@threads for idx in 1:npeaks
         results[idx] = analyse_peak(pg, all_peaks[idx].ipp, alatt,
-                                    ir2min_vec[idx], ZZon, peak_Rf[idx],
+                                    ir2min_vec[idx], ZZon_vec[idx], peak_Rf[idx],
                                     ct, shells;
                                     nbuff=nbuff_int,
                                     growth_tables=growth_tables,
@@ -218,27 +233,34 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
     halos_basic = HaloRecord[]
     halos_ext = ExtHaloRecord[]
 
-    # Pre-compute 2LPT velocity factor
-    Om_a_factor = if psi2_x !== nothing
-        Om_a = Omnr * a_out^3 / (Omnr * a_out^3 + cosmo.OL)
-        -(-3.0/7.0 * Om_a^(-1.0/143) * D_out^2)
-    else
-        0.0
-    end
-
     for idx in 1:npeaks
         result = results[idx]
         result.RTHL <= 0 && continue
+
+        # Lightcone: skip peaks beyond maximum redshift
+        z_pk = ZZon_vec[idx] - 1.0
+        if ievol == 1 && z_pk > z_max
+            continue
+        end
+
+        # Per-peak growth factor and velocity scaling
+        a_pk = 1.0 / ZZon_vec[idx]
+        _, _, D_pk = Dlinear_ab(a_pk, growth_tables)
 
         peak = all_peaks[idx]
         Rf = peak_Rf[idx]
         RTHL_phys = Float32(result.RTHL * alatt)
 
-        # 1LPT velocity: Sbar × D(z_out)
-        Sbar_vel = result.Sbar .* D_out
+        # 1LPT velocity: Sbar × D(z_peak)
+        Sbar_vel = result.Sbar .* D_pk
 
         # 2LPT velocity
-        Sbar2_vel = psi2_x !== nothing ? result.Sbar2 .* Om_a_factor : @SVector zeros(3)
+        Sbar2_vel = if psi2_x !== nothing
+            Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
+            result.Sbar2 .* (-(-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2))
+        else
+            @SVector zeros(3)
+        end
 
         # Virial velocity: v² = vTHvir0² × Fbarx × Srb × RTHL²
         vE2 = vTHvir0^2 * result.Fbarx * result.Srb * Float64(RTHL_phys)^2
