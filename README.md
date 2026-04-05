@@ -203,6 +203,51 @@ Beyond being a direct port, PeakPatch.jl incorporates several modernizations:
 - **Adaptive ODE solver** (OrdinaryDiffEq.jl Tsit5) as default for ellipsoidal
   collapse, with the original RK4 retained for Fortran validation (`solver=:rk4`)
 
+## Fortran Correspondence
+
+The table below maps each Fortran source file to its Julia equivalent, for
+reference when cross-checking implementations.
+
+### Core Pipeline (fully reimplemented)
+
+| Component | Fortran | Julia |
+|---|---|---|
+| Cosmology & growth factor | `psubs_Dlinear.f90`, `cosmology.f90` | `Cosmology/Cosmology.jl` |
+| Power spectrum I/O | `modules/RandomField/pktable.f90`, `read_power_spectrum.f90` | `InitialConditions/PowerSpectrum.jl` |
+| Gaussian random field | `modules/RandomField/gaussian_field.f90`, `random.f90` | `InitialConditions/RandomField.jl` |
+| 1LPT/2LPT displacements | `modules/RandomField/chi2zeta.f90`, `make_zeta.f90` | `InitialConditions/LPT.jl` |
+| Non-Gaussian ICs (modes 1-2) | `modules/RandomField/RandomField.f90` (NonGauss 1-2) | `InitialConditions/NonGaussian.jl` |
+| Peak finding | `hpkvd/peakvoidsubs.f90` (`get_pks`) | `HaloFinder/PeakFind.jl` |
+| Filter/smoothing | `hpkvd/hpkvd.f90` (smoothing loops) | `HaloFinder/Filters.jl` |
+| Radial shell analysis | `hpkvd/peakvoidsubs.f90` (`get_homel`, `icloud`, `atab4`) | `HaloFinder/RadialShell.jl` |
+| Ellipsoidal collapse ODE | `modules/HomogeneousEllipsoid/HomogeneousEllipsoid.f90` | `EllipsoidalCollapse/EllipsoidalCollapse.jl` |
+| Collapse table (TabInterp) | `modules/TabInterp/TabInterp.f90` | `EllipsoidalCollapse/CollapseTable.jl` |
+| Binary params I/O | `modules/GlobalVariables/input_parameters.f90` | `IO/Parameters.jl` |
+| Catalog I/O (.pksc) | `hpkvd/io.f90`, `pks2map/pksc.f90` | `IO/Catalog.jl` |
+| Merger/exclusion | `merge_pkvd/merge_pkvd.f90`, `exclusion.f90` | `Merger/Exclusion.jl`, `Merger/Merger.jl` |
+| Multi-tile domain decomp | `modules/RandomField/tiles.f90` | `MultiTile.jl` |
+| MPI distribution | `modules/SlabToCube/SlabToCube.f90`, FFTW MPI | `ext/MPIExt.jl` (PencilFFTs) |
+| Python orchestration | `python/peak-patch.py`, `peakpatchtools.py` | `bin/peakpatch.jl` (TOML config) |
+| HDF5 catalog output | `python/catalogue_tools/pksc2hdf5.py` | `ext/HDF5Ext.jl` |
+
+### Not ported (replaced by XGPaint.jl)
+
+| Component | Fortran | Replacement |
+|---|---|---|
+| Halo → sky map projection | `pks2map/` (~1500 lines) | [XGPaint.jl](https://github.com/WebSky-CITA/XGPaint.jl) |
+| CMB map projection | `pks2cmb/` | XGPaint.jl |
+| Profile integration tables | `make_maptable.f90`, `make_cmbtable.f90` | XGPaint.jl |
+| HEALPix/FITS I/O | `modules/External/` (HEALPix, CFITSIO) | Healpix.jl / FITSIO.jl via XGPaint |
+| BBPS/line profiles | `bbps_profile.f90`, `line_profile.f90` | XGPaint.jl |
+
+### Not yet ported
+
+| Component | Fortran | Notes |
+|---|---|---|
+| Non-Gaussian modes 3-8 | `modules/RandomField/RandomField.f90` | Spike, deltaN, intermittent, and other bispectrum shapes |
+| Distributed fNL (MPI) | — | Modes 1-2 not yet applied in `MPIExt.jl` |
+| Instability module | `src/instability/` | Inflationary perturbation evolution (separate physics) |
+
 ## Validation
 
 PeakPatch.jl has been validated component-by-component against the Fortran
