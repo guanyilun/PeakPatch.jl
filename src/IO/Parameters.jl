@@ -2,8 +2,134 @@ module Parameters
 
 using TOML
 
+"""
+    PipelineConfig
+
+Clean configuration struct for the Julia pipeline. Uses keyword arguments with
+sensible Planck 2018 defaults. This is the primary config type for `run_tile`,
+`run_multitile`, and `run_multitile_mpi`.
+
+Construct from:
+- Keyword arguments: `PipelineConfig(n=128, boxsize=200.0, ...)`
+- TOML config: `PipelineConfig(TOML.parsefile("config.toml"))`
+- Legacy binary: `PipelineConfig(read_params_bin("hpkvd_params.bin"))`
+"""
+Base.@kwdef struct PipelineConfig
+    # Cosmology (Omx is CDM-only; total Om = Omx + OmB)
+    Omx::Float64 = 0.266
+    OmB::Float64 = 0.049
+    Omvac::Float64 = 0.685
+    h::Float64 = 0.674
+    # Grid
+    n::Int = 142
+    boxsize::Float64 = 200.0
+    nbuff::Int = 4
+    # Redshift & lightcone
+    z_out::Float64 = 0.0
+    z_max::Float64 = 0.0
+    ievol::Int = 0
+    cenx::Float64 = 0.0
+    ceny::Float64 = 0.0
+    cenz::Float64 = 0.0
+    # Physics
+    ilpt::Int = 2
+    ioutshear::Int = 0
+    wsmooth::Int = 0
+    rmax2rs::Float64 = 1.0
+    NonGauss::Int = 0
+    fNL::Float64 = 0.0
+    # Files
+    pkfile::String = "pk.dat"
+    filterfile::String = "filters.dat"
+    tabfile::String = "HomelTab.dat"
+    fileout::String = "catalog.pksc"
+end
+
+"""
+    PipelineConfig(config::Dict{String,Any})
+
+Construct from a parsed TOML configuration dictionary.
+
+# TOML sections and keys
+
+```toml
+[cosmology]
+Om   = 0.315    # total Omega_matter (CDM + baryon)
+OB   = 0.049    # Omega_baryon
+OL   = 0.685    # Omega_Lambda
+h    = 0.674
+
+[grid]
+n      = 142    # grid cells per dimension
+boxsize = 200.0 # box size [Mpc/h]
+nbuff  = 4      # buffer cells
+cenx   = 0.0    # observer x position [Mpc/h]
+ceny   = 0.0    # observer y position [Mpc/h]
+cenz   = 0.0    # observer z position [Mpc/h]
+
+[run]
+z_out     = 0.0   # output redshift
+z_max     = 0.0   # maximum redshift (lightcone horizon)
+ievol     = 0     # 0: global z, 1: lightcone (per-peak z)
+ilpt      = 2     # LPT order (1 or 2)
+ioutshear = 0     # 0: basic catalog, ≥1: extended catalog
+wsmooth   = 0     # smoothing window (0=Gaussian, 1=tophat)
+rmax2rs   = 1.0   # max shell radius / filter radius
+NonGauss  = 0     # non-Gaussian mode (0=none, 1=correlated fNL, 2=uncorrelated)
+fNL       = 0.0
+
+[files]
+pk         = "pk.dat"
+filterbank = "filters.dat"
+homeltab   = "HomelTab.dat"
+output     = "catalog.pksc"
+```
+"""
+function PipelineConfig(config::Dict{String,Any})
+    cosmo = get(config, "cosmology", Dict{String,Any}())
+    grid  = get(config, "grid",      Dict{String,Any}())
+    run   = get(config, "run",       Dict{String,Any}())
+    files = get(config, "files",     Dict{String,Any}())
+
+    Om_total = Float64(get(cosmo, "Om", 0.315))
+    OmB      = Float64(get(cosmo, "OB", 0.049))
+    Omx      = Om_total - OmB
+
+    z_out = Float64(get(run, "z_out", 0.0))
+
+    PipelineConfig(
+        Omx      = Omx,
+        OmB      = OmB,
+        Omvac    = Float64(get(cosmo, "OL", 0.685)),
+        h        = Float64(get(cosmo, "h",  0.674)),
+        n        = Int(get(grid, "n", 142)),
+        boxsize  = Float64(get(grid, "boxsize", get(grid, "dL_box", 200.0))),
+        nbuff    = Int(get(grid, "nbuff", 4)),
+        z_out    = z_out,
+        z_max    = Float64(get(run, "z_max", z_out)),
+        ievol    = Int(get(run, "ievol", 0)),
+        cenx     = Float64(get(grid, "cenx", 0.0)),
+        ceny     = Float64(get(grid, "ceny", 0.0)),
+        cenz     = Float64(get(grid, "cenz", 0.0)),
+        ilpt      = Int(get(run, "ilpt", 2)),
+        ioutshear = Int(get(run, "ioutshear", 0)),
+        wsmooth   = Int(get(run, "wsmooth", 0)),
+        rmax2rs   = Float64(get(run, "rmax2rs", 1.0)),
+        NonGauss  = Int(get(run, "NonGauss", 0)),
+        fNL       = Float64(get(run, "fNL", 0.0)),
+        pkfile        = get(files, "pk", "pk.dat"),
+        filterfile    = get(files, "filterbank", "filters.dat"),
+        tabfile       = get(files, "homeltab", "HomelTab.dat"),
+        fileout       = get(files, "output", "catalog.pksc"),
+    )
+end
+
+# ============================================================
+# Legacy Fortran binary format (FortranParams)
+# ============================================================
+
 # All parameters from hpkvd_params.bin (Fortran ACCESS='STREAM')
-struct SimParams
+struct FortranParams
     # Integer-ish flags (stored as Float32 in binary for uniformity)
     ireadfield::Int32
     ioutshear::Int32
@@ -135,7 +261,7 @@ function read_params_bin(path::String)
         fileout       = _read_string(io)
         TabInterpFile = _read_string(io)
 
-        SimParams(
+        FortranParams(
             ireadfield, ioutshear, global_redshift, maximum_redshift, num_redshifts,
             Omx, OmB, Omvac, h, nlx, nly, nlz,
             dcore_box, dL_box, cenx, ceny, cenz, nbuff, next, ievol,
@@ -165,7 +291,7 @@ function _write_string(io::IO, s::String)
 end
 
 """Write parameters in Fortran-compatible binary format (matching peak-patch.py layout)."""
-function write_params_bin(path::String, p::SimParams)
+function write_params_bin(path::String, p::FortranParams)
     open(path, "w") do io
         # 46 fields with correct Int32/Float32 types matching the Python writer
         write(io, Int32(p.ireadfield))
@@ -226,135 +352,35 @@ function write_params_bin(path::String, p::SimParams)
 end
 
 """
-    SimParams(config::Dict{String,Any})
+    PipelineConfig(sp::FortranParams)
 
-Construct `SimParams` from a parsed TOML configuration.
-
-# TOML sections and keys
-
-```toml
-[cosmology]
-Om   = 0.315    # total Omega_matter (CDM + baryon)
-OB   = 0.049    # Omega_baryon
-OL   = 0.685    # Omega_Lambda
-h    = 0.674
-
-[grid]
-n      = 142    # grid cells per dimension (nlx = nly = nlz)
-dL_box = 200.0  # box size [Mpc/h]
-nbuff  = 4      # buffer cells
-
-[run]
-z_out     = 0.0   # output redshift
-ilpt      = 2     # LPT order (1 or 2)
-seed      = 42    # RNG seed (not stored in SimParams, used by driver)
-ioutshear = 0     # 0: basic catalog, ≥1: extended catalog
-wsmooth   = 0     # smoothing window (0=Gaussian, 1=tophat)
-rmax2rs   = 1.0   # max shell radius / filter radius
-NonGauss  = 0     # non-Gaussian mode (0=none, 1=correlated fNL, 2=uncorrelated)
-fNL       = 0.0
-
-[files]
-pk         = "pk.dat"
-filterbank = "filters.dat"
-homeltab   = "HomelTab.dat"
-output     = "catalog.pksc"
-
-[output]
-format = "pksc"   # "pksc", "hdf5", or "both" (read by driver, not SimParams)
-```
+Convert a legacy `FortranParams` (from Fortran binary) to `PipelineConfig`.
 """
-function SimParams(config::Dict{String,Any})
-    cosmo = get(config, "cosmology", Dict{String,Any}())
-    grid  = get(config, "grid",      Dict{String,Any}())
-    run   = get(config, "run",       Dict{String,Any}())
-    files = get(config, "files",     Dict{String,Any}())
-
-    # Cosmology: Om is total matter, Omx = Om - OB (CDM-only, as Fortran expects)
-    Om_total = Float32(get(cosmo, "Om", 0.315))
-    OmB      = Float32(get(cosmo, "OB", 0.049))
-    Omx      = Om_total - OmB
-    Omvac    = Float32(get(cosmo, "OL", 0.685))
-    h        = Float32(get(cosmo, "h",  0.674))
-
-    # Grid
-    n     = Int32(get(grid, "n",      142))
-    dL    = Float32(get(grid, "dL_box", 200.0))
-    nbuff = Int32(get(grid, "nbuff",  4))
-
-    # Run parameters
-    z_out     = Float32(get(run, "z_out",     0.0))
-    z_max     = Float32(get(run, "z_max",     z_out))
-    ievol     = Int32(get(run, "ievol",       0))
-    ilpt      = Int32(get(run, "ilpt",        2))
-    ioutshear = Int32(get(run, "ioutshear",   0))
-    wsmooth   = Int32(get(run, "wsmooth",     0))
-    rmax2rs   = Float32(get(run, "rmax2rs",   1.0))
-    NonGauss  = Int32(get(run, "NonGauss",    0))
-    fNL       = Float32(get(run, "fNL",       0.0))
-
-    # Files
-    pkfile        = get(files, "pk",         "pk.dat")
-    filterfile    = get(files, "filterbank", "filters.dat")
-    TabInterpFile = get(files, "homeltab",   "HomelTab.dat")
-    fileout       = get(files, "output",     "catalog.pksc")
-
-    # Read collapse table to get its grid dimensions
-    ct_nx = Int32(0); ct_ny = Int32(0); ct_nz = Int32(0)
-    ct_x1 = Float32(0); ct_x2 = Float32(0)
-    ct_y1 = Float32(0); ct_y2 = Float32(0)
-    ct_z1 = Float32(0); ct_z2 = Float32(0)
-    if isfile(TabInterpFile)
-        open(TabInterpFile, "r") do io
-            ct_nx = read(io, Int32)
-            ct_ny = read(io, Int32)
-            ct_nz = read(io, Int32)
-            ct_x1 = read(io, Float32); ct_x2 = read(io, Float32)
-            ct_y1 = read(io, Float32); ct_y2 = read(io, Float32)
-            ct_z1 = read(io, Float32); ct_z2 = read(io, Float32)
-        end
-    end
-
-    # Observer position (defaults to grid center)
-    cenx = Float32(get(grid, "cenx", 0.0))
-    ceny = Float32(get(grid, "ceny", 0.0))
-    cenz = Float32(get(grid, "cenz", 0.0))
-
-    SimParams(
-        Int32(0),           # ireadfield
-        ioutshear,
-        z_out,
-        z_max,              # maximum_redshift
-        Int32(1),           # num_redshifts
-        Omx, OmB, Omvac, h,
-        n, n, n,            # nlx, nly, nlz
-        Float32((n - 2*nbuff) * Float64(dL) / n),  # dcore_box
-        dL,
-        cenx, ceny, cenz,
-        nbuff,
-        Int32(0),           # next
-        ievol,
-        Int32(1),           # ivir_strat
-        Float32(1.686), Float32(1.686), Float32(1.686),  # fcoll_3, _2, _1
-        Float32(1.686),     # dcrit
-        Int32(0),           # iforce_strat
-        ct_nx, ct_ny, ct_nz,
-        ct_x1, ct_x2, ct_y1, ct_y2, ct_z1, ct_z2,
-        wsmooth,
-        rmax2rs,
-        Int32(0),           # ioutfield
-        NonGauss, fNL,
-        Float32(0), Float32(0), Float32(0),  # A_nG, B_nG, R_nG
-        ilpt,
-        Int32(0),           # iwant_field_part
-        Int32(0),           # largerun
-        "",                 # fielddir
-        "",                 # densfilein
-        "",                 # filein
-        pkfile,
-        filterfile,
-        fileout,
-        TabInterpFile
+function PipelineConfig(sp::FortranParams)
+    PipelineConfig(
+        Omx       = Float64(sp.Omx),
+        OmB       = Float64(sp.OmB),
+        Omvac     = Float64(sp.Omvac),
+        h         = Float64(sp.h),
+        n         = Int(sp.nlx),
+        boxsize   = Float64(sp.dL_box),
+        nbuff     = Int(sp.nbuff),
+        z_out     = Float64(sp.global_redshift),
+        z_max     = Float64(sp.maximum_redshift),
+        ievol     = Int(sp.ievol),
+        cenx      = Float64(sp.cenx),
+        ceny      = Float64(sp.ceny),
+        cenz      = Float64(sp.cenz),
+        ilpt      = Int(sp.ilpt),
+        ioutshear = Int(sp.ioutshear),
+        wsmooth   = Int(sp.wsmooth),
+        rmax2rs   = Float64(sp.rmax2rs),
+        NonGauss  = Int(sp.NonGauss),
+        fNL       = Float64(sp.fNL),
+        pkfile    = sp.pkfile,
+        filterfile = sp.filterfile,
+        tabfile   = sp.TabInterpFile,
+        fileout   = sp.fileout,
     )
 end
 

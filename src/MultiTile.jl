@@ -10,7 +10,7 @@ import ..Filters: read_filterbank, smooth_field
 import ..PeakFind: PeakCandidate, find_peaks
 import ..RadialShell: ShellCell, PeakGrid, PeakResult, no_collapse,
     precompute_shells, analyse_peak, fsc_of_z
-import ..Parameters: SimParams
+import ..Parameters: PipelineConfig
 import ..Catalog: HaloRecord, ExtHaloRecord, write_pksc, read_pksc
 import ..CollapseTable: CollapseTableInterp, read_homeltab
 
@@ -84,7 +84,7 @@ function tile_center(it::Int, jt::Int, kt::Int, ntile::Int, dcore_box::Float64)
 end
 
 """
-    run_multitile(sp; ntile, seed=42, verbose=false, ...) -> Vector{HaloRecord/ExtHaloRecord}
+    run_multitile(cfg; ntile, seed=42, verbose=false, ...) -> Vector{HaloRecord/ExtHaloRecord}
 
 Serial multi-tile driver.  Generates a Gaussian random field on the full
 `(nsub*ntile + 2*nbuff)³` periodic grid, computes LPT displacements globally,
@@ -92,42 +92,41 @@ then processes each of the `ntile³` tiles sequentially using the existing
 single-tile peak finder and shell analysis.
 
 # Grid geometry (matches Fortran hpkvd)
-- `nmesh = sp.nlx`  (tile size including buffer)
+- `nmesh = cfg.n`  (tile size including buffer)
 - `nsub  = nmesh - 2*nbuff`  (core tile size, no overlap)
 - `N     = nsub*ntile + 2*nbuff`  (full FFT grid per dimension)
-- `boxsize_full = N * alatt`  where `alatt = dL_box / nmesh`
-- For `ntile=1`:  `N = nmesh`, `boxsize_full = dL_box` (identical to `run_tile`)
+- `boxsize_full = N * alatt`  where `alatt = cfg.boxsize / nmesh`
+- For `ntile=1`:  `N = nmesh`, `boxsize_full = cfg.boxsize` (identical to `run_tile`)
 
 Tile (it,jt,kt) occupies global cells `(it-1)*nsub+1` to `(it-1)*nsub+nmesh`
 in each dimension.  Tiles overlap by `2*nbuff` cells with neighbours; peaks
 are only found in the `nsub³` core (skipping `nbuff` cells at each edge), so
 no deduplication is needed.
 """
-function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
+function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                        verbose::Bool=false, use_lcg::Bool=false,
                        fortran_compat::Bool=false)
     # ---- Geometry ----
-    nmesh = Int(sp.nlx)
-    nbuff = Int(sp.nbuff)
+    nmesh = cfg.n
+    nbuff = cfg.nbuff
     nsub = nmesh - 2 * nbuff
     N = nsub * ntile + 2 * nbuff
-    alatt = Float64(sp.dL_box) / nmesh
+    alatt = cfg.boxsize / nmesh
     boxsize_full = N * alatt
     dcore_box = nsub * alatt
 
     # ---- Phase 0: Initialization ----
-    Om_total = Float64(sp.Omx) + Float64(sp.OmB)
-    cosmo = CosmologyParams(Om_total, Float64(sp.OmB), Float64(sp.Omvac),
-                            Float64(sp.h), 0.965, 0.808)
+    Om_total = cfg.Omx + cfg.OmB
+    cosmo = CosmologyParams(Om_total, cfg.OmB, cfg.Omvac, cfg.h, 0.965, 0.808)
     growth_tables = Dlinear_tables(cosmo)
 
-    ct_array, ct_params = read_homeltab(sp.TabInterpFile)
+    ct_array, ct_params = read_homeltab(cfg.tabfile)
     ct = CollapseTableInterp(ct_array, ct_params)
 
-    filters = read_filterbank(sp.filterfile)
+    filters = read_filterbank(cfg.filterfile)
     sort!(filters; by=f -> -f[3])
 
-    z_out = Float64(sp.global_redshift)
+    z_out = cfg.z_out
     a_out = 1.0 / (1.0 + z_out)
     ZZon = 1.0 + z_out
 
@@ -140,19 +139,19 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
 
     Omnr = cosmo.Om
     vTHvir0 = 100.0 * cosmo.h * sqrt(Omnr)
-    ioutshear = Int(sp.ioutshear)
-    wsmooth = Int(sp.wsmooth)
+    ioutshear = cfg.ioutshear
+    wsmooth = cfg.wsmooth
 
     # Lightcone mode
-    ievol = Int(sp.ievol)
-    obs = (Float64(sp.cenx), Float64(sp.ceny), Float64(sp.cenz))
-    z_max = Float64(sp.maximum_redshift)
+    ievol = cfg.ievol
+    obs = (cfg.cenx, cfg.ceny, cfg.cenz)
+    z_max = cfg.z_max
     chi2z = ievol == 1 ? build_chi_to_z(cosmo; z_max=z_max + 1.0) : nothing
 
     verbose && @info "Phase 0: N=$N, box=$(round(boxsize_full;digits=2)), ntile=$ntile, nsub=$nsub, nmesh=$nmesh, fcrit=$fcrit_val$(ievol == 1 ? ", lightcone mode" : "")"
 
     # ---- Phase 1: Field generation on full grid ----
-    pk = load_pk(sp.pkfile)
+    pk = load_pk(cfg.pkfile)
     delta_full = if use_lcg
         generate_grf_lcg(N, pk, boxsize_full, seed; fortran_compat=fortran_compat)
     else
@@ -163,24 +162,23 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
     delta_k_full = rfft(delta_full)
 
     # Non-Gaussian corrections (modes 1-2)
-    NonGauss = Int(sp.NonGauss)
-    if NonGauss in (1, 2)
-        _, tf_interp = load_pk_nongaussian(sp.pkfile)
-        if NonGauss == 1
+    if cfg.NonGauss in (1, 2)
+        _, tf_interp = load_pk_nongaussian(cfg.pkfile)
+        if cfg.NonGauss == 1
             apply_fnl_correlated!(delta_full, delta_k_full, pk, tf_interp,
-                                  N, boxsize_full, Float64(sp.fNL))
+                                  N, boxsize_full, cfg.fNL)
             delta_k_full = rfft(delta_full)
         else
             apply_fnl_uncorrelated!(delta_full, delta_k_full, pk, tf_interp,
-                                    N, boxsize_full, Float64(sp.fNL), seed;
+                                    N, boxsize_full, cfg.fNL, seed;
                                     use_lcg=use_lcg)
         end
-        verbose && @info "  Applied fNL=$(sp.fNL) (mode $NonGauss)"
+        verbose && @info "  Applied fNL=$(cfg.fNL) (mode $(cfg.NonGauss))"
     end
 
     psi_x_full, psi_y_full, psi_z_full = displacements_1lpt(delta_k_full, N, boxsize_full)
 
-    ilpt = Int(sp.ilpt)
+    ilpt = cfg.ilpt
     psi2_x_full = psi2_y_full = psi2_z_full = nothing
     if ilpt >= 2
         psi2_x_full, psi2_y_full, psi2_z_full = displacements_2lpt(delta_k_full, N, boxsize_full)
@@ -316,7 +314,6 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
         npeaks_tile = length(peaks)
         tile_results = Vector{PeakResult}(undef, npeaks_tile)
         tile_Rfs = tile_peak_Rf[tid]
-        rmax2rs_f = Float64(sp.rmax2rs)
 
         ZZon_tile = Vector{Float64}(undef, npeaks_tile)
         for idx in 1:npeaks_tile
@@ -337,7 +334,7 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
                                              ZZon_tile[idx], Rf, ct, shells;
                                              nbuff=nbuff,
                                              growth_tables=growth_tables,
-                                             rmax2rs=rmax2rs_f,
+                                             rmax2rs=cfg.rmax2rs,
                                              fortran_compat=fortran_compat)
         end
 
@@ -408,13 +405,13 @@ function run_multitile(sp::SimParams; ntile::Int, seed::Integer=42,
     # ---- Phase 5: Write catalog ----
     if ioutshear >= 1
         RTHLmax = isempty(halos_ext) ? Float32(0) : maximum(h.RTHL for h in halos_ext)
-        write_pksc(sp.fileout, halos_ext, RTHLmax, Float32(z_out))
+        write_pksc(cfg.fileout, halos_ext, RTHLmax, Float32(z_out))
     else
         RTHLmax = isempty(halos_basic) ? Float32(0) : maximum(h.RTHL for h in halos_basic)
-        write_pksc(sp.fileout, halos_basic, RTHLmax, Float32(z_out))
+        write_pksc(cfg.fileout, halos_basic, RTHLmax, Float32(z_out))
     end
 
-    verbose && @info "Phase 5 done: wrote $(length(halos)) halos to $(sp.fileout)"
+    verbose && @info "Phase 5 done: wrote $(length(halos)) halos to $(cfg.fileout)"
     return halos
 end
 

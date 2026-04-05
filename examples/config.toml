@@ -12,9 +12,9 @@ OL = 0.685      # Omega_Lambda
 h  = 0.674      # H0 / (100 km/s/Mpc)
 
 [grid]
-n      = 142     # grid cells per dimension
-dL_box = 200.0   # box size [Mpc/h]
-nbuff  = 4       # buffer cells per side
+n       = 142     # grid cells per dimension
+boxsize = 200.0   # box size [Mpc/h]
+nbuff   = 4       # buffer cells per side
 
 [run]
 z_out     = 0.0   # output redshift

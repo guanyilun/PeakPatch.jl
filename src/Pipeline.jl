@@ -10,7 +10,7 @@ import ..Filters: read_filterbank, smooth_field
 import ..PeakFind: PeakCandidate, find_peaks
 import ..RadialShell: ShellCell, PeakGrid, PeakResult, no_collapse,
     precompute_shells, analyse_peak, fsc_of_z
-import ..Parameters: SimParams
+import ..Parameters: PipelineConfig
 import ..Catalog: HaloRecord, ExtHaloRecord, write_pksc, read_pksc
 import ..CollapseTable: CollapseTableInterp, read_homeltab
 
@@ -51,7 +51,7 @@ function _compute_laplacian(delta_k, n::Int, boxsize::Float64)
 end
 
 """
-    run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false) -> Vector{HaloRecord}
+    run_tile(cfg::PipelineConfig; seed::Integer=42, verbose::Bool=false) -> Vector{HaloRecord}
 
 Single-tile, single-redshift driver that runs the full PeakPatch pipeline:
   Phase 0: Initialize cosmology, growth tables, collapse table, filter bank
@@ -63,25 +63,24 @@ Single-tile, single-redshift driver that runs the full PeakPatch pipeline:
 
 Returns the vector of `HaloRecord`.
 """
-function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
+function run_tile(cfg::PipelineConfig; seed::Integer=42, verbose::Bool=false,
                      use_lcg::Bool=false, fortran_compat::Bool=false)
     # ---- Phase 0: Initialization ----
-    Om_total = Float64(sp.Omx) + Float64(sp.OmB)   # Omx is CDM-only; total = CDM + baryon
-    cosmo = CosmologyParams(Om_total, Float64(sp.OmB), Float64(sp.Omvac),
-                            Float64(sp.h), 0.965, 0.808)
+    Om_total = cfg.Omx + cfg.OmB
+    cosmo = CosmologyParams(Om_total, cfg.OmB, cfg.Omvac, cfg.h, 0.965, 0.808)
     growth_tables = Dlinear_tables(cosmo)
 
-    ct_array, ct_params = read_homeltab(sp.TabInterpFile)
+    ct_array, ct_params = read_homeltab(cfg.tabfile)
     ct = CollapseTableInterp(ct_array, ct_params)
 
-    filters = read_filterbank(sp.filterfile)
+    filters = read_filterbank(cfg.filterfile)
     sort!(filters; by=f -> -f[3])  # sort descending by Rf (largest first)
 
-    n = Int(sp.nlx)
-    boxsize = Float64(sp.dL_box)
+    n = cfg.n
+    boxsize = cfg.boxsize
     alatt = boxsize / n
 
-    z_out = Float64(sp.global_redshift)
+    z_out = cfg.z_out
     a_out = 1.0 / (1.0 + z_out)
     ZZon = 1.0 + z_out
 
@@ -90,23 +89,22 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
     _, _, D_out = Dlinear_ab(a_out, growth_tables)
 
     Rfclmax = filters[1][3]
-    nhunt = min(Int(sp.nbuff) - 1, floor(Int, Rfclmax * 1.75 / alatt))
+    nhunt = min(cfg.nbuff - 1, floor(Int, Rfclmax * 1.75 / alatt))
     shells = precompute_shells(nhunt)
 
     Omnr = cosmo.Om
     vTHvir0 = 100.0 * cosmo.h * sqrt(Omnr)
 
     # Lightcone mode
-    ievol = Int(sp.ievol)
-    obs = (Float64(sp.cenx), Float64(sp.ceny), Float64(sp.cenz))
-    z_max = Float64(sp.maximum_redshift)
+    ievol = cfg.ievol
+    obs = (cfg.cenx, cfg.ceny, cfg.cenz)
+    z_max = cfg.z_max
     chi2z = ievol == 1 ? build_chi_to_z(cosmo; z_max=z_max + 1.0) : nothing
 
     verbose && @info "Phase 0 done: n=$n, box=$boxsize, z=$z_out, fcrit=$fcrit_val, $(length(filters)) filters$(ievol == 1 ? ", lightcone mode" : "")"
 
     # ---- Phase 1: Field generation ----
-    NonGauss = Int(sp.NonGauss)
-    pk = load_pk(sp.pkfile)
+    pk = load_pk(cfg.pkfile)
     delta = if use_lcg
         generate_grf_lcg(n, pk, boxsize, seed; fortran_compat=fortran_compat)
     else
@@ -117,23 +115,23 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
     delta_k = rfft(delta)
 
     # Apply non-Gaussian corrections (modes 1-2)
-    if NonGauss in (1, 2)
-        _, tf_interp = load_pk_nongaussian(sp.pkfile)
-        if NonGauss == 1
+    if cfg.NonGauss in (1, 2)
+        _, tf_interp = load_pk_nongaussian(cfg.pkfile)
+        if cfg.NonGauss == 1
             apply_fnl_correlated!(delta, delta_k, pk, tf_interp,
-                                  n, boxsize, Float64(sp.fNL))
+                                  n, boxsize, cfg.fNL)
             delta_k = rfft(delta)
         else  # NonGauss == 2
             apply_fnl_uncorrelated!(delta, delta_k, pk, tf_interp,
-                                    n, boxsize, Float64(sp.fNL), seed;
+                                    n, boxsize, cfg.fNL, seed;
                                     use_lcg=use_lcg)
         end
-        verbose && @info "  Applied fNL=$(sp.fNL) (mode $NonGauss)"
+        verbose && @info "  Applied fNL=$(cfg.fNL) (mode $(cfg.NonGauss))"
     end
 
     psi_x, psi_y, psi_z = displacements_1lpt(delta_k, n, boxsize)
 
-    if Int(sp.ilpt) >= 2
+    if cfg.ilpt >= 2
         psi2_x, psi2_y, psi2_z = displacements_2lpt(delta_k, n, boxsize)
     else
         psi2_x = psi2_y = psi2_z = nothing
@@ -148,11 +146,11 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
     peak_FcollvRf = Tf[]   # smoothed delta at peak location (per filter)
     peak_d2FRf = Tf[]      # Laplacian of smoothed delta at peak location
 
-    ioutshear = Int(sp.ioutshear)
+    ioutshear = cfg.ioutshear
 
     for ic in 1:length(filters)
         Rf = filters[ic][3]
-        delta_s = smooth_field(delta_k, n, boxsize, Rf, Int(sp.wsmooth);
+        delta_s = smooth_field(delta_k, n, boxsize, Rf, cfg.wsmooth;
                                fortran_compat=fortran_compat)
 
         # Compute smoothed Laplacian at this filter scale if needed
@@ -162,7 +160,7 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
                                  fortran_compat=fortran_compat)  # wsmooth=3 → SIGMA_2 (k²-weighted)
         end
 
-        new_peaks = find_peaks(delta_s, mask, 0.0, 0.0, 0.0, alatt, Int(sp.nbuff),
+        new_peaks = find_peaks(delta_s, mask, 0.0, 0.0, 0.0, alatt, cfg.nbuff,
                                fcrit, Rf)
         append!(all_peaks, new_peaks)
         append!(peak_Rf, fill(Rf, length(new_peaks)))
@@ -189,7 +187,7 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
     # ---- Phase 4: Radial shell analysis → catalog ----
     # Compute Laplacian field if extended output is needed
     lapd = nothing
-    if Int(sp.ioutshear) >= 1
+    if ioutshear >= 1
         lapd = _compute_laplacian(delta_k, n, boxsize)
     end
 
@@ -204,8 +202,6 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
     # Pre-compute per-peak ir2min and per-peak ZZon (for lightcone mode)
     ir2min_vec = Vector{Int}(undef, npeaks)
     ZZon_vec = Vector{Float64}(undef, npeaks)
-    nbuff_int = Int(sp.nbuff)
-    rmax2rs_f = Float64(sp.rmax2rs)
     for idx in 1:npeaks
         Rf = peak_Rf[idx]
         ir2min_vec[idx] = min(floor(Int, (1.75 * Rf / alatt)^2),
@@ -223,9 +219,9 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
         results[idx] = analyse_peak(pg, all_peaks[idx].ipp, alatt,
                                     ir2min_vec[idx], ZZon_vec[idx], peak_Rf[idx],
                                     ct, shells;
-                                    nbuff=nbuff_int,
+                                    nbuff=cfg.nbuff,
                                     growth_tables=growth_tables,
-                                    rmax2rs=rmax2rs_f,
+                                    rmax2rs=cfg.rmax2rs,
                                     fortran_compat=fortran_compat)
     end
 
@@ -301,14 +297,14 @@ function run_tile(sp::SimParams; seed::Integer=42, verbose::Bool=false,
     # ---- Phase 5: Write ----
     if ioutshear >= 1
         RTHLmax = isempty(halos_ext) ? Float32(0) : maximum(h.RTHL for h in halos_ext)
-        write_pksc(sp.fileout, halos_ext, RTHLmax, Float32(z_out))
+        write_pksc(cfg.fileout, halos_ext, RTHLmax, Float32(z_out))
     else
         RTHLmax = isempty(halos_basic) ? Float32(0) : maximum(h.RTHL for h in halos_basic)
-        write_pksc(sp.fileout, halos_basic, RTHLmax, Float32(z_out))
+        write_pksc(cfg.fileout, halos_basic, RTHLmax, Float32(z_out))
     end
 
     halos = ioutshear >= 1 ? halos_ext : halos_basic
-    verbose && @info "Phase 5 done: wrote $(length(halos)) halos to $(sp.fileout)"
+    verbose && @info "Phase 5 done: wrote $(length(halos)) halos to $(cfg.fileout)"
 
     return halos
 end

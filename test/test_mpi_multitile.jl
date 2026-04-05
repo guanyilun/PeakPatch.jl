@@ -16,7 +16,7 @@ comm = MPI.COMM_WORLD
 rank = MPI.Comm_rank(comm)
 nranks = MPI.Comm_size(comm)
 
-# ---------- helpers (same as test_multitile.jl) ----------
+# ---------- helpers ----------
 
 function _make_pk_file(dir)
     path = joinpath(dir, "test_pk.dat")
@@ -41,31 +41,30 @@ function _make_filter_file(dir)
     return path
 end
 
-function _make_simparams(dir; n=64, boxsize=200.0, z=0.0, ilpt=1, nbuff=4,
-                         ioutshear=0, rmax2rs=0.0)
+function _make_config(dir; n=64, boxsize=200.0, z=0.0, ilpt=1, nbuff=4,
+                      ioutshear=0, rmax2rs=0.0)
     pkfile = _make_pk_file(dir)
     filterfile = _make_filter_file(dir)
     outfile = joinpath(dir, "test_out.pksc")
     tabfile = joinpath(@__DIR__, "data", "HomelTab_julia.dat")
 
-    nsub = n - 2 * nbuff
-    dcore_box = boxsize * nsub / n
-
-    PeakPatch.SimParams(
-        Int32(0), Int32(ioutshear), Float32(z), Float32(z), Int32(1),
-        Float32(0.315 - 0.049), Float32(0.049), Float32(0.685), Float32(0.674),
-        Int32(n), Int32(n), Int32(n), Float32(dcore_box), Float32(boxsize),
-        Float32(0.0), Float32(0.0), Float32(0.0),
-        Int32(nbuff), Int32(0), Int32(0), Int32(2),
-        Float32(0.171), Float32(0.171), Float32(0.01), Float32(200.0), Int32(4),
-        Int32(50), Int32(20), Int32(20),
-        Float32(log10(1.5)), Float32(log10(8.0)),
-        Float32(0.0), Float32(0.5),
-        Float32(-0.9999), Float32(0.9999),
-        Int32(0), Float32(rmax2rs), Int32(1),
-        Int32(0), Float32(0.0), Float32(0.0), Float32(0.0), Float32(0.0),
-        Int32(ilpt), Int32(0), Int32(0),
-        "", "", "", pkfile, filterfile, outfile, tabfile
+    PipelineConfig(
+        Omx       = 0.315 - 0.049,
+        OmB       = 0.049,
+        Omvac     = 0.685,
+        h         = 0.674,
+        n         = n,
+        boxsize   = boxsize,
+        nbuff     = nbuff,
+        z_out     = z,
+        z_max     = z,
+        ilpt      = ilpt,
+        ioutshear = ioutshear,
+        rmax2rs   = rmax2rs,
+        pkfile    = pkfile,
+        filterfile = filterfile,
+        fileout   = outfile,
+        tabfile   = tabfile,
     )
 end
 
@@ -76,35 +75,22 @@ if nranks == 1
     @testset "MPI np=1, ntile=1 ≈ serial" begin
         tmpdir = mktempdir()
 
-        sp_serial = _make_simparams(tmpdir; n=32, boxsize=100.0, z=0.0, ilpt=1, nbuff=3)
-        halos_serial = PeakPatch.MultiTile.run_multitile(sp_serial; ntile=1, seed=42,
+        cfg_serial = _make_config(tmpdir; n=32, boxsize=100.0, z=0.0, ilpt=1, nbuff=3)
+        halos_serial = PeakPatch.MultiTile.run_multitile(cfg_serial; ntile=1, seed=42,
                                                           verbose=false)
 
-        outfile_mpi = joinpath(tmpdir, "test_out_mpi.pksc")
-        sp_mpi = PeakPatch.SimParams(
-            sp_serial.ireadfield, sp_serial.ioutshear,
-            sp_serial.global_redshift, sp_serial.maximum_redshift,
-            sp_serial.num_redshifts, sp_serial.Omx, sp_serial.OmB,
-            sp_serial.Omvac, sp_serial.h,
-            sp_serial.nlx, sp_serial.nly, sp_serial.nlz,
-            sp_serial.dcore_box, sp_serial.dL_box,
-            sp_serial.cenx, sp_serial.ceny, sp_serial.cenz,
-            sp_serial.nbuff, sp_serial.next, sp_serial.ievol,
-            sp_serial.ivir_strat, sp_serial.fcoll_3, sp_serial.fcoll_2,
-            sp_serial.fcoll_1, sp_serial.dcrit, sp_serial.iforce_strat,
-            sp_serial.TabInterpNx, sp_serial.TabInterpNy, sp_serial.TabInterpNz,
-            sp_serial.TabInterpX1, sp_serial.TabInterpX2,
-            sp_serial.TabInterpY1, sp_serial.TabInterpY2,
-            sp_serial.TabInterpZ1, sp_serial.TabInterpZ2,
-            sp_serial.wsmooth, sp_serial.rmax2rs, sp_serial.ioutfield,
-            sp_serial.NonGauss, sp_serial.fNL, sp_serial.A_nG, sp_serial.B_nG, sp_serial.R_nG,
-            sp_serial.ilpt, sp_serial.iwant_field_part, sp_serial.largerun,
-            sp_serial.fielddir, sp_serial.densfilein, sp_serial.filein,
-            sp_serial.pkfile, sp_serial.filterfile,
-            outfile_mpi, sp_serial.TabInterpFile
+        cfg_mpi = PipelineConfig(
+            Omx = cfg_serial.Omx, OmB = cfg_serial.OmB,
+            Omvac = cfg_serial.Omvac, h = cfg_serial.h,
+            n = cfg_serial.n, boxsize = cfg_serial.boxsize, nbuff = cfg_serial.nbuff,
+            z_out = cfg_serial.z_out, z_max = cfg_serial.z_max, ilpt = cfg_serial.ilpt,
+            rmax2rs = cfg_serial.rmax2rs, pkfile = cfg_serial.pkfile,
+            filterfile = cfg_serial.filterfile,
+            fileout = joinpath(tmpdir, "test_out_mpi.pksc"),
+            tabfile = cfg_serial.tabfile,
         )
 
-        halos_mpi = PeakPatch.run_multitile_mpi(sp_mpi; ntile=1, seed=42,
+        halos_mpi = PeakPatch.run_multitile_mpi(cfg_mpi; ntile=1, seed=42,
                                                   verbose=false, comm=comm)
 
         @test length(halos_serial) == length(halos_mpi)
@@ -131,9 +117,9 @@ end
 # ============================================================
 @testset "MPI ntile=2 end-to-end (np=$nranks)" begin
     tmpdir = mktempdir()
-    sp = _make_simparams(tmpdir; n=20, boxsize=60.0, z=0.0, ilpt=1, nbuff=3)
+    cfg = _make_config(tmpdir; n=20, boxsize=60.0, z=0.0, ilpt=1, nbuff=3)
 
-    halos = PeakPatch.run_multitile_mpi(sp; ntile=2, seed=42, verbose=rank==0, comm=comm)
+    halos = PeakPatch.run_multitile_mpi(cfg; ntile=2, seed=42, verbose=rank==0, comm=comm)
 
     @test length(halos) >= 0  # should not error
 
@@ -150,17 +136,17 @@ end
 if nranks >= 2
     @testset "MPI ntile=2 np=$nranks ≈ serial" begin
         tmpdir = mktempdir()
-        sp = _make_simparams(tmpdir; n=20, boxsize=60.0, z=0.0, ilpt=1, nbuff=3)
+        cfg = _make_config(tmpdir; n=20, boxsize=60.0, z=0.0, ilpt=1, nbuff=3)
 
         # Serial reference (rank 0 only)
         halos_serial = nothing
         if rank == 0
-            halos_serial = PeakPatch.MultiTile.run_multitile(sp; ntile=2, seed=42,
+            halos_serial = PeakPatch.MultiTile.run_multitile(cfg; ntile=2, seed=42,
                                                               verbose=false)
         end
 
         # MPI run
-        halos_mpi = PeakPatch.run_multitile_mpi(sp; ntile=2, seed=42,
+        halos_mpi = PeakPatch.run_multitile_mpi(cfg; ntile=2, seed=42,
                                                   verbose=false, comm=comm)
 
         # run_multitile_mpi returns all halos on rank 0, empty on others

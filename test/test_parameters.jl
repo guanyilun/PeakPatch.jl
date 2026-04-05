@@ -1,6 +1,6 @@
 @testset "Parameters" begin
     @testset "Round-trip write/read params" begin
-        p = SimParams(
+        p = FortranParams(
             Int32(0),    Int32(1),    0.5f0,       5.0f0,       Int32(1),
             0.31f0,      0.049f0,     0.69f0,      0.67f0,
             Int32(4),    Int32(4),    Int32(4),
@@ -50,7 +50,7 @@
 
     @testset "Binary format compatibility" begin
         # Write params and verify byte-level structure
-        p = SimParams(
+        p = FortranParams(
             Int32(0),    Int32(1),    0.5f0,       5.0f0,       Int32(1),
             0.31f0,      0.049f0,     0.69f0,      0.67f0,
             Int32(4),    Int32(4),    Int32(4),
@@ -78,13 +78,13 @@
         rm(tmppath)
     end
 
-    @testset "SimParams from TOML" begin
+    @testset "PipelineConfig from TOML" begin
         config = Dict{String,Any}(
             "cosmology" => Dict{String,Any}(
                 "Om" => 0.315, "OB" => 0.049, "OL" => 0.685, "h" => 0.674
             ),
             "grid" => Dict{String,Any}(
-                "n" => 128, "dL_box" => 300.0, "nbuff" => 6
+                "n" => 128, "boxsize" => 300.0, "nbuff" => 6
             ),
             "run" => Dict{String,Any}(
                 "z_out" => 1.0, "ilpt" => 2, "ioutshear" => 1,
@@ -97,43 +97,80 @@
                 "output" => "my_catalog.pksc"
             )
         )
-        sp = SimParams(config)
+        cfg = PipelineConfig(config)
 
         # Cosmology: Omx = Om - OB
-        @test sp.Omx ≈ Float32(0.315 - 0.049)
-        @test sp.OmB ≈ Float32(0.049)
-        @test sp.Omvac ≈ Float32(0.685)
-        @test sp.h ≈ Float32(0.674)
+        @test cfg.Omx ≈ 0.315 - 0.049
+        @test cfg.OmB ≈ 0.049
+        @test cfg.Omvac ≈ 0.685
+        @test cfg.h ≈ 0.674
 
         # Grid
-        @test sp.nlx == Int32(128)
-        @test sp.nly == Int32(128)
-        @test sp.nlz == Int32(128)
-        @test sp.dL_box ≈ Float32(300.0)
-        @test sp.nbuff == Int32(6)
+        @test cfg.n == 128
+        @test cfg.boxsize ≈ 300.0
+        @test cfg.nbuff == 6
 
         # Run
-        @test sp.global_redshift ≈ Float32(1.0)
-        @test sp.ilpt == Int32(2)
-        @test sp.ioutshear == Int32(1)
-        @test sp.wsmooth == Int32(0)
-        @test sp.rmax2rs ≈ Float32(1.5)
+        @test cfg.z_out ≈ 1.0
+        @test cfg.ilpt == 2
+        @test cfg.ioutshear == 1
+        @test cfg.wsmooth == 0
+        @test cfg.rmax2rs ≈ 1.5
 
         # Files
-        @test sp.pkfile == "my_pk.dat"
-        @test sp.filterfile == "my_filters.dat"
-        @test sp.TabInterpFile == "my_HomelTab.dat"
-        @test sp.fileout == "my_catalog.pksc"
+        @test cfg.pkfile == "my_pk.dat"
+        @test cfg.filterfile == "my_filters.dat"
+        @test cfg.tabfile == "my_HomelTab.dat"
+        @test cfg.fileout == "my_catalog.pksc"
     end
 
-    @testset "SimParams from TOML — defaults" begin
-        # Minimal config: everything uses defaults
-        sp = SimParams(Dict{String,Any}())
-        @test sp.Omx ≈ Float32(0.315 - 0.049)
-        @test sp.nlx == Int32(142)
-        @test sp.global_redshift ≈ Float32(0.0)
-        @test sp.ilpt == Int32(2)
-        @test sp.pkfile == "pk.dat"
+    @testset "PipelineConfig from TOML — defaults" begin
+        cfg = PipelineConfig(Dict{String,Any}())
+        @test cfg.Omx ≈ 0.315 - 0.049
+        @test cfg.n == 142
+        @test cfg.z_out ≈ 0.0
+        @test cfg.ilpt == 2
+        @test cfg.pkfile == "pk.dat"
+    end
+
+    @testset "PipelineConfig from TOML — dL_box backward compat" begin
+        config = Dict{String,Any}(
+            "grid" => Dict{String,Any}("dL_box" => 500.0)
+        )
+        cfg = PipelineConfig(config)
+        @test cfg.boxsize ≈ 500.0
+    end
+
+    @testset "PipelineConfig from FortranParams" begin
+        sp = FortranParams(
+            Int32(0), Int32(1), 0.5f0, 5.0f0, Int32(1),
+            0.31f0, 0.049f0, 0.69f0, 0.67f0,
+            Int32(64), Int32(64), Int32(64),
+            0.0f0, 200.0f0, 1.0f0, 2.0f0, 3.0f0,
+            Int32(4), Int32(0), Int32(1),
+            Int32(1), 0.0f0, 0.0f0, 0.0f0, 200.0f0, Int32(0),
+            Int32(50), Int32(20), Int32(20),
+            -2.0f0, 2.0f0, 0.0f0, 0.5f0, -0.5f0, 0.5f0,
+            Int32(0), 1.5f0, Int32(0),
+            Int32(0), 0.0f0, 0.0f0, 0.0f0, 0.0f0,
+            Int32(2), Int32(0), Int32(0),
+            "", "", "", "pk.dat", "filters.dat", "out.pksc", "HomelTab.dat"
+        )
+        cfg = PipelineConfig(sp)
+
+        @test cfg.Omx ≈ Float64(sp.Omx)
+        @test cfg.n == 64
+        @test cfg.boxsize ≈ 200.0
+        @test cfg.z_out ≈ Float64(sp.global_redshift)
+        @test cfg.z_max ≈ Float64(sp.maximum_redshift)
+        @test cfg.ievol == 1
+        @test cfg.cenx ≈ 1.0
+        @test cfg.ceny ≈ 2.0
+        @test cfg.cenz ≈ 3.0
+        @test cfg.ilpt == 2
+        @test cfg.rmax2rs ≈ Float64(sp.rmax2rs)
+        @test cfg.pkfile == "pk.dat"
+        @test cfg.tabfile == "HomelTab.dat"
     end
 
     @testset "Read Fortran-produced hpkvd_params.bin" begin

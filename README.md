@@ -48,20 +48,20 @@ See [`examples/config.toml`](examples/config.toml) for all available options.
 using PeakPatch
 
 # Read parameters from a Fortran-compatible binary file
-sp = read_params_bin("hpkvd_params.bin")
-halos = run_tile(sp; seed=42, verbose=true)
+cfg = PipelineConfig(read_params_bin("hpkvd_params.bin"))
+halos = run_tile(cfg; seed=42, verbose=true)
 
 # Or from a TOML config
 using TOML
 config = TOML.parsefile("config.toml")
-sp = SimParams(config)
-halos = run_tile(sp; seed=42)
+cfg = PipelineConfig(config)
+halos = run_tile(cfg; seed=42)
 ```
 
 ### Multi-tile
 
 ```julia
-halos = run_multitile(sp; ntile=2, seed=42)
+halos = run_multitile(cfg; ntile=2, seed=42)
 
 # With merger (exclusion + volume reduction)
 merged = merge_catalog(halos; verbose=true)
@@ -79,7 +79,7 @@ Or programmatically:
 using MPI; MPI.Init()
 using PencilFFTs, PencilArrays, PeakPatch
 
-halos = run_multitile_mpi(sp; ntile=4, seed=42, comm=MPI.COMM_WORLD)
+halos = run_multitile_mpi(cfg; ntile=4, seed=42, comm=MPI.COMM_WORLD)
 ```
 
 ### Lightcone mode
@@ -114,7 +114,7 @@ and stitch the catalogs.
 ```julia
 using HDF5, PeakPatch
 
-halos = run_tile(sp; seed=42)
+halos = run_tile(cfg; seed=42)
 cosmo = CosmologyParams(0.315, 0.049, 0.685, 0.674, 0.965, 0.808)
 write_catalog_hdf5("catalog.h5", halos, cosmo)
 ```
@@ -178,7 +178,7 @@ PeakPatch.jl/
       EllipsoidalCollapse.jl       # Triaxial ellipsoid ODE (Tsit5 default, RK4 fallback)
       CollapseTable.jl             # zvir(F, e, p) interpolation table (Interpolations.jl)
     IO/
-      Parameters.jl                # SimParams: binary + TOML configuration
+      Parameters.jl                # PipelineConfig + FortranParams (binary I/O)
       Catalog.jl                   # .pksc catalog I/O (11-field and 33-field)
     Merger/
       Exclusion.jl                 # Spatial hash, sphere overlap, exclusion

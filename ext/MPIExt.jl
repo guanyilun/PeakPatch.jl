@@ -363,7 +363,7 @@ end
 # Main distributed driver
 # ============================================================
 
-function PeakPatch.run_multitile_mpi(sp::PeakPatch.SimParams;
+function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
         ntile::Int, seed::Integer=42, verbose::Bool=false,
         comm::MPI.Comm=MPI.COMM_WORLD)
 
@@ -371,27 +371,27 @@ function PeakPatch.run_multitile_mpi(sp::PeakPatch.SimParams;
     nranks = MPI.Comm_size(comm)
 
     # ---- Geometry (all ranks, no comm) ----
-    nmesh  = Int(sp.nlx)
-    nbuff  = Int(sp.nbuff)
+    nmesh  = cfg.n
+    nbuff  = cfg.nbuff
     nsub   = nmesh - 2 * nbuff
     N      = nsub * ntile + 2 * nbuff
-    alatt  = Float64(sp.dL_box) / nmesh
+    alatt  = cfg.boxsize / nmesh
     boxsize_full = N * alatt
     dcore_box = nsub * alatt
 
     # ---- Phase 0: Initialization (all ranks, no comm) ----
-    Om_total = Float64(sp.Omx) + Float64(sp.OmB)
-    cosmo = PeakPatch.CosmologyParams(Om_total, Float64(sp.OmB), Float64(sp.Omvac),
-                                       Float64(sp.h), 0.965, 0.808)
+    Om_total = cfg.Omx + cfg.OmB
+    cosmo = PeakPatch.CosmologyParams(Om_total, cfg.OmB, cfg.Omvac,
+                                       cfg.h, 0.965, 0.808)
     growth_tables = PeakPatch.Dlinear_tables(cosmo)
 
-    ct_array, ct_params = PeakPatch.read_homeltab(sp.TabInterpFile)
+    ct_array, ct_params = PeakPatch.read_homeltab(cfg.tabfile)
     ct = PeakPatch.CollapseTableInterp(ct_array, ct_params)
 
-    filters = PeakPatch.read_filterbank(sp.filterfile)
+    filters = PeakPatch.read_filterbank(cfg.filterfile)
     sort!(filters; by=f -> -f[3])
 
-    z_out  = Float64(sp.global_redshift)
+    z_out  = cfg.z_out
     a_out  = 1.0 / (1.0 + z_out)
     ZZon   = 1.0 + z_out
     fcrit  = Float32(PeakPatch.fsc_of_z(z_out, growth_tables))
@@ -403,17 +403,16 @@ function PeakPatch.run_multitile_mpi(sp::PeakPatch.SimParams;
 
     Omnr    = cosmo.Om
     vTHvir0 = 100.0 * cosmo.h * sqrt(Omnr)
-    ioutshear = Int(sp.ioutshear)
-    wsmooth   = Int(sp.wsmooth)
-    ilpt      = Int(sp.ilpt)
+    ioutshear = cfg.ioutshear
+    wsmooth   = cfg.wsmooth
+    ilpt      = cfg.ilpt
 
-    NonGauss = Int(sp.NonGauss)
-    NonGauss != 0 && error("run_multitile_mpi: NonGauss=$NonGauss not yet supported (only 0)")
+    cfg.NonGauss != 0 && error("run_multitile_mpi: NonGauss=$(cfg.NonGauss) not yet supported (only 0)")
 
     # Lightcone mode
-    ievol = Int(sp.ievol)
-    obs = (Float64(sp.cenx), Float64(sp.ceny), Float64(sp.cenz))
-    z_max = Float64(sp.maximum_redshift)
+    ievol = cfg.ievol
+    obs = (cfg.cenx, cfg.ceny, cfg.cenz)
+    z_max = cfg.z_max
     chi2z = ievol == 1 ? PeakPatch.build_chi_to_z(cosmo; z_max=z_max + 1.0) : nothing
 
     my_tiles = _assign_tiles(ntile, nranks, rank)
@@ -439,7 +438,7 @@ function PeakPatch.run_multitile_mpi(sp::PeakPatch.SimParams;
     plan = PencilFFTPlan((N, N, N), RFFT(), proc_dims, comm)
 
     # ---- Phase 1a: Distributed noise generation (Threefry counter-based RNG) ----
-    pk = PeakPatch.load_pk(sp.pkfile)
+    pk = PeakPatch.load_pk(cfg.pkfile)
 
     noise_pencil = PencilFFTs.allocate_input(plan)
     pen = PencilArrays.pencil(noise_pencil)
@@ -642,7 +641,7 @@ function PeakPatch.run_multitile_mpi(sp::PeakPatch.SimParams;
 
             result = PeakPatch.analyse_peak(pg, peak.ipp, alatt, ir2min, ZZon_pk, Rf, ct, shells;
                                              nbuff=nbuff, growth_tables=growth_tables,
-                                             rmax2rs=Float64(sp.rmax2rs))
+                                             rmax2rs=cfg.rmax2rs)
 
             if result.RTHL > 0
                 # Per-peak growth factor and velocity scaling

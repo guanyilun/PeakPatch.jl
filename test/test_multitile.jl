@@ -3,7 +3,7 @@
 using PeakPatch
 using Test
 
-# ---------- helpers (shared with test_pipeline.jl) ----------
+# ---------- helpers ----------
 
 function _make_pk_file(dir)
     path = joinpath(dir, "test_pk.dat")
@@ -28,70 +28,30 @@ function _make_filter_file(dir)
     return path
 end
 
-function _make_simparams(dir; n=64, boxsize=200.0, z=0.0, ilpt=1, nbuff=4,
-                         ioutshear=0, rmax2rs=0.0)
+function _make_config(dir; n=64, boxsize=200.0, z=0.0, ilpt=1, nbuff=4,
+                      ioutshear=0, rmax2rs=0.0)
     pkfile = _make_pk_file(dir)
     filterfile = _make_filter_file(dir)
     outfile = joinpath(dir, "test_out.pksc")
     tabfile = joinpath(@__DIR__, "data", "HomelTab_julia.dat")
 
-    nsub = n - 2 * nbuff
-    dcore_box = boxsize * nsub / n  # dcore_box = nsub * alatt = nsub * (boxsize/n)
-
-    PeakPatch.SimParams(
-        Int32(0),       # ireadfield
-        Int32(ioutshear), # ioutshear
-        Float32(z),     # global_redshift
-        Float32(z),     # maximum_redshift
-        Int32(1),       # num_redshifts
-        Float32(0.315 - 0.049), # Omx (CDM only)
-        Float32(0.049), # OmB
-        Float32(0.685), # Omvac
-        Float32(0.674), # h
-        Int32(n),       # nlx
-        Int32(n),       # nly
-        Int32(n),       # nlz
-        Float32(dcore_box), # dcore_box
-        Float32(boxsize),   # dL_box
-        Float32(0.0),   # cenx
-        Float32(0.0),   # ceny
-        Float32(0.0),   # cenz
-        Int32(nbuff),   # nbuff
-        Int32(0),       # next
-        Int32(0),       # ievol
-        Int32(2),       # ivir_strat
-        Float32(0.171), # fcoll_3
-        Float32(0.171), # fcoll_2
-        Float32(0.01),  # fcoll_1
-        Float32(200.0), # dcrit
-        Int32(4),       # iforce_strat
-        Int32(50),      # TabInterpNx
-        Int32(20),      # TabInterpNy
-        Int32(20),      # TabInterpNz
-        Float32(log10(1.5)), # TabInterpX1
-        Float32(log10(8.0)), # TabInterpX2
-        Float32(0.0),   # TabInterpY1
-        Float32(0.5),   # TabInterpY2
-        Float32(-0.9999), # TabInterpZ1
-        Float32(0.9999),  # TabInterpZ2
-        Int32(0),       # wsmooth (Gaussian)
-        Float32(rmax2rs), # rmax2rs
-        Int32(1),       # ioutfield
-        Int32(0),       # NonGauss
-        Float32(0.0),   # fNL
-        Float32(0.0),   # A_nG
-        Float32(0.0),   # B_nG
-        Float32(0.0),   # R_nG
-        Int32(ilpt),    # ilpt
-        Int32(0),       # iwant_field_part
-        Int32(0),       # largerun
-        "",             # fielddir
-        "",             # densfilein
-        "",             # filein
-        pkfile,         # pkfile
-        filterfile,     # filterfile
-        outfile,        # fileout
-        tabfile,        # TabInterpFile
+    PipelineConfig(
+        Omx       = 0.315 - 0.049,
+        OmB       = 0.049,
+        Omvac     = 0.685,
+        h         = 0.674,
+        n         = n,
+        boxsize   = boxsize,
+        nbuff     = nbuff,
+        z_out     = z,
+        z_max     = z,
+        ilpt      = ilpt,
+        ioutshear = ioutshear,
+        rmax2rs   = rmax2rs,
+        pkfile    = pkfile,
+        filterfile = filterfile,
+        fileout   = outfile,
+        tabfile   = tabfile,
     )
 end
 
@@ -164,7 +124,7 @@ end
     nmesh = 142
     nbuff = 4
     nsub = nmesh - 2 * nbuff  # 134
-    alatt = 200.0 / nmesh      # dL_box / nmesh
+    alatt = 200.0 / nmesh      # boxsize / nmesh
 
     # ntile=1: N = nmesh (matches single-tile)
     N1 = nsub * 1 + 2 * nbuff
@@ -186,32 +146,21 @@ end
 # =================================================================
 @testset "ntile=1 matches run_tile" begin
     tmpdir = mktempdir()
-    sp = _make_simparams(tmpdir; n=32, boxsize=100.0, z=0.0, ilpt=1, nbuff=3)
+    cfg = _make_config(tmpdir; n=32, boxsize=100.0, z=0.0, ilpt=1, nbuff=3)
 
     # Run single-tile
-    halos_single = PeakPatch.Pipeline.run_tile(sp; seed=42, verbose=false)
+    halos_single = PeakPatch.Pipeline.run_tile(cfg; seed=42, verbose=false)
 
     # Run multi-tile with ntile=1 (should be identical)
-    sp_mt = _make_simparams(tmpdir; n=32, boxsize=100.0, z=0.0, ilpt=1, nbuff=3)
-    # Need a different output file
-    outfile2 = joinpath(tmpdir, "test_out_mt.pksc")
-    sp_mt = PeakPatch.SimParams(
-        sp.ireadfield, sp.ioutshear, sp.global_redshift, sp.maximum_redshift,
-        sp.num_redshifts, sp.Omx, sp.OmB, sp.Omvac, sp.h,
-        sp.nlx, sp.nly, sp.nlz, sp.dcore_box, sp.dL_box,
-        sp.cenx, sp.ceny, sp.cenz, sp.nbuff, sp.next, sp.ievol,
-        sp.ivir_strat, sp.fcoll_3, sp.fcoll_2, sp.fcoll_1, sp.dcrit, sp.iforce_strat,
-        sp.TabInterpNx, sp.TabInterpNy, sp.TabInterpNz,
-        sp.TabInterpX1, sp.TabInterpX2, sp.TabInterpY1, sp.TabInterpY2,
-        sp.TabInterpZ1, sp.TabInterpZ2,
-        sp.wsmooth, sp.rmax2rs, sp.ioutfield,
-        sp.NonGauss, sp.fNL, sp.A_nG, sp.B_nG, sp.R_nG,
-        sp.ilpt, sp.iwant_field_part, sp.largerun,
-        sp.fielddir, sp.densfilein, sp.filein, sp.pkfile, sp.filterfile,
-        outfile2, sp.TabInterpFile
+    cfg_mt = PipelineConfig(
+        Omx = cfg.Omx, OmB = cfg.OmB, Omvac = cfg.Omvac, h = cfg.h,
+        n = cfg.n, boxsize = cfg.boxsize, nbuff = cfg.nbuff,
+        z_out = cfg.z_out, z_max = cfg.z_max, ilpt = cfg.ilpt,
+        rmax2rs = cfg.rmax2rs, pkfile = cfg.pkfile, filterfile = cfg.filterfile,
+        fileout = joinpath(tmpdir, "test_out_mt.pksc"), tabfile = cfg.tabfile,
     )
 
-    halos_multi = PeakPatch.MultiTile.run_multitile(sp_mt; ntile=1, seed=42, verbose=false)
+    halos_multi = PeakPatch.MultiTile.run_multitile(cfg_mt; ntile=1, seed=42, verbose=false)
 
     @test length(halos_single) == length(halos_multi)
 
@@ -237,28 +186,23 @@ end
 # =================================================================
 @testset "ntile=2 end-to-end" begin
     tmpdir = mktempdir()
-    # Use n=20 (small tile), nbuff=3, nsub=14
-    # ntile=2: N = 14*2 + 6 = 34
-    sp = _make_simparams(tmpdir; n=20, boxsize=60.0, z=0.0, ilpt=1, nbuff=3)
+    cfg = _make_config(tmpdir; n=20, boxsize=60.0, z=0.0, ilpt=1, nbuff=3)
 
-    halos = PeakPatch.MultiTile.run_multitile(sp; ntile=2, seed=42, verbose=false)
+    halos = PeakPatch.MultiTile.run_multitile(cfg; ntile=2, seed=42, verbose=false)
 
-    # Should find some halos (hard to guarantee exact count, but should be > 0 for this setup)
-    @test length(halos) >= 0  # at minimum, should not error
+    @test length(halos) >= 0
 
     if !isempty(halos)
         @test all(h -> h.RTHL > 0, halos)
 
-        # Check coordinate ranges: halos should span the full multi-tile domain
-        nmesh = Int(sp.nlx)
-        nbuff_val = Int(sp.nbuff)
+        nmesh = cfg.n
+        nbuff_val = cfg.nbuff
         nsub = nmesh - 2 * nbuff_val
-        dcore_box = nsub * Float64(sp.dL_box) / nmesh
+        dcore_box = nsub * cfg.boxsize / nmesh
 
-        # Peak coordinates should be within ±ntile/2 * dcore_box (approximately)
-        max_coord = dcore_box  # ntile=2, so ±dcore_box
+        max_coord = dcore_box
         xs = [h.x for h in halos]
-        @test minimum(xs) >= -max_coord - 1  # some tolerance
+        @test minimum(xs) >= -max_coord - 1
         @test maximum(xs) <= +max_coord + 1
     end
 
@@ -270,9 +214,9 @@ end
 # =================================================================
 @testset "ntile=2 with 2LPT" begin
     tmpdir = mktempdir()
-    sp = _make_simparams(tmpdir; n=20, boxsize=60.0, z=0.0, ilpt=2, nbuff=3)
+    cfg = _make_config(tmpdir; n=20, boxsize=60.0, z=0.0, ilpt=2, nbuff=3)
 
-    halos = PeakPatch.MultiTile.run_multitile(sp; ntile=2, seed=99, verbose=false)
+    halos = PeakPatch.MultiTile.run_multitile(cfg; ntile=2, seed=99, verbose=false)
 
     if !isempty(halos)
         @test all(h -> h.RTHL > 0, halos)
@@ -286,29 +230,21 @@ end
 # =================================================================
 @testset "ntile=1 with ioutshear" begin
     tmpdir = mktempdir()
-    sp = _make_simparams(tmpdir; n=32, boxsize=100.0, z=0.0, ilpt=1, nbuff=3,
-                         ioutshear=1)
+    cfg = _make_config(tmpdir; n=32, boxsize=100.0, z=0.0, ilpt=1, nbuff=3,
+                       ioutshear=1)
 
-    halos_single = PeakPatch.Pipeline.run_tile(sp; seed=42, verbose=false)
+    halos_single = PeakPatch.Pipeline.run_tile(cfg; seed=42, verbose=false)
 
-    outfile2 = joinpath(tmpdir, "test_out_mt2.pksc")
-    sp_mt = PeakPatch.SimParams(
-        sp.ireadfield, sp.ioutshear, sp.global_redshift, sp.maximum_redshift,
-        sp.num_redshifts, sp.Omx, sp.OmB, sp.Omvac, sp.h,
-        sp.nlx, sp.nly, sp.nlz, sp.dcore_box, sp.dL_box,
-        sp.cenx, sp.ceny, sp.cenz, sp.nbuff, sp.next, sp.ievol,
-        sp.ivir_strat, sp.fcoll_3, sp.fcoll_2, sp.fcoll_1, sp.dcrit, sp.iforce_strat,
-        sp.TabInterpNx, sp.TabInterpNy, sp.TabInterpNz,
-        sp.TabInterpX1, sp.TabInterpX2, sp.TabInterpY1, sp.TabInterpY2,
-        sp.TabInterpZ1, sp.TabInterpZ2,
-        sp.wsmooth, sp.rmax2rs, sp.ioutfield,
-        sp.NonGauss, sp.fNL, sp.A_nG, sp.B_nG, sp.R_nG,
-        sp.ilpt, sp.iwant_field_part, sp.largerun,
-        sp.fielddir, sp.densfilein, sp.filein, sp.pkfile, sp.filterfile,
-        outfile2, sp.TabInterpFile
+    cfg_mt = PipelineConfig(
+        Omx = cfg.Omx, OmB = cfg.OmB, Omvac = cfg.Omvac, h = cfg.h,
+        n = cfg.n, boxsize = cfg.boxsize, nbuff = cfg.nbuff,
+        z_out = cfg.z_out, z_max = cfg.z_max, ilpt = cfg.ilpt,
+        ioutshear = cfg.ioutshear, rmax2rs = cfg.rmax2rs,
+        pkfile = cfg.pkfile, filterfile = cfg.filterfile,
+        fileout = joinpath(tmpdir, "test_out_mt2.pksc"), tabfile = cfg.tabfile,
     )
 
-    halos_multi = PeakPatch.MultiTile.run_multitile(sp_mt; ntile=1, seed=42, verbose=false)
+    halos_multi = PeakPatch.MultiTile.run_multitile(cfg_mt; ntile=1, seed=42, verbose=false)
     @test length(halos_single) == length(halos_multi)
 
     if !isempty(halos_single) && !isempty(halos_multi)

@@ -29,10 +29,10 @@ function main()
 
     config = TOML.parsefile(config_path)
 
-    # Build SimParams from TOML
-    sp = SimParams(config)
+    # Build PipelineConfig from TOML
+    cfg = PipelineConfig(config)
 
-    # Run parameters
+    # Run parameters (not part of PipelineConfig)
     run_cfg = get(config, "run", Dict{String,Any}())
     seed    = get(run_cfg, "seed", 42)
     ntile   = get(run_cfg, "ntile", 1)
@@ -51,15 +51,14 @@ function main()
 
     # ---- Optional: generate collapse table on-the-fly ----
     if gen_table
-        Om_total = Float64(sp.Omx) + Float64(sp.OmB)
-        cosmo_tab = CosmologyParams(Om_total, Float64(sp.OmB), Float64(sp.Omvac),
-                                    Float64(sp.h), 0.965, 0.808)
+        Om_total = cfg.Omx + cfg.OmB
+        cosmo_tab = CosmologyParams(Om_total, cfg.OmB, cfg.Omvac, cfg.h, 0.965, 0.808)
         ep = EllipsoidParams(cosmo_tab; solver=ode_solver)
         tp = CollapseTableParams()
         verbose && @info "Generating collapse table (solver=$ode_solver)..."
         table = make_table_threaded(ep, tp; verbose=verbose)
-        write_homeltab(sp.TabInterpFile, table, tp)
-        verbose && @info "Wrote collapse table: $(sp.TabInterpFile)"
+        write_homeltab(cfg.tabfile, table, tp)
+        verbose && @info "Wrote collapse table: $(cfg.tabfile)"
     end
 
     # ---- Run pipeline ----
@@ -70,11 +69,11 @@ function main()
         MPI.Initialized() || MPI.Init()
         is_rank0 = MPI.Comm_rank(MPI.COMM_WORLD) == 0
         is_rank0 && @info "Running MPI multi-tile pipeline (ntile=$ntile)"
-        run_multitile_mpi(sp; ntile=ntile, seed=seed, verbose=verbose)
+        run_multitile_mpi(cfg; ntile=ntile, seed=seed, verbose=verbose)
     elseif ntile > 1
-        run_multitile(sp; ntile=ntile, seed=seed, verbose=verbose)
+        run_multitile(cfg; ntile=ntile, seed=seed, verbose=verbose)
     else
-        run_tile(sp; seed=seed, verbose=verbose)
+        run_tile(cfg; seed=seed, verbose=verbose)
     end
 
     # Post-processing and output only on rank 0 (all halos gathered there)
@@ -93,21 +92,19 @@ function main()
     end
 
     # ---- Write output ----
-    z_out = Float32(sp.global_redshift)
+    z_out = Float32(cfg.z_out)
     RTHLmax = isempty(halos) ? Float32(0) : maximum(h.RTHL for h in halos)
 
     if format in ("pksc", "both")
-        pksc_path = joinpath(outdir, basename(sp.fileout))
+        pksc_path = joinpath(outdir, basename(cfg.fileout))
         write_pksc(pksc_path, halos, RTHLmax, z_out)
         verbose && @info "Wrote pksc: $pksc_path ($(length(halos)) halos)"
     end
 
     if format in ("hdf5", "both")
-        hdf5_path = joinpath(outdir, replace(basename(sp.fileout), r"\.\w+$" => ".h5"))
-        # Build cosmology for coordinate conversion
-        Om_total = Float64(sp.Omx) + Float64(sp.OmB)
-        cosmo = CosmologyParams(Om_total, Float64(sp.OmB), Float64(sp.Omvac),
-                                Float64(sp.h), 0.965, 0.808)
+        hdf5_path = joinpath(outdir, replace(basename(cfg.fileout), r"\.\w+$" => ".h5"))
+        Om_total = cfg.Omx + cfg.OmB
+        cosmo = CosmologyParams(Om_total, cfg.OmB, cfg.Omvac, cfg.h, 0.965, 0.808)
         write_catalog_hdf5(hdf5_path, halos, cosmo)
         verbose && @info "Wrote HDF5: $hdf5_path ($(length(halos)) halos)"
     end
