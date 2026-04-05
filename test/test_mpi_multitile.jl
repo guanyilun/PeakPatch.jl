@@ -160,43 +160,25 @@ if nranks >= 2
         end
 
         # MPI run
-        outfile_mpi = joinpath(tmpdir, "test_out_mpi2.pksc")
-        sp_mpi = PeakPatch.SimParams(
-            sp.ireadfield, sp.ioutshear, sp.global_redshift, sp.maximum_redshift,
-            sp.num_redshifts, sp.Omx, sp.OmB, sp.Omvac, sp.h,
-            sp.nlx, sp.nly, sp.nlz, sp.dcore_box, sp.dL_box,
-            sp.cenx, sp.ceny, sp.cenz, sp.nbuff, sp.next, sp.ievol,
-            sp.ivir_strat, sp.fcoll_3, sp.fcoll_2, sp.fcoll_1, sp.dcrit, sp.iforce_strat,
-            sp.TabInterpNx, sp.TabInterpNy, sp.TabInterpNz,
-            sp.TabInterpX1, sp.TabInterpX2, sp.TabInterpY1, sp.TabInterpY2,
-            sp.TabInterpZ1, sp.TabInterpZ2,
-            sp.wsmooth, sp.rmax2rs, sp.ioutfield,
-            sp.NonGauss, sp.fNL, sp.A_nG, sp.B_nG, sp.R_nG,
-            sp.ilpt, sp.iwant_field_part, sp.largerun,
-            sp.fielddir, sp.densfilein, sp.filein,
-            sp.pkfile, sp.filterfile, outfile_mpi, sp.TabInterpFile
-        )
-
-        halos_mpi = PeakPatch.run_multitile_mpi(sp_mpi; ntile=2, seed=42,
+        halos_mpi = PeakPatch.run_multitile_mpi(sp; ntile=2, seed=42,
                                                   verbose=false, comm=comm)
 
-        # Gather all MPI halos to rank 0 for comparison
-        # (run_multitile_mpi returns local halos; catalog is already gathered to rank 0)
+        # run_multitile_mpi returns all halos on rank 0, empty on others
         if rank == 0
-            # Read back the written catalog for the full count
-            halos_all, _ = PeakPatch.read_pksc(outfile_mpi)
-            @test length(halos_serial) == length(halos_all)
+            @test length(halos_serial) == length(halos_mpi)
 
-            if !isempty(halos_serial) && !isempty(halos_all)
+            if !isempty(halos_serial) && !isempty(halos_mpi)
                 sort!(halos_serial; by=h -> (h.x, h.y, h.z))
-                sort!(halos_all; by=h -> (h.x, h.y, h.z))
+                sort!(halos_mpi; by=h -> (h.x, h.y, h.z))
 
-                for i in 1:min(length(halos_serial), length(halos_all))
-                    @test halos_serial[i].x ≈ halos_all[i].x atol=0.5
-                    @test halos_serial[i].y ≈ halos_all[i].y atol=0.5
-                    @test halos_serial[i].z ≈ halos_all[i].z atol=0.5
+                for i in 1:min(length(halos_serial), length(halos_mpi))
+                    @test halos_serial[i].x ≈ halos_mpi[i].x atol=0.5
+                    @test halos_serial[i].y ≈ halos_mpi[i].y atol=0.5
+                    @test halos_serial[i].z ≈ halos_mpi[i].z atol=0.5
                 end
             end
+        else
+            @test isempty(halos_mpi)
         end
 
         rm(tmpdir; recursive=true)

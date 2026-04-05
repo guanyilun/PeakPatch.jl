@@ -63,14 +63,24 @@ function main()
     end
 
     # ---- Run pipeline ----
+    is_rank0 = true
     halos = if use_mpi
         # MPI path: requires MPI.jl + PencilFFTs + PencilArrays loaded
-        @info "Running MPI multi-tile pipeline (ntile=$ntile)"
-        run_multitile_mpi(sp; ntile=ntile, seed=seed)
+        using MPI
+        MPI.Initialized() || MPI.Init()
+        is_rank0 = MPI.Comm_rank(MPI.COMM_WORLD) == 0
+        is_rank0 && @info "Running MPI multi-tile pipeline (ntile=$ntile)"
+        run_multitile_mpi(sp; ntile=ntile, seed=seed, verbose=verbose)
     elseif ntile > 1
         run_multitile(sp; ntile=ntile, seed=seed, verbose=verbose)
     else
         run_tile(sp; seed=seed, verbose=verbose)
+    end
+
+    # Post-processing and output only on rank 0 (all halos gathered there)
+    if !is_rank0
+        MPI.Barrier(MPI.COMM_WORLD)
+        return
     end
 
     verbose && @info "Pipeline complete: $(length(halos)) halos"
@@ -103,6 +113,8 @@ function main()
     end
 
     @info "Done: $(length(halos)) halos written (format=$format)"
+
+    use_mpi && MPI.Barrier(MPI.COMM_WORLD)
 end
 
 main()

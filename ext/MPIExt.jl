@@ -654,8 +654,9 @@ function PeakPatch.run_multitile_mpi(sp::PeakPatch.SimParams;
 
     rank == 0 && verbose && @info "Phase 3-4 done: $(length(local_halos)) halos on rank $rank"
 
-    # ---- Phase 5: Gather halos to rank 0, write catalog ----
+    # ---- Phase 5: Gather halos to rank 0 ----
     nfields = ioutshear >= 1 ? fieldcount(PeakPatch.ExtHaloRecord) : fieldcount(PeakPatch.HaloRecord)
+    T_halo = ioutshear >= 1 ? PeakPatch.ExtHaloRecord : PeakPatch.HaloRecord
 
     # Serialize local halos as flat Float32 vector
     local_data = Float32[]
@@ -677,8 +678,7 @@ function PeakPatch.run_multitile_mpi(sp::PeakPatch.SimParams;
         MPI.Gatherv!(local_data, MPI.VBuffer(recvbuf, all_counts_vec), 0, comm)
 
         # Deserialize halos
-        all_halos = ioutshear >= 1 ? PeakPatch.ExtHaloRecord[] : PeakPatch.HaloRecord[]
-        T_halo = ioutshear >= 1 ? PeakPatch.ExtHaloRecord : PeakPatch.HaloRecord
+        all_halos = T_halo[]
         pos = 1
         while pos + nfields - 1 <= length(recvbuf)
             vals = ntuple(i -> recvbuf[pos + i - 1], nfields)
@@ -686,15 +686,12 @@ function PeakPatch.run_multitile_mpi(sp::PeakPatch.SimParams;
             pos += nfields
         end
 
-        RTHLmax = isempty(all_halos) ? Float32(0) : maximum(h.RTHL for h in all_halos)
-        PeakPatch.write_pksc(sp.fileout, all_halos, RTHLmax, Float32(z_out))
-
-        verbose && @info "Phase 5: wrote $(length(all_halos)) halos to $(sp.fileout)"
+        verbose && @info "Phase 5: gathered $(length(all_halos)) halos on rank 0"
+        return all_halos
     else
         MPI.Gatherv!(local_data, nothing, 0, comm)
+        return T_halo[]
     end
-
-    return local_halos
 end
 
 end # module MPIExt
