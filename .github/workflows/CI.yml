@@ -42,8 +42,8 @@ jobs:
       - uses: julia-actions/julia-runtest@v1
 
       # MPI tests (run separately via mpiexec)
-      - name: Install mpiexecjl
-        run: julia --project=. -e 'using MPI; MPI.install_mpiexecjl()'
+      - name: Install MPI packages and mpiexecjl
+        run: julia --project=. -e 'import Pkg; Pkg.add(["MPI", "PencilFFTs", "PencilArrays"]); using MPI; MPI.install_mpiexecjl()'
 
       - name: Run MPI tests (np=1)
         run: |
