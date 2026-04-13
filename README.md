@@ -22,6 +22,7 @@ This code is developed by a coding agent, so use with more care!
 - **HDF5 catalog output** with ra/dec/redshift/mass for XGPaint.jl sky map painting
 - **TOML-based configuration** and CLI driver
 - **Adaptive ODE solver** (OrdinaryDiffEq.jl Tsit5) for ellipsoidal collapse, with RK4 fallback for Fortran validation
+- **Abundance matching**: remap PeakPatch top-hat masses to Tinker (2008) or Sheth-Tormen (1999) mass functions via cumulative N(>M,z) inversion
 
 ## Installation
 
@@ -157,6 +158,35 @@ generate_table = true
 ode_solver = "diffeq"   # or "rk4" for Fortran compatibility
 ```
 
+### Abundance matching
+
+PeakPatch top-hat masses don't match standard halo mass functions. Abundance
+matching remaps masses so the cumulative count N(>M) matches a target HMF
+(Tinker 2008 or Sheth-Tormen 1999) at each redshift:
+
+```julia
+using PeakPatch
+
+# Run pipeline to get halos...
+halos = run_tile(cfg; seed=seed, verbose=true)
+
+# Load actual P(k) (CAMB output, NOT the Fortran sqrt format)
+pk = load_pk("pk_camb.dat")
+cosmo = CosmologyParams(Om=0.31, OB=0.049, OL=0.69, h=0.68, ns=0.965, s8=0.81)
+
+# Build lookup table M_target(M_TH, z) and apply
+table = build_abundance_table(halos, cosmo, pk; hmf=:tinker, verbose=true)
+halos_matched = abundance_match(halos, table, cosmo)
+
+# Save/load table for reuse
+save_abundance_table("abundance_table.dat", table)
+table = load_abundance_table("abundance_table.dat")
+```
+
+The table can also be built with `:sheth_tormen`. For lightcone catalogs,
+halo redshifts are computed from distance to the observer; for fixed-z runs,
+all halos use z_out.
+
 ## Package Structure
 
 ```
@@ -183,6 +213,8 @@ PeakPatch.jl/
     Merger/
       Exclusion.jl                 # Spatial hash, sphere overlap, exclusion
       Merger.jl                    # Lagrangian exclusion + volume reduction
+    MassFunction/MassFunction.jl   # σ(R), dn/dlnM (Tinker 2008, Sheth-Tormen 1999)
+    AbundanceMatch/AbundanceMatch.jl # N(>M,z) matching → M_target(M_TH, z) table
     Pipeline.jl                    # Single-tile driver (5-phase pipeline, lightcone support)
     MultiTile.jl                   # Serial multi-tile driver (lightcone + tile pruning)
   ext/
