@@ -297,13 +297,86 @@ reference implementation:
 | Collapse table | 99.5% of 20k points within 0.35% |
 | Radial shell analysis | All outputs < 1% vs Fortran |
 | Full tile (142³, LCG) | 10741 vs 10667 halos (0.7%) |
+| Full tile (256³, LCG) | 68041 vs 67771 halos (0.4%) |
 | Multi-tile (ntile=1) | Bit-identical to single-tile |
 | MPI (np=1,2,4) | Exact match with serial |
 
-The ~0.7% halo count difference with identical ICs is due to P(k) interpolation
-method (Julia uses Float64 log-log on the raw table; Fortran uses Float32 linear
-on a rebinned grid). This is expected and irreducible without degrading numerical
-accuracy.
+### 256³ Websky validation (Fortran recompiled with n1=256)
+
+A detailed comparison against the Fortran PeakPatch at 256³ resolution
+(boxsize=618.26 Mpc/h, Websky cosmology, seed=13579) was performed with
+`use_lcg=true` and `fortran_compat=true`.
+
+**Density field:** Raw density sigma matches to 5 significant figures
+(Fortran: 2.728134, Julia: 2.728007), confirming the LCG noise generation
+and P(k) convolution are consistent.
+
+**Smoothed field:** The k-space power of the smoothed field matches to 0.01%
+at every filter scale. Computing the real-space smoothed sigma in Float64
+gives 0.005% agreement between the two codes. The apparent ~1.5% sigma
+discrepancy in Fortran's reported values is an artifact of **Float32
+accumulation error** in Fortran's `sum()` intrinsic when summing 16.7M
+single-precision values (GCC's naive sequential summation loses ~2 digits).
+Julia's `sum()` uses pairwise reduction, preserving accuracy.
+
+**Per-filter peak counts** differ by 1–33%, with larger deviations at bigger
+filter radii (where fewer peaks exist). This is not caused by a systematic
+field difference — the smoothed fields agree to 0.005%. Instead, the per-cell
+Float32 IFFT rounding (~2×10⁻⁴ per cell) causes individual cells near the
+collapse threshold (δ ≈ 1.686) to cross or not cross the threshold differently
+between the two codes. At high ν = fcrit/σ (large R, few peaks), flipping a
+handful of cells produces a large percentage change in peak count. This is an
+inherent Float32 precision limitation.
+
+**Total halo count** after shell analysis agrees to **0.4%** (68041 vs 67771),
+because the shell analysis collapse criterion is robust to the small
+per-cell rounding differences.
+
+### Back-of-the-envelope: why ~2% peak difference is expected
+
+The two codes compute the smoothed field via different paths (P(k) interpolation
+in Float32 linear vs Float64 log-log, different FFT round-trips). This gives an
+effective per-cell RMS difference of ε ≈ 0.01 in field units (~0.6% of σ), backed
+out from the 256³ data.
+
+A peak "flips" (above fcrit in one code, below in the other) if its smoothed δ is
+within ε of the threshold. The expected number of flipped peaks per filter is:
+
+    N_flip ≈ N_cells × p(fcrit) × ε × f_peak
+
+where `p(fcrit)` is the Gaussian PDF at threshold and `f_peak` is the fraction of
+above-threshold cells that are local maxima. For the smallest filter (R=3.985,
+σ=1.56, ν=1.08):
+
+- `N_cells = 980³ = 941M`, `p(fcrit) = 0.143`, `f_peak ≈ 8.7×10⁻⁴`
+- `N_flip ≈ 941M × 0.143 × 0.01 × 8.7×10⁻⁴ ≈ 1,170`
+- Actual: 112,643 − 110,827 = 1,816 (correct order of magnitude)
+
+Summed across all 16 filters, this gives ~5,000–10,000 flipped peaks, or ~2–3% of
+the total — consistent with the observed 2.4%.
+
+After shell analysis, most flipped peaks are rejected: a peak barely above
+threshold is unlikely to pass the radial collapse criterion (which integrates over
+thousands of cells). This reduces the difference to **< 1% in total halos**.
+
+### Sources of irreducible difference
+
+| Source | Impact | Notes |
+|---|---|---|
+| P(k) interpolation | 0.005% in σ | Julia: Float64 log-log; Fortran: Float32 linear |
+| Float32 IFFT rounding | ~2×10⁻⁴ per cell | Different FFTW plans (MPI vs serial in Fortran) |
+| Threshold crossing jitter | 1–33% per-filter peaks | Exponentially sensitive at high ν |
+| Shell analysis | < 1% total halos | Self-correcting; robust to per-cell noise |
+
+### Performance: Julia threading
+
+Julia was initially much slower than Fortran at 1024³ because FFTW defaulted to
+1 thread and all k-space loops were serial. Fortran uses `fftwf_init_threads()` +
+`!$OMP PARALLEL DO` on k-space loops. After adding `FFTW.set_num_threads()` and
+`Threads.@threads` to the k-space loops in `Filters.jl`, `RandomField.jl`, and
+`LPT.jl`, Julia 1024³ runtime dropped from >2.5 hours to ~18 minutes — faster
+than Fortran (~1 hour) because Julia avoids the MPI IFFT→SlabToCube→serial FFT
+round-trip that Fortran performs for every field, even at ntile=1.
 
 ## Testing
 
