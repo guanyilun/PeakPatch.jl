@@ -40,6 +40,8 @@ function main()
     merge   = get(run_cfg, "merge", true)
     gen_table  = get(run_cfg, "generate_table", false)
     ode_solver = Symbol(get(run_cfg, "ode_solver", "rk4"))
+    use_lcg       = get(run_cfg, "use_lcg", false)
+    fortran_compat = get(run_cfg, "fortran_compat", false)
 
     # Output parameters
     out_cfg = get(config, "output", Dict{String,Any}())
@@ -64,8 +66,8 @@ function main()
     # ---- Run pipeline ----
     is_rank0 = true
     halos = if use_mpi
-        # MPI path: requires MPI.jl + PencilFFTs + PencilArrays loaded
-        using MPI
+        # MPI path: requires MPI.jl loaded at top level before calling main()
+        @eval using MPI
         MPI.Initialized() || MPI.Init()
         is_rank0 = MPI.Comm_rank(MPI.COMM_WORLD) == 0
         is_rank0 && @info "Running MPI multi-tile pipeline (ntile=$ntile)"
@@ -73,7 +75,8 @@ function main()
     elseif ntile > 1
         run_multitile(cfg; ntile=ntile, seed=seed, verbose=verbose)
     else
-        run_tile(cfg; seed=seed, verbose=verbose)
+        run_tile(cfg; seed=seed, verbose=verbose,
+                 use_lcg=use_lcg, fortran_compat=fortran_compat)
     end
 
     # Post-processing and output only on rank 0 (all halos gathered there)
