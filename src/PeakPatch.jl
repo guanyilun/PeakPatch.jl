@@ -16,6 +16,8 @@ include("EllipsoidalCollapse/CollapseTable.jl")
 include("HaloFinder/RadialShell.jl")
 include("Merger/Exclusion.jl")
 include("Merger/Merger.jl")
+include("MassFunction/MassFunction.jl")
+include("AbundanceMatch/AbundanceMatch.jl")
 include("Pipeline.jl")
 include("MultiTile.jl")
 
@@ -44,6 +46,11 @@ using .CollapseTable: CollapseTableParams, CollapseTableInterp,
 using .Exclusion: SpatialHash, build_hash, sphere_overlap,
     lagrangian_exclusion!, volume_reduction!
 using .Merger: merge_catalog
+using .MassFunction: rho_mean, R_of_M, M_of_R, sigma_R, sigma_M,
+    dlnsigma_dlnM, tinker_dndlnM, sheth_tormen_dndlnM,
+    cumulative_ngtm, precompute_sigma
+using .AbundanceMatch: AbundanceTable, build_abundance_table,
+    abundance_match, save_abundance_table, load_abundance_table
 using .Pipeline: run_tile
 using .MultiTile: run_multitile, extract_tile, tile_center
 
@@ -74,6 +81,11 @@ export
     make_table, make_table_threaded,
     write_homeltab, read_homeltab, interpolate,
     sphere_overlap, merge_catalog,
+    rho_mean, R_of_M, M_of_R, sigma_R, sigma_M,
+    dlnsigma_dlnM, tinker_dndlnM, sheth_tormen_dndlnM,
+    cumulative_ngtm, precompute_sigma,
+    AbundanceTable, build_abundance_table,
+    abundance_match, save_abundance_table, load_abundance_table,
     run_tile,
     run_multitile, extract_tile, tile_center,
     run_multitile_mpi,
