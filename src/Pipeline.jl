@@ -65,6 +65,11 @@ Returns the vector of `HaloRecord`.
 """
 function run_tile(cfg::PipelineConfig; seed::Integer=42, verbose::Bool=false,
                      use_lcg::Bool=false, fortran_compat::Bool=false)
+    # ---- FFTW threading ----
+    nthreads = Threads.nthreads()
+    FFTW.set_num_threads(nthreads)
+    verbose && @info "FFTW using $nthreads threads"
+
     # ---- Phase 0: Initialization ----
     Om_total = cfg.Omx + cfg.OmB
     cosmo = CosmologyParams(Om_total, cfg.OmB, cfg.Omvac, cfg.h, 0.965, 0.808)
@@ -137,7 +142,11 @@ function run_tile(cfg::PipelineConfig; seed::Integer=42, verbose::Bool=false,
         psi2_x = psi2_y = psi2_z = nothing
     end
 
-    verbose && @info "Phase 1 done: field generated, $(sum(delta .> fcrit)) cells above fcrit"
+    if verbose
+        mean_delta = sum(delta) / length(delta)
+        sigma_delta = sqrt(sum((delta .- mean_delta).^2) / length(delta))
+        @info "Phase 1: density field" mean=mean_delta sigma=sigma_delta cells_above_fcrit=sum(delta .> fcrit)
+    end
 
     # ---- Phase 2: Multi-scale peak finding ----
     mask = zeros(Int8, n, n, n)
@@ -158,6 +167,12 @@ function run_tile(cfg::PipelineConfig; seed::Integer=42, verbose::Bool=false,
         if ioutshear >= 1
             lapd_s = smooth_field(delta_k, n, boxsize, Rf, 3;
                                  fortran_compat=fortran_compat)  # wsmooth=3 → SIGMA_2 (k²-weighted)
+        end
+
+        if verbose
+            # Compute sigma over full grid (matching Fortran: sum(delta(1:n,:,:)^2)/n^3)
+            sigma_s = sqrt(sum(delta_s.^2) / n^3)
+            @info "Filter $ic: Rf=$(round(Rf; digits=3)), sigma_smooth=$(round(sigma_s; digits=6))"
         end
 
         new_peaks = find_peaks(delta_s, mask, 0.0, 0.0, 0.0, alatt, cfg.nbuff,

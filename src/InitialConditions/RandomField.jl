@@ -149,18 +149,20 @@ function _convolve_noise!(noise, pk, boxsize, n; fortran_compat::Bool=false)
 
     nk = size(noise_k, 1)  # n÷2 + 1
 
-    for iz in 1:n, iy in 1:n, ix in 1:nk
-        kx = kx_arr[ix]
-        ky = ky_arr[iy]
-        kz = kz_arr[iz]
-        k2 = kx^2 + ky^2 + kz^2
-        if k2 == zero(Tk)
-            noise_k[ix, iy, iz] = 0  # zero DC mode
-            continue
+    Threads.@threads for iz in 1:n
+        for iy in 1:n, ix in 1:nk
+            kx = kx_arr[ix]
+            ky = ky_arr[iy]
+            kz = kz_arr[iz]
+            k2 = kx^2 + ky^2 + kz^2
+            if k2 == zero(Tk)
+                noise_k[ix, iy, iz] = 0  # zero DC mode
+                continue
+            end
+            k = sqrt(k2)
+            amp = sqrt(Tk(pk(Float64(k))) * dk^3 * Tk(n)^3)
+            noise_k[ix, iy, iz] *= amp
         end
-        k = sqrt(k2)
-        amp = sqrt(Tk(pk(Float64(k))) * dk^3 * Tk(n)^3)
-        noise_k[ix, iy, iz] *= amp
     end
 
     # --- Inverse FFT ---

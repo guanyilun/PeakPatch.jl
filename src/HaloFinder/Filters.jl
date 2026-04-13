@@ -27,11 +27,12 @@ Use this to reproduce Fortran-smoothed fields exactly.
 gaussian_window_fortran(kR::Real) = gaussian_window(kR / 2)
 
 """Top-hat (spherical) window: W(k) = 3(sin(kR) - kR cos(kR)) / (kR)³."""
-function tophat_window(kR::Real)
-    if kR == 0.0
-        return 1.0
+function tophat_window(kR::T) where T<:Real
+    three = T(3)
+    if kR == zero(T)
+        return one(T)
     end
-    return 3.0 * (sin(kR) - kR * cos(kR)) / kR^3
+    return three * (sin(kR) - kR * cos(kR)) / kR^3
 end
 
 """Read a filter bank file (ASCII, Fortran formatted).
@@ -86,18 +87,20 @@ function smooth_field(delta_k, n::Int, boxsize::Float64, Rf::Float64, wsmooth::I
     Rf_use = Tk(Rf)
 
     smoothed_k = copy(delta_k)
-    for iz in eachindex(kz), iy in eachindex(ky), ix in eachindex(kx)
-        k = sqrt(kx[ix]^2 + ky[iy]^2 + kz[iz]^2)
-        fkR = k * Rf_use
-        fkR == zero(Tk) && continue
-        if wsmooth == 0
-            w = gaussian_window_fortran(fkR)
-        elseif wsmooth == 3
-            w = gaussian_window_fortran(fkR) * k^2
-        else
-            w = tophat_window(fkR)
+    Threads.@threads for iz in eachindex(kz)
+        for iy in eachindex(ky), ix in eachindex(kx)
+            k = sqrt(kx[ix]^2 + ky[iy]^2 + kz[iz]^2)
+            fkR = k * Rf_use
+            fkR == zero(Tk) && continue
+            if wsmooth == 0
+                w = gaussian_window_fortran(fkR)
+            elseif wsmooth == 3
+                w = gaussian_window_fortran(fkR) * k^2
+            else
+                w = tophat_window(fkR)
+            end
+            smoothed_k[ix, iy, iz] *= Tf(w)
         end
-        smoothed_k[ix, iy, iz] *= Tf(w)
     end
     return irfft(smoothed_k, n)
 end
