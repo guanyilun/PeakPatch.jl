@@ -1,0 +1,71 @@
+┌ Info: PeakPatch driver
+│   config = "validation/websky_multitile/config_singletile.toml"
+│   ntile = 1
+│   seed = 13579
+└   format = "pksc"
+[ Info: Generating collapse table (solver=diffeq)...
+  k=1/20
+  k=2/20
+  k=3/20
+  k=4/20
+  k=5/20
+  k=6/20
+  k=7/20
+  k=8/20
+  k=9/20
+  k=10/20
+  k=11/20
+  k=12/20
+  k=13/20
+  k=14/20
+  k=15/20
+  k=16/20
+  k=17/20
+  k=18/20
+  k=19/20
+  k=20/20
+[ Info: Wrote collapse table: validation/websky_small/HomelTab_matched.dat
+[ Info: FFTW using 32 threads
+[ Info: Phase 0 done: n=468, box=1130.264, z=0.0, fcrit=1.68599869304622, 16 filters
+┌ Info: Phase 1: density field
+│   mean = -3.0486844f-10
+│   sigma = 2.7312608f0
+└   cells_above_fcrit = 27524585
+[ Info: Filter 1: Rf=32.425, sigma_smooth=0.36695
+[ Info:   Filter 1: Rf=32.425, found 0 peaks
+[ Info: Filter 2: Rf=28.196, sigma_smooth=0.415831
+[ Info:   Filter 2: Rf=28.196, found 13 peaks
+[ Info: Filter 3: Rf=24.518, sigma_smooth=0.46885
+[ Info:   Filter 3: Rf=24.518, found 63 peaks
+[ Info: Filter 4: Rf=21.32, sigma_smooth=0.52613
+[ Info:   Filter 4: Rf=21.32, found 274 peaks
+[ Info: Filter 5: Rf=18.539, sigma_smooth=0.587791
+[ Info:   Filter 5: Rf=18.539, found 921 peaks
+[ Info: Filter 6: Rf=16.121, sigma_smooth=0.653887
+[ Info:   Filter 6: Rf=16.121, found 2323 peaks
+[ Info: Filter 7: Rf=14.018, sigma_smooth=0.724471
+[ Info:   Filter 7: Rf=14.018, found 5156 peaks
+[ Info: Filter 8: Rf=12.19, sigma_smooth=0.799517
+[ Info:   Filter 8: Rf=12.19, found 9863 peaks
+[ Info: Filter 9: Rf=10.6, sigma_smooth=0.879068
+[ Info:   Filter 9: Rf=10.6, found 17141 peaks
+[ Info: Filter 10: Rf=9.217, sigma_smooth=0.963101
+[ Info:   Filter 10: Rf=9.2173, found 27227 peaks
+[ Info: Filter 11: Rf=8.015, sigma_smooth=1.051563
+[ Info:   Filter 11: Rf=8.015, found 40796 peaks
+[ Info: Filter 12: Rf=6.97, sigma_smooth=1.144404
+[ Info:   Filter 12: Rf=6.9696, found 57841 peaks
+[ Info: Filter 13: Rf=6.06, sigma_smooth=1.241512
+[ Info:   Filter 13: Rf=6.0605, found 79238 peaks
+[ Info: Filter 14: Rf=5.27, sigma_smooth=1.342907
+[ Info:   Filter 14: Rf=5.27, found 105406 peaks
+[ Info: Filter 15: Rf=4.583, sigma_smooth=1.44832
+[ Info:   Filter 15: Rf=4.5826, found 135598 peaks
+[ Info: Filter 16: Rf=3.985, sigma_smooth=1.557356
+[ Info:   Filter 16: Rf=3.9849, found 169343 peaks
+[ Info: Phase 2 done: 651203 total peaks
+[ Info: Phase 4 done: 550432 halos
+[ Info: Phase 5 done: wrote 550432 halos to catalog_singletile.pksc
+[ Info: Pipeline complete: 550432 halos
+[ Info: Wrote pksc: validation/websky_multitile/output_singletile/catalog_singletile.pksc (550432 halos)
+[ Info: Done: 550432 halos written (format=pksc)

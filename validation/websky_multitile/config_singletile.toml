@@ -1,0 +1,48 @@
+# Single-tile validation run — nmesh=468, same total grid as ntile=2
+#
+# Geometry: single tile covering the same 468^3 grid as ntile=2 run
+#   nmesh=468, nbuff=22, ntile=1
+#   nsub = 468 - 44 = 424 = 212 * 2 (same core cells as 2 tiles)
+#   cellsize = 512 / 212 = 2.4151 Mpc/h
+#   boxsize = 468 * cellsize = 1130.264 Mpc/h
+#
+# Usage:
+#   julia --project=. -t auto bin/peakpatch.jl validation/websky_multitile/config_singletile.toml --verbose
+
+[cosmology]
+Om = 0.3138       # total Omega_matter = Omx + OmB
+OB = 0.0493       # Omega_baryon
+OL = 0.6862       # Omega_Lambda = 1 - Om
+h  = 0.6735       # H0 / (100 km/s/Mpc)
+
+[grid]
+n       = 468       # grid cells per dimension (= total grid of ntile=2 run)
+boxsize = 1130.264  # total box extent [Mpc/h]
+nbuff   = 22        # buffer cells per side
+
+[run]
+z_out     = 0.0
+ilpt      = 2
+seed      = 13579
+ntile     = 1
+use_mpi   = false
+merge     = false
+ioutshear = 0
+wsmooth   = 1       # top-hat
+rmax2rs   = 0.0
+NonGauss  = 0
+fNL       = 0.0
+generate_table = true
+ode_solver = "diffeq"
+use_lcg = true
+fortran_compat = true
+
+[files]
+pk         = "validation/websky_small/pk_fortran_direct.dat"
+filterbank = "validation/websky_small/fortran_run/filter.dat"
+homeltab   = "validation/websky_small/HomelTab_matched.dat"
+output     = "catalog_singletile.pksc"
+
+[output]
+format = "pksc"
+path   = "validation/websky_multitile/output_singletile"

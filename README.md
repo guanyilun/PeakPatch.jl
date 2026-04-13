@@ -332,6 +332,8 @@ reference implementation:
 | Full tile (256³, LCG) | 68041 vs 67771 halos (0.4%) |
 | Full tile (1024³, LCG) | 286354 vs 282435 halos (1.4%) |
 | Multi-tile (ntile=1) | Bit-identical to single-tile |
+| Multi-tile (ntile=2 vs Fortran MPI) | 550,431 vs 555,030 halos (0.83%) |
+| Multi-tile (ntile=2 vs single-tile 468³) | 1 halo difference (identical) |
 | MPI (np=1,2,4) | Exact match with serial |
 
 ### End-to-end halo catalog comparisons
@@ -355,6 +357,16 @@ Both runs use Websky cosmology (Planck 2018), `use_lcg=true`,
 | Total peaks | 336,416 | 344,651 | +2.4% |
 | Total halos | 282,435 | 286,354 | **+1.4%** |
 | Runtime (32 cores) | 56 min | 18 min | 3× faster |
+
+**Multi-tile ntile=2** (468³ grid = 8 tiles of 256³, same cellsize as 256³ run):
+
+| Metric | Fortran MPI | Julia ntile=2 | Julia single-tile 468³ | Julia vs Fortran |
+|--------|-------------|---------------|------------------------|------------------|
+| Total peaks | 644,990 | 651,202 | 651,203 | +0.96% |
+| Total halos | 555,030 | 550,431 | 550,432 | **-0.83%** |
+
+Julia multi-tile and single-tile agree to within 1 halo (identical field,
+same core cells). Julia vs Fortran shows sub-percent halo agreement.
 
 ### Understanding the per-filter peak count differences
 

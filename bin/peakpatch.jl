@@ -73,7 +73,8 @@ function main()
         is_rank0 && @info "Running MPI multi-tile pipeline (ntile=$ntile)"
         run_multitile_mpi(cfg; ntile=ntile, seed=seed, verbose=verbose)
     elseif ntile > 1
-        run_multitile(cfg; ntile=ntile, seed=seed, verbose=verbose)
+        run_multitile(cfg; ntile=ntile, seed=seed, verbose=verbose,
+                      use_lcg=use_lcg, fortran_compat=fortran_compat)
     else
         run_tile(cfg; seed=seed, verbose=verbose,
                  use_lcg=use_lcg, fortran_compat=fortran_compat)

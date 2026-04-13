@@ -1,0 +1,23 @@
+#!/bin/bash
+#PBS -N pp_julia_mt2
+#PBS -q greenq
+#PBS -l nodes=1:ppn=32
+#PBS -l walltime=4:00:00
+#PBS -o julia_mt2.out
+#PBS -e julia_mt2.err
+module load julia/1.11.5
+
+cd /home/yguan/work/cita/PeakPatch.jl
+
+export JULIA_NUM_THREADS=32
+
+echo "=== Julia PeakPatch ntile=2 (256^3 tiles, 468^3 total) ==="
+echo "Start: $(date)"
+echo "Host: $(hostname)"
+echo "Threads: $JULIA_NUM_THREADS"
+
+julia --project=. -t $JULIA_NUM_THREADS bin/peakpatch.jl \
+    validation/websky_multitile/config_multitile.toml --verbose 2>&1 | \
+    tee validation/websky_multitile/julia_mt2_output.log
+
+echo "End: $(date)"

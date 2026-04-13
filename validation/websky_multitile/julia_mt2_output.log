@@ -1,0 +1,59 @@
+┌ Info: PeakPatch driver
+│   config = "validation/websky_multitile/config_multitile.toml"
+│   ntile = 2
+│   seed = 13579
+└   format = "pksc"
+[ Info: Generating collapse table (solver=diffeq)...
+  k=1/20
+  k=2/20
+  k=3/20
+  k=4/20
+  k=5/20
+  k=6/20
+  k=7/20
+  k=8/20
+  k=9/20
+  k=10/20
+  k=11/20
+  k=12/20
+  k=13/20
+  k=14/20
+  k=15/20
+  k=16/20
+  k=17/20
+  k=18/20
+  k=19/20
+  k=20/20
+[ Info: Wrote collapse table: validation/websky_small/HomelTab_matched.dat
+[ Info: Phase 0: N=468, box=1130.26, ntile=2, nsub=212, nmesh=256, fcrit=1.68599869304622
+[ Info: Phase 1 done: full grid fields generated
+[ Info:   Filter 1: Rf=32.425, 0 peaks
+[ Info:   Filter 2: Rf=28.196, 13 peaks
+[ Info:   Filter 3: Rf=24.518, 63 peaks
+[ Info:   Filter 4: Rf=21.32, 274 peaks
+[ Info:   Filter 5: Rf=18.539, 921 peaks
+[ Info:   Filter 6: Rf=16.121, 2323 peaks
+[ Info:   Filter 7: Rf=14.018, 5156 peaks
+[ Info:   Filter 8: Rf=12.19, 9863 peaks
+[ Info:   Filter 9: Rf=10.6, 17140 peaks
+[ Info:   Filter 10: Rf=9.2173, 27229 peaks
+[ Info:   Filter 11: Rf=8.015, 40794 peaks
+[ Info:   Filter 12: Rf=6.9696, 57841 peaks
+[ Info:   Filter 13: Rf=6.0605, 79238 peaks
+[ Info:   Filter 14: Rf=5.27, 105405 peaks
+[ Info:   Filter 15: Rf=4.5826, 135599 peaks
+[ Info:   Filter 16: Rf=3.9849, 169343 peaks
+[ Info: Phase 2 done: 651202 total peaks across 8 tiles
+[ Info:   Tile (1, 1, 1): 81395 peaks → 68769 halos (cumulative)
+[ Info:   Tile (2, 1, 1): 82033 peaks → 138101 halos (cumulative)
+[ Info:   Tile (1, 2, 1): 81008 peaks → 206409 halos (cumulative)
+[ Info:   Tile (2, 2, 1): 82252 peaks → 275960 halos (cumulative)
+[ Info:   Tile (1, 1, 2): 80432 peaks → 343926 halos (cumulative)
+[ Info:   Tile (2, 1, 2): 81537 peaks → 412893 halos (cumulative)
+[ Info:   Tile (1, 2, 2): 80488 peaks → 480873 halos (cumulative)
+[ Info:   Tile (2, 2, 2): 82057 peaks → 550431 halos (cumulative)
+[ Info: Phase 4 done: 550431 halos from 8 tiles
+[ Info: Phase 5 done: wrote 550431 halos to catalog_multitile.pksc
+[ Info: Pipeline complete: 550431 halos
+[ Info: Wrote pksc: validation/websky_multitile/output_multitile/catalog_multitile.pksc (550431 halos)
+[ Info: Done: 550431 halos written (format=pksc)

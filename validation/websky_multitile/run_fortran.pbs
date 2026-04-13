@@ -1,0 +1,21 @@
+#!/bin/bash
+#PBS -N pp_fortran_mt2
+#PBS -q greenq
+#PBS -l nodes=1:ppn=32
+#PBS -l walltime=4:00:00
+#PBS -o fortran_mt2.out
+#PBS -e fortran_mt2.err
+module load gcc/11.2.0 openmpi/4.1.2-ucx fftw/3.3.10-openmpi-ucx
+
+cd /home/yguan/work/cita/PeakPatch.jl/validation/websky_multitile/fortran_run
+export OMP_NUM_THREADS=8
+
+echo "=== Fortran PeakPatch ntile=2 (256^3 tiles, 468^3 total) ==="
+echo "Start: $(date)"
+echo "Host: $(hostname)"
+echo "MPI ranks: 4, OMP threads: $OMP_NUM_THREADS"
+
+# N=468 must be divisible by nranks: 468/4=117
+mpirun -np 4 ./hpkvd 2>&1 | tee fortran_mt2_output.log
+
+echo "End: $(date)"

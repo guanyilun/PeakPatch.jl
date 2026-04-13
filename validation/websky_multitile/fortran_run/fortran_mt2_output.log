@@ -1,0 +1,243 @@
+
+   -------------------------------------------------------------
+   Peak-patch HPKVD running on
+   13.04.2026 at 17:53:20 UTC-0400
+   -------------------------------------------------------------
+
+
+   Initial:
+       virtual: 0.510376 GB for process 0
+      physical: 0.084030 GB for process 0
+
+                              Loading collapse table:    0.0 sec 
+
+   Slab decomposition: n = 468 local_nz = 117
+
+   FFTW memory:          0.668245018      GB
+   Grid memory:          0.519653320      GB
+   S2C memory:            2.85644531E-02  GB
+   Catalog memory:       0.171365067      GB
+   Lattice hunt memory:   3.47891450E-03  GB
+   Total memory:          1.39130676      GB
+
+
+   After grid allocations:
+       virtual: 1.798378 GB for process 0
+      physical: 0.090153 GB for process 0
+
+   white noise:
+      mean = -1.295513E-05
+     sigma =  9.999919E-01
+                                         white noise:    1.2 sec 
+                                        real2complex:    0.2 sec 
+                                         convolution:    0.5 sec 
+                                         convolution:    0.5 sec 
+                                        complex2real:    0.1 sec 
+   phi,11:
+                                         convolution:    0.6 sec 
+                                        complex2real:    0.1 sec 
+   phi,22:
+                                         convolution:    0.6 sec 
+                                        complex2real:    0.1 sec 
+   phi,33:
+                                         convolution:    0.6 sec 
+                                        complex2real:    0.1 sec 
+   phi,21:
+                                         convolution:    0.6 sec 
+                                        complex2real:    0.1 sec 
+   phi,31:
+                                         convolution:    0.6 sec 
+                                        complex2real:    0.1 sec 
+   phi,32:
+                                        real2complex:    0.1 sec 
+                                         convolution:    0.6 sec 
+                                        complex2real:    0.1 sec 
+   2lpt x-displacement:
+      mean = -6.275888E-11
+     sigma =  3.504811E+00
+                                         convolution:    0.6 sec 
+                                        complex2real:    0.1 sec 
+   2lpt y-displacement:
+      mean = -1.694999E-08
+     sigma =  3.505080E+00
+                                         convolution:    0.6 sec 
+                                        complex2real:    0.1 sec 
+   2lpt z-displacement:
+      mean = -1.478475E-06
+     sigma =  3.505965E+00
+                                         convolution:    0.5 sec 
+                                        complex2real:    0.1 sec 
+   x-displacement:
+      mean =  2.949375E-09
+     sigma =  8.720797E+00
+                                         convolution:    0.5 sec 
+                                        complex2real:    0.1 sec 
+   y-displacement:
+      mean = -1.172748E-07
+     sigma =  8.803266E+00
+                                         convolution:    0.5 sec 
+                                        complex2real:    0.1 sec 
+   z-displacement:
+      mean =  1.061559E-04
+     sigma =  8.823800E+00
+                                        complex2real:    0.1 sec 
+   density:
+      mean = -9.761143E-07
+     sigma =  2.731816E+00
+
+   -------------------------------------------------------------
+   Initial Conditions Timing:   12 sec
+   -------------------------------------------------------------
+
+  deltac_u total power =  0.1062991931030E+16
+                               Slab to cube exchange:    0.9 sec 
+
+   Box 1 of 8
+   D = 1.000
+   z =  0.00
+   Npks = 0
+
+     Smoothing:
+     R =  32.425 Mpc: sigma =  0.35095394E+00   Peaks found = 0
+     R =  28.196 Mpc: sigma =  0.39702073E+00   Peaks found = 0
+     R =  24.518 Mpc: sigma =  0.44918200E+00   Peaks found = 7
+     R =  21.320 Mpc: sigma =  0.50589901E+00   Peaks found = 26
+     R =  18.539 Mpc: sigma =  0.56506020E+00   Peaks found = 113
+     R =  16.121 Mpc: sigma =  0.63064879E+00   Peaks found = 283
+     R =  14.018 Mpc: sigma =  0.70164275E+00   Peaks found = 648
+     R =  12.190 Mpc: sigma =  0.77340043E+00   Peaks found = 1229
+     R =  10.600 Mpc: sigma =  0.85203946E+00   Peaks found = 2139
+     R =   9.217 Mpc: sigma =  0.93650591E+00   Peaks found = 3455
+     R =   8.015 Mpc: sigma =  0.10240674E+01   Peaks found = 5240
+     R =   6.970 Mpc: sigma =  0.11137078E+01   Peaks found = 7445
+     R =   6.061 Mpc: sigma =  0.12100728E+01   Peaks found = 9913
+     R =   5.270 Mpc: sigma =  0.13119756E+01   Peaks found = 13334
+     R =   4.583 Mpc: sigma =  0.14182276E+01   Peaks found = 17043
+  deltac smoothed power (smallest R) =  0.3471244763710E+15
+  sum(delta^2) =  0.4021021616056E+08
+  sigma_dp =  0.1548132956368E+01
+  sigma_sp =  0.1522298097610E+01
+     R =   3.985 Mpc: sigma =  0.15222981E+01   Peaks found = 21470
+
+     Homogeneous Ellipsoid running on 82345 peaks:
+                                           Smoothing:    2.1 sec 
+
+   High Water Mark:
+       virtual: 2.385857 GB for process 0
+      physical: 1.422363 GB for process 0
+
+     Peak 5000 done
+     Peak 10000 done
+     Peak 15000 done
+     Peak 20000 done
+     Peak 25000 done
+     Peak 30000 done
+     Peak 35000 done
+     Peak 40000 done
+     Peak 45000 done
+     Peak 50000 done
+     Peak 55000 done
+     Peak 60000 done
+     Peak 65000 done
+     Peak 70000 done
+     Peak 75000 done
+     Peak 80000 done
+                                Ellipsoidal collapse:   24.1 sec 
+  deltac_u total power =  0.1065688519487E+16
+                               Slab to cube exchange:    0.8 sec 
+
+   Box 5 of 8
+   D = 1.000
+   z =  0.00
+   Npks = 82345
+
+     Smoothing:
+     R =  32.425 Mpc: sigma =  0.36663103E+00   Peaks found = 0
+     R =  28.196 Mpc: sigma =  0.41392976E+00   Peaks found = 0
+     R =  24.518 Mpc: sigma =  0.46644756E+00   Peaks found = 7
+     R =  21.320 Mpc: sigma =  0.52222234E+00   Peaks found = 32
+     R =  18.539 Mpc: sigma =  0.58138931E+00   Peaks found = 111
+     R =  16.121 Mpc: sigma =  0.64609748E+00   Peaks found = 234
+     R =  14.018 Mpc: sigma =  0.71533793E+00   Peaks found = 532
+     R =  12.190 Mpc: sigma =  0.78657019E+00   Peaks found = 1049
+     R =  10.600 Mpc: sigma =  0.86436027E+00   Peaks found = 1896
+     R =   9.217 Mpc: sigma =  0.94763702E+00   Peaks found = 3039
+     R =   8.015 Mpc: sigma =  0.10338157E+01   Peaks found = 4704
+     R =   6.970 Mpc: sigma =  0.11228888E+01   Peaks found = 6801
+     R =   6.061 Mpc: sigma =  0.12185082E+01   Peaks found = 9585
+     R =   5.270 Mpc: sigma =  0.13196813E+01   Peaks found = 12745
+     R =   4.583 Mpc: sigma =  0.14247373E+01   Peaks found = 16633
+  deltac smoothed power (smallest R) =  0.3494435037052E+15
+  sum(delta^2) =  0.4054556495789E+08
+  sigma_dp =  0.1554575182014E+01
+  sigma_sp =  0.1528841614723E+01
+     R =   3.985 Mpc: sigma =  0.15288416E+01   Peaks found = 20663
+
+     Homogeneous Ellipsoid running on 78031 peaks:
+                                           Smoothing:    2.1 sec 
+     Peak 5000 done
+     Peak 10000 done
+     Peak 15000 done
+     Peak 20000 done
+     Peak 25000 done
+     Peak 30000 done
+     Peak 35000 done
+     Peak 40000 done
+     Peak 45000 done
+     Peak 50000 done
+     Peak 55000 done
+     Peak 60000 done
+     Peak 65000 done
+     Peak 70000 done
+     Peak 75000 done
+                                Ellipsoidal collapse:   22.7 sec 
+
+   Before grid deallocations:
+       virtual: 2.385857 GB for process 0
+      physical: 1.433361 GB for process 0
+
+
+   After grid deallocations:
+       virtual: 1.462765 GB for process 0
+      physical: 0.510269 GB for process 0
+
+
+   Before output buffer allocation:
+       virtual: 1.462765 GB for process 0
+      physical: 0.510269 GB for process 0
+
+
+   After output buffer allocation:
+       virtual: 1.465221 GB for process 0
+      physical: 0.510269 GB for process 0
+
+
+   Total number of peaks kept:              555030
+   Total number of peaks dumped:            89960
+
+   Minimum and maximum of peak radii:
+     ( 0.000000E+00, 2.735150E+01)
+
+   Minimum and maximum of coordinates:
+     (-8.235122E+06, 7.917467E+06)
+     (-6.100385E+06, 7.327347E+06)
+     (-5.107924E+02, 5.107924E+02)
+
+   Minimum and maximum of 1LPT displacements:
+     (-4.038577E+01, 3.399475E+01)
+     (-3.817486E+01, 3.251723E+01)
+     (-3.499327E+01, 3.510276E+01)
+
+   Minimum and maximum of 2LPT displacements:
+     (-6.756488E+00, 7.088236E+00)
+     (-6.688601E+00, 7.304146E+00)
+     (-6.781764E+00, 6.371094E+00)
+
+                                     Writing to disk:    5.3 sec 
+
+   -------------------------------------------------------------
+   Peak-patch HPKVD finished running on
+   13.04.2026 at 17:54:31 UTC-0400
+                                        Total run time: 00:01:10
+   -------------------------------------------------------------
+

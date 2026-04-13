@@ -1,0 +1,23 @@
+#!/bin/bash
+#PBS -N pp_julia_st468
+#PBS -q greenq
+#PBS -l nodes=1:ppn=32
+#PBS -l walltime=4:00:00
+#PBS -o julia_st468.out
+#PBS -e julia_st468.err
+module load julia/1.11.5
+
+cd /home/yguan/work/cita/PeakPatch.jl
+
+export JULIA_NUM_THREADS=32
+
+echo "=== Julia PeakPatch single-tile 468^3 (internal comparison) ==="
+echo "Start: $(date)"
+echo "Host: $(hostname)"
+echo "Threads: $JULIA_NUM_THREADS"
+
+julia --project=. -t $JULIA_NUM_THREADS bin/peakpatch.jl \
+    validation/websky_multitile/config_singletile.toml --verbose 2>&1 | \
+    tee validation/websky_multitile/julia_st468_output.log
+
+echo "End: $(date)"
