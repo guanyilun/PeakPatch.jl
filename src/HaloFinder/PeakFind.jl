@@ -16,7 +16,7 @@ function find_peaks(delta::Array{T,3}, mask::Array{Int8,3},
                     xbx::Float64, ybx::Float64, zbx::Float64,
                     alatt::Float64, nbuff::Int, fcrit,
                     Rsmooth::Float64;
-                    max_peaks::Int=200000) where {T<:AbstractFloat}
+                    max_peaks::Int=2000000) where {T<:AbstractFloat}
     n1, n2, n3 = size(delta)
     cen1 = 0.5 * (n1 + 1)
     cen2 = 0.5 * (n2 + 1)
