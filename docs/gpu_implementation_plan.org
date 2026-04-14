@@ -1,0 +1,337 @@
+#+TITLE: GPU Implementation Plan for PeakPatch.jl Multi-Resolution
+#+AUTHOR: Yilun Guan
+#+DATE: 2026-04-14
+#+STARTUP: overview
+
+* Motivation
+
+The multi-resolution approach reduces PeakPatch's memory requirement from
+O(N^3) (global FFT) to O(nmesh^3) per tile (~40 GB at 6144^3). This fits
+on a single GPU (A100 80 GB or H100 80 GB). The dominant compute cost per
+tile is 3D FFTs, which are 50-100x faster on GPU than multi-core CPU.
+
+At 6144^3 with ntile=9, there are 729 tiles (~341 active after lightcone
+pruning). Each tile is fully independent — no inter-tile communication.
+This is embarrassingly parallel across GPUs.
+
+* Architecture Overview
+
+#+begin_example
+                    CPU                          GPU
+              ┌──────────────┐          ┌──────────────────┐
+              │ Coarse FFT   │          │                  │
+              │ (M=24, tiny) │          │  Tile pipeline:  │
+              │              │  copy    │  1. Noise gen     │
+              │ Collapse     │ -------> │  2. Residual      │
+              │ table, P(k)  │          │  3. Isolated FFTs │
+              │              │ <------- │  4. Peak finding  │
+              │ Shell        │  peaks   │                  │
+              │ analysis     │          └──────────────────┘
+              └──────────────┘
+#+end_example
+
+Phase 1a (coarse grid) stays on CPU — it's tiny (M=24, negligible).
+Phase 1b (per-tile FFTs) moves to GPU — this is the hot path.
+Phase 2 (peak finding) can run on GPU (stencil operation).
+Phase 3-4 (shell analysis) stays on CPU initially — complex control flow.
+
+* Memory Budget per GPU
+
+For N=6144, nmesh=768, isolated FFT pads to 1536^3:
+
+| Component                         | Size (Float32) | Notes                     |
+|-----------------------------------+----------------+---------------------------|
+| Padded FFT (1536^3, in-place)     | 14.5 GB        | Shared real/complex buffer |
+| Residual noise (768^3)            | 1.8 GB         | Input to isolated FFT     |
+| delta_tile (768^3)                | 1.8 GB         | Output, kept              |
+| psi_tile x3 (768^3 each)         | 5.4 GB         | 1LPT displacements        |
+| psi2_tile x3 (768^3 each)        | 5.4 GB         | 2LPT displacements        |
+| lapd_tile (768^3)                 | 1.8 GB         | Laplacian                 |
+| delta_tile_k (rfft, 385x768x768) | 1.8 GB         | For smoothing/peak find   |
+| Smoothed field (768^3)            | 1.8 GB         | Per-filter temporary      |
+| Masks (768^3, Int8)               | 0.45 GB        | Peak exclusion            |
+|-----------------------------------+----------------+---------------------------|
+| *Peak total*                      | *~35 GB*       | Fits 40 GB A100           |
+
+With careful memory reuse (free padded buffer after FFT, reuse for next
+field), peak can be reduced to ~25 GB, fitting even smaller GPUs.
+
+* Implementation Phases
+
+** Phase 1: GPU-accelerated isolated FFT [0/4]
+
+The highest-impact change. Replace CPU FFTW with GPU cuFFT for the
+isolated convolution, which accounts for ~80% of per-tile compute.
+
+*** TODO Port =_isolated_convolve= to GPU
+- Input: residual noise (768^3 Float32) on CPU
+- Copy to GPU, zero-pad to 1536^3
+- cuFFT forward (rfft)
+- Apply P(k) kernel (element-wise GPU kernel)
+- cuFFT inverse (irfft)
+- Extract tile region, copy result back to CPU
+
+#+begin_src julia
+using CUDA, CUDA.CUFFT
+
+function _isolated_convolve_gpu(noise::Array{Float32,3}, pk_table_d::CuVector,
+                                 k_edges_d::CuVector, boxsize_local::Float64,
+                                 n::Int; kernel_fn=nothing, nshell::Int=0)
+    n_input = size(noise, 1)
+    dx = boxsize_local / n
+    n2 = 2 * n_input
+
+    # Allocate on GPU, zero-pad
+    padded_d = CUDA.zeros(Float32, n2, n2, n2)
+    copyto!(view(padded_d, 1:n_input, 1:n_input, 1:n_input), noise)
+
+    # Forward FFT (uses cuFFT automatically)
+    padded_k_d = rfft(padded_d)
+
+    # Apply transfer function — custom CUDA kernel
+    _apply_transfer_kernel!(padded_k_d, pk_table_d, k_edges_d, dx, n2, kernel_fn)
+
+    # Inverse FFT
+    result_d = irfft(padded_k_d, n2)
+
+    # Extract and copy back
+    s1 = nshell + 1; s2 = nshell + n
+    return Array(result_d[s1:s2, s1:s2, s1:s2])
+end
+#+end_src
+
+Key considerations:
+- P(k) interpolation table should be pre-uploaded to GPU as a texture or
+  lookup table (avoid per-element CPU callback)
+- The kernel function (1LPT, 2LPT, etc.) should be fused into the
+  transfer kernel to avoid extra GPU passes
+- cuFFT plan caching: create plan once, reuse for all tiles (same size)
+
+*** TODO Pre-compute P(k) lookup table on GPU
+The CPU code calls =pk(k)= which is a log-log interpolation. On GPU:
+- Pre-compute P(k) on a fine regular grid in log(k)
+- Upload as a 1D CuArray
+- Use linear interpolation in the CUDA kernel (or texture memory)
+
+#+begin_src julia
+function _build_pk_gpu_table(pk, k_min, k_max, n_table=4096)
+    log_k = range(log(k_min), log(k_max), length=n_table)
+    pk_vals = Float32[sqrt(pk(exp(lk))) for lk in log_k]  # store sqrt(P(k))
+    return CuArray(pk_vals), Float32(log_k[1]), Float32(step(log_k))
+end
+#+end_src
+
+*** TODO Port =_generate_extended_residual= to GPU
+Threefry RNG is counter-based — each cell is independent. Perfect for GPU.
+- Launch one thread per cell
+- Each thread computes: global index -> Threefry pair -> Box-Muller -> noise
+- Subtract coarse block mean (nearest-neighbor lookup, also on GPU)
+
+The Random123.jl =threefry= function needs a CUDA-compatible version.
+Options:
+- Use CUDA.jl's built-in Philox RNG (similar counter-based)
+- Port the Threefry kernel manually (~30 lines of bitwise ops)
+- Use cuRAND's Philox and accept different random numbers (breaks
+  reproducibility with CPU — may be acceptable for production)
+
+For reproducibility with CPU results, must port Threefry exactly.
+
+*** TODO Benchmark: GPU FFT vs CPU FFT for 1536^3 Float32
+Expected times (order of magnitude):
+| Hardware         | 1536^3 Float32 rfft | Source             |
+|------------------+---------------------+--------------------|
+| 1 CPU core       | ~120 s              | FFTW ESTIMATE      |
+| 32 CPU cores     | ~5-15 s             | FFTW threaded      |
+| A100 (80 GB)     | ~0.1-0.3 s          | cuFFT              |
+| H100 (80 GB)     | ~0.05-0.15 s        | cuFFT              |
+
+** Phase 2: GPU peak finding [0/2]
+
+Peak finding is a 3D stencil operation: compare each cell against its
+26 neighbors. Maps naturally to a CUDA kernel.
+
+*** TODO Port =find_peaks= to GPU
+- Input: smoothed delta field (768^3) + mask (768^3, Int8)
+- Kernel: each thread checks one cell, writes to output list if peak
+- Use atomic append to a peak list (or prefix sum for compaction)
+- Challenge: variable-length output (use atomic counter + pre-allocated buffer)
+
+*** TODO Port multi-scale smoothing to GPU
+- =smooth_field= applies a k-space window function then IFFTs
+- Already have delta_k on GPU from the isolated FFT
+- Apply window kernel (element-wise), IFFT, find peaks
+- 21 filter scales -> 21 IFFTs, all on GPU without CPU roundtrip
+
+** Phase 3: Overlap pipeline [0/2]
+
+The real performance unlock: overlap GPU compute for tile N+1 with
+CPU shell analysis for tile N.
+
+*** TODO Implement double-buffering
+#+begin_example
+Time ->
+GPU:  [FFT tile 1][FFT tile 2][FFT tile 3][FFT tile 4]...
+CPU:  [coarse    ][shell   1 ][shell   2 ][shell   3 ]...
+                  ^-- GPU results ready, CPU starts immediately
+#+end_example
+
+Two sets of field buffers: while GPU fills set B, CPU analyzes set A.
+Julia's =@async= or =Threads.@spawn= handles the overlap.
+
+#+begin_src julia
+# Pseudocode
+fields_a = nothing
+fields_b = nothing
+
+for (i, tile) in enumerate(tile_ids)
+    # Start GPU work for this tile (async)
+    gpu_task = Threads.@spawn begin
+        generate_residual_gpu!(...)
+        isolated_convolve_gpu!(...)
+        find_peaks_gpu!(...)
+    end
+
+    # Meanwhile, do CPU shell analysis on previous tile
+    if fields_a !== nothing
+        analyse_peaks_cpu!(fields_a, peaks_a, ...)
+    end
+
+    # Wait for GPU, swap buffers
+    fields_b = fetch(gpu_task)
+    fields_a, fields_b = fields_b, fields_a
+end
+# Don't forget the last tile
+analyse_peaks_cpu!(fields_a, peaks_a, ...)
+#+end_src
+
+*** TODO Profile to find overlap balance
+- If GPU FFT << CPU shell analysis: GPU is idle waiting. Consider
+  batching 2-3 tiles on GPU, or porting parts of shell analysis to GPU.
+- If GPU FFT >> CPU shell analysis: CPU is idle waiting. Add CPU
+  postprocessing (catalog writes, merging) to fill the gap.
+
+** Phase 4: GPU shell analysis (optional, advanced) [0/3]
+
+Shell analysis (=analyse_peak=) is the most complex kernel. Each peak
+requires radial integration over shells of cells with irregular access
+patterns. Porting to GPU is possible but requires significant refactoring.
+
+*** TODO Profile shell analysis CPU time vs GPU FFT time
+If shell analysis is <30% of total time after GPU FFTs, the overlap
+pipeline (Phase 3) may be sufficient. Only port if it's the bottleneck.
+
+*** TODO Design GPU shell analysis kernel
+Options:
+- One warp (32 threads) per peak, threads cooperate on shell integration
+- Pre-sort peaks into spatial blocks for memory coalescing
+- Use shared memory for the local field tile around each peak
+
+*** TODO Handle =CollapseTableInterp= on GPU
+The collapse table is a 3D interpolation (F, e, p) -> z_vir.
+Options: 3D texture memory (hardware interpolation) or manual trilinear.
+
+** Phase 5: Multi-GPU scaling [0/2]
+
+729 tiles are independent. Scale across GPUs trivially.
+
+*** TODO Single-node multi-GPU
+- 4-8 GPUs per node (DGX, etc.)
+- Each GPU processes tiles from a queue
+- Julia: one =@spawn= task per GPU, each with its own CUDA context
+
+*** TODO Multi-node multi-GPU (optional)
+- MPI across nodes, each node has multiple GPUs
+- Tile queue distributed across nodes
+- No inter-GPU communication needed (tiles independent)
+- Much simpler than the current MPI distributed FFT approach
+
+* Performance Projections
+
+** Single A100 GPU (6144^3, 341 lightcone tiles)
+
+| Component          | Time/tile | Total (341 tiles) |
+|--------------------+-----------+--------------------|
+| Noise + residual   | 0.1 s     | 34 s               |
+| Isolated FFTs (x8) | 1.5 s     | 8.5 min            |
+| Peak finding (x21) | 0.5 s     | 2.8 min            |
+| Shell analysis*    | 120 s     | 11.4 hours         |
+| *Total*            |           | *~12 hours*        |
+
+*Shell analysis stays on CPU with overlap pipeline.
+
+** 4x A100 GPUs (overlap pipeline)
+
+| Component          | Time/tile | Total (341 tiles) |
+|--------------------+-----------+--------------------|
+| GPU phases (4 GPU) | 0.5 s     | 2.8 min            |
+| Shell analysis*    | 120 s     | 2.8 hours          |
+| *Total*            |           | *~3 hours*         |
+
+*Shell analysis parallelized across 4 CPU socket cores while GPUs run.
+
+** Comparison
+
+| Approach                   | Hardware             | Time (est.) |
+|----------------------------+----------------------+-------------|
+| MPI distributed FFT        | 6x starq (1TB, 96c)  | ~6 hours    |
+| CPU multi-resolution       | 6x greenq (128GB,32c)| ~28 hours   |
+| CPU multi-resolution       | 1x starq (1TB, 96c)  | ~12 hours   |
+| GPU multi-resolution       | 1x A100 (80GB)       | ~12 hours   |
+| GPU multi-resolution       | 4x A100 (80GB)       | ~3 hours    |
+| GPU multi-resolution       | 8x H100 (80GB)       | ~1.5 hours  |
+
+* Dependencies and Packages
+
+| Package       | Purpose                    | Maturity |
+|---------------+----------------------------+----------|
+| CUDA.jl       | GPU arrays, kernel launch  | Stable   |
+| CUDA.CUFFT    | GPU FFT (via rfft/irfft)   | Stable   |
+| KernelAbstractions.jl | Portable GPU kernels | Stable   |
+| Adapt.jl      | CPU/GPU array adaptation    | Stable   |
+
+Using =KernelAbstractions.jl= allows writing kernels that work on both
+CPU and GPU, avoiding code duplication. The FFT path would still use
+FFTW (CPU) or cuFFT (GPU) via dispatch.
+
+* Code Structure
+
+#+begin_example
+src/
+  MultiResolution.jl          # Existing CPU implementation (unchanged)
+ext/
+  CUDAExt.jl                  # GPU extension (loaded when CUDA.jl available)
+    _isolated_convolve_gpu    # GPU isolated FFT
+    _generate_residual_gpu    # GPU Threefry noise + residual
+    _find_peaks_gpu           # GPU peak finding
+    run_multitile_split_gpu   # GPU tile pipeline with overlap
+#+end_example
+
+The GPU code lives in a package extension (like MPIExt.jl), so CUDA.jl
+is only loaded when available. The CPU path remains the default.
+
+* Key Risks and Mitigations
+
+| Risk                                 | Impact | Mitigation                            |
+|--------------------------------------+--------+---------------------------------------|
+| Threefry reproducibility on GPU      | Medium | Port exact Threefry ops to CUDA       |
+| Shell analysis dominates runtime     | High   | Overlap pipeline hides FFT latency    |
+| 40 GB A100 too small                 | Low    | Memory reuse brings peak to ~25 GB    |
+| cuFFT plan creation overhead         | Low    | Cache plan, reuse across tiles        |
+| Julia CUDA compilation latency       | Medium | Precompile kernels, use RuntimeGeneratedFunctions |
+
+* Getting Started
+
+1. Install CUDA.jl: =Pkg.add("CUDA")=
+2. Verify GPU: =CUDA.functional()= and =CUDA.memory_status()=
+3. Benchmark cuFFT: =rfft(CUDA.rand(Float32, 1536, 1536, 1536))=
+4. Start with Phase 1: port =_isolated_convolve= only
+5. Profile: =CUDA.@profile= and =NVTX.@range=
+6. Once FFT works, add overlap pipeline (Phase 3)
+7. Shell analysis porting (Phase 4) only if profiling shows it's needed
+
+* References
+
+- CUDA.jl docs: https://cuda.juliagpu.org/
+- KernelAbstractions.jl: https://juliagpu.github.io/KernelAbstractions.jl/
+- cuFFT performance guide: NVIDIA cuFFT documentation
+- PeakPatch.jl multi-resolution: =docs/multi_resolution_fft.md=
