@@ -29,6 +29,8 @@ NODES=($(cat $PBS_NODEFILE | sort -u))
 NNODES=${#NODES[@]}
 
 export JULIA_NUM_THREADS=32
+# Use a job-specific Julia depot to avoid cross-job pidfile lock contention
+export JULIA_DEPOT_PATH="/fs/lustre/scratch/yguan/julia_depot/multires_${PBS_JOBID%%.*}:${HOME}/.julia"
 
 # Precompile on head node
 echo "Precompiling..."

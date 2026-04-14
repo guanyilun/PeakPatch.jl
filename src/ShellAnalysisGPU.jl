@@ -276,31 +276,85 @@ function analyse_peak_gpu(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
     # bottleneck. We call the same helper functions as the existing code.
 
     # Phase 3: gradient at filter scale
+    # Match original's mrf tracking: count shell boundaries via r2 transitions
     rmrf = 10.0; mrf = 1
     rfclvi_r2 = (Rfclvi / alatt)^2
-    for s in 1:m
-        dist = abs(rad[s]^2 - rfclvi_r2)
-        if dist < rmrf
-            rmrf = dist; mrf = s
+    mrfi = 1
+    first_r2 = stab.shell_r2[1] == 0 ? (stab.nshells >= 2 ? stab.shell_r2[2] : Int32(0)) : stab.shell_r2[1]
+    for s in (stab.shell_r2[1] == 0 ? 2 : 1):min(nshells_max, stab.nshells)
+        r2 = stab.shell_r2[s]
+        ncells_s = stab.shell_count[s]
+        # Each cell in this shell tests the match (original iterates over cells)
+        for c in 1:ncells_s
+            dist = abs(Float64(r2) - rfclvi_r2)
+            if dist < rmrf
+                mrf = mrfi
+                rmrf = dist
+            end
         end
+        if s < min(nshells_max, stab.nshells)
+            next_r2 = stab.shell_r2[s+1]
+            if next_r2 != r2
+                mrfi += 1
+            end
+        end
+    end
+    # mrf bounds for kernel_strain
+    rlow_rf = max(rad[mrf] - 2.0, 0.0)
+    mlow_rf = mrf
+    if mrf > 1
+        for m1 in mrf-1:-1:1
+            rad[m1] > rlow_rf && (mlow_rf = m1)
+        end
+    end
+    rupp_rf = rad[mrf] + 2.0
+    mupp_rf = mrf
+    for m1 in mrf+1:m
+        rad[m1] < rupp_rf && (mupp_rf = m1)
     end
     _, gradpkrf, _ = kernel_strain(rad, Gshell, Gshellf, SRshell,
-                                    mrf, 1, min(mrf + 2, m), akk_tab,
+                                    mrf, mlow_rf, mupp_rf, akk_tab,
                                     wRnor, aRnor, 1.0, 1.0)
 
-    # Phase 4: find fcrit crossing
+    # Phase 4: find fcrit crossing (matches original exactly)
     if Fbar[m0] >= fcrit
-        while m0 < m && Fbar[m0] >= fcrit
-            m0 += 1
+        found = false
+        for mm in m0:m
+            if Fbar[mm] < fcrit
+                m0 = mm
+                found = true
+                break
+            end
+        end
+        if !found
+            mupp = m
+        end
+        if found
+            rupp_m0 = rad[m0] + 2.0
+            mupp = m0
+            for mm in m0+1:m
+                rad[mm] < rupp_m0 && (mupp = mm)
+            end
         end
     else
-        while m0 > 1 && Fbar[m0] < fcrit
-            m0 -= 1
+        mstart = max(m0 - 1, 1)
+        found = false
+        for mp in mstart:-1:1
+            if Fbar[mp] >= fcrit
+                found = true
+                break
+            end
+            m0 = mp
         end
-        m0 += 1
-    end
-    if m0 <= 1 || m0 > m
-        return no_collapse()
+        if !found
+            return no_collapse()
+        end
+        rupp_m0 = rad[m0] + 2.0
+        mupp_new = m0
+        for mm in m0+1:m
+            rad[mm] < rupp_m0 && (mupp_new = mm)
+        end
+        mupp = mupp_new
     end
 
     # Phase 5: step inward checking virialization
@@ -318,6 +372,7 @@ function analyse_peak_gpu(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
     Frhoh = 0.0; Frho_val = 0.0; e_v = 0.0; p_v = 0.0
     strain_mat = _zero_smat3
     gradpk_prev = _zero_svec3; gradpkf_prev = _zero_svec3
+    Frhpk = 0.0; Fnupk = 0.0; Fevpk = 0.0; Fpvpk = 0.0
     collapsed = false
 
     # Strain at m0
@@ -328,65 +383,78 @@ function analyse_peak_gpu(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
     Frho_m0 = Lam_m0[1] + Lam_m0[2] + Lam_m0[3]
     e_v_m0 = Frho_m0 > 0 ? 0.5 * (Lam_m0[3] - Lam_m0[1]) / Frho_m0 : 0.0
     p_v_m0 = Frho_m0 > 0 ? 0.5 * (Lam_m0[3] + Lam_m0[1] - 2.0 * Lam_m0[2]) / Frho_m0 : 0.0
-    Frhoh = Frho_m0; Frho_val = Fbar[m0]; e_v = e_v_m0; p_v = p_v_m0
-    Ebar_last = Ebar_m0; gradpk_last = gradpk_m0; gradpkf_last = gradpkf_m0
-    strain_mat = Ebar_m0; gradpk_prev = gradpk_m0; gradpkf_prev = gradpkf_m0
-
-    # zvir1p at m0 is -1.0 (Fortran compat)
+    Frhoh_m0 = Frho_m0
+    Frho_m0 = Fbar[m0]
+    # Fortran compat: zvir1p at m0 is -1.0 (uninitialized Frhoc)
     zvir1p_m0 = -1.0
 
-    if m0 == 1
-        return no_collapse()
-    end
+    Frhoh = Frhoh_m0; Frho_val = Frho_m0; e_v = e_v_m0; p_v = p_v_m0
+    Ebar_last = Ebar_m0; gradpk_last = gradpk_m0; gradpkf_last = gradpkf_m0
+    strain_mat = Ebar_m0; gradpk_prev = gradpk_m0; gradpkf_prev = gradpkf_m0
+    Frhpk = Frhoh_m0; Fnupk = Frho_m0; Fevpk = e_v_m0; Fpvpk = p_v_m0
 
-    # Step inward
-    for mp in m0-1:-1:1
-        rupp_mp = rad[mp] + 2.0
-        rlow_mp = max(rad[mp] - 2.0, 0.0)
+    if zvir1p_m0 >= ZZon
+        zvir1p = zvir1p_m0
+        collapsed = true
+    else
+        zvir1 = zvir1p_m0
 
-        if rad[mupp] > rupp_mp
-            mupp_new = mp
-            for m1 in mp+1:mupp
-                rad[m1] < rupp_mp && (mupp_new = m1)
+        if m0 == 1
+            return no_collapse()
+        end
+
+        # Step inward from m0-1 to 1
+        for mp in m0-1:-1:1
+            rupp_mp = rad[mp] + 2.0
+            rlow_mp = max(rad[mp] - 2.0, 0.0)
+
+            if rad[mupp] > rupp_mp
+                mupp_new = mp
+                for m1 in mp+1:mupp
+                    rad[m1] < rupp_mp && (mupp_new = m1)
+                end
+                mupp = mupp_new
             end
-            mupp = mupp_new
-        end
-        if mlow > 1 && rad[mlow-1] > rlow_mp
-            for m1 in mlow-1:-1:1
-                rad[m1] > rlow_mp && (mlow = m1)
+            if mlow > 1 && rad[mlow-1] > rlow_mp
+                mlownew = mlow
+                for m1 in mlow-1:-1:1
+                    rad[m1] > rlow_mp && (mlownew = m1)
+                end
+                mlow = mlownew
             end
-        end
 
-        Ebar_mp, gradpk_mp, gradpkf_mp = kernel_strain(rad, Gshell, Gshellf, SRshell,
-                                                         mp, mlow, mupp, akk_tab,
-                                                         wRnor, aRnor, 1.0, 1.0)
-        Lam_mp, _, iflag_mp = get_evals(Ebar_mp)
-        Frho_mp = Lam_mp[1] + Lam_mp[2] + Lam_mp[3]
-        e_v_mp = Frho_mp > 0 ? 0.5 * (Lam_mp[3] - Lam_mp[1]) / Frho_mp : 0.0
-        p_v_mp = Frho_mp > 0 ? 0.5 * (Lam_mp[3] + Lam_mp[1] - 2.0 * Lam_mp[2]) / Frho_mp : 0.0
+            Ebar_mp, gradpk_mp, gradpkf_mp = kernel_strain(rad, Gshell, Gshellf, SRshell,
+                                                             mp, mlow, mupp, akk_tab,
+                                                             wRnor, aRnor, 1.0, 1.0)
+            Lam_mp, _, iflag_mp = get_evals(Ebar_mp)
+            Frho_mp = Lam_mp[1] + Lam_mp[2] + Lam_mp[3]
+            e_v_mp = Frho_mp > 0 ? 0.5 * (Lam_mp[3] - Lam_mp[1]) / Frho_mp : 0.0
+            p_v_mp = Frho_mp > 0 ? 0.5 * (Lam_mp[3] + Lam_mp[1] - 2.0 * Lam_mp[2]) / Frho_mp : 0.0
 
-        Frhoh_mp = Frho_mp
-        Frho_mp = Fbar[mp]
+            Frhoh_mp = Frho_mp
+            Frho_mp = Fbar[mp]
 
-        zvir1p_mp = -1.0
-        if iflag_mp == 0 && Frho_mp > 0.0
-            poe_mp = e_v_mp < 1e-5 ? 0.0 : p_v_mp / e_v_mp
-            zvir1p_mp = interpolate(ct, log10(Frho_mp), e_v_mp, poe_mp)
-        end
+            zvir1p_mp = -1.0
+            if iflag_mp == 0 && Frho_mp > 0.0
+                poe_mp = e_v_mp < 1e-5 ? 0.0 : p_v_mp / e_v_mp
+                zvir1p_mp = interpolate(ct, log10(Frho_mp), e_v_mp, poe_mp)
+            end
 
-        if zvir1p_mp >= ZZon
-            m0 = mp + 1
-            zvir1p = zvir1p_mp
-            Ebar_last = Ebar_mp; gradpk_last = gradpk_mp; gradpkf_last = gradpkf_mp
+            if zvir1p_mp >= ZZon
+                m0 = mp + 1
+                zvir1p = zvir1p_mp
+                Ebar_last = Ebar_mp; gradpk_last = gradpk_mp; gradpkf_last = gradpkf_mp
+                Frhoh = Frhoh_mp; Frho_val = Frho_mp; e_v = e_v_mp; p_v = p_v_mp
+                collapsed = true
+                break
+            end
+
+            zvir1 = zvir1p_mp
+            Frhpk = Frhoh_mp; Fnupk = Frho_mp; Fevpk = e_v_mp; Fpvpk = p_v_mp
+            strain_mat = Ebar_mp; gradpk_prev = gradpk_mp; gradpkf_prev = gradpkf_mp
             Frhoh = Frhoh_mp; Frho_val = Frho_mp; e_v = e_v_mp; p_v = p_v_mp
-            collapsed = true
-            break
+            Ebar_last = Ebar_mp; gradpk_last = gradpk_mp; gradpkf_last = gradpkf_mp
         end
-
-        zvir1 = zvir1p_mp
-        strain_mat = Ebar_mp; gradpk_prev = gradpk_mp; gradpkf_prev = gradpkf_mp
-        Frhoh = Frhoh_mp; Frho_val = Frho_mp; e_v = e_v_mp; p_v = p_v_mp
-        Ebar_last = Ebar_mp; gradpk_last = gradpk_mp; gradpkf_last = gradpkf_mp
     end
 
     !collapsed && return no_collapse()
@@ -397,48 +465,85 @@ function analyse_peak_gpu(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
     Fbarx = 0.0
     frac = 0.0
     if zvir1 > 0.0 && dZvir != 0.0
-        frac = (zvir1p - ZZon) / dZvir
-        RTHL3 = rad[m0-1]^3 + (rad[m0]^3 - rad[m0-1]^3) * frac
+        RTHL3 = rad[m0-1]^3 + (rad[m0]^3 - rad[m0-1]^3) * (zvir1p - ZZon) / dZvir
         RTHL = RTHL3^(1.0/3.0)
-        Fbarx = Fbar[m0-1] + frac * (Fbar[m0] - Fbar[m0-1])
     else
         RTHL = rad[m0-1]
-        Fbarx = Fbar[m0-1]
     end
 
     RTHL <= 0 && return no_collapse()
 
-    strain_final = Ebar_last + frac * (strain_mat - Ebar_last)
-    gradpk_final = gradpk_last + frac * (gradpk_prev - gradpk_last)
-    gradpkf_final = gradpkf_last + frac * (gradpkf_prev - gradpkf_last)
+    RTHL3 = RTHL^3
+    RTHL5 = RTHL3 * RTHL * RTHL
+    rad3p = rad[m0-1]^3
+    rad3 = rad[m0]^3
+    drad3 = rad3 - rad3p
+    dFbar = Fbar[m0] - Fbar[m0-1]
 
-    strain_final = normalize_strain(strain_final, Fbarx)
-    Lam_f, _, _ = get_evals(strain_final)
+    if zvir1 > 0.0 && drad3 != 0.0
+        frac = (RTHL3 - rad3p) / drad3
+        Fbarx = Fbar[m0-1] + frac * dFbar
+        Frhpk = Frhoh + frac * (Frhpk - Frhoh)
+        Fnupk = Frho_val + frac * (Fnupk - Frho_val)
+        Fevpk = e_v + frac * (Fevpk - e_v)
+        Fpvpk = p_v + frac * (Fpvpk - p_v)
+        strain_mat = Ebar_last + frac * (strain_mat - Ebar_last)
+        gradpk_final = gradpk_last + frac * (gradpk_prev - gradpk_last)
+        gradpkf_final = gradpkf_last + frac * (gradpkf_prev - gradpkf_last)
+    else
+        Fbarx = Fbar[m0-1]
+        Fnupk = Frho_val
+        Fevpk = e_v
+        Fpvpk = p_v
+        strain_mat = Ebar_last
+        gradpk_final = gradpk_prev
+        gradpkf_final = gradpkf_prev
+    end
+
+    strain_norm = normalize_strain(strain_mat, Fbarx)
+    Lam_f, _, _ = get_evals(strain_norm)
     Frhoc = Lam_f[1] + Lam_f[2] + Lam_f[3]
     e_v_f = Frhoc > 0 ? 0.5 * (Lam_f[3] - Lam_f[1]) / Frhoc : 0.0
     p_v_f = Frhoc > 0 ? 0.5 * (Lam_f[3] + Lam_f[1] - 2.0 * Lam_f[2]) / Frhoc : 0.0
 
+    # Final strain_mat: Ebar_last scaled by Fbarx/Frhoh (matches original)
+    strain_final = Frhoh != 0.0 ? Ebar_last * (Fbarx / Frhoh) : Ebar_last
+
     # Phase 7: final properties
+    # Average displacement over collapsed shells
+    Sbar_m = @MVector zeros(3)
+    Sbar2_m = @MVector zeros(3)
     nSbar = 0
-    Sbar = @SVector zeros(3)
-    Sbar2 = @SVector zeros(3)
-    for ms in 1:m0-1
-        nSbar += nshell_arr[ms]
+    for m1 in 1:m0-1
+        if nshell_arr[m1] > 0
+            for L in 1:3
+                Sbar_m[L] += Sshell[L][m1]
+                Sbar2_m[L] += S2shell[L][m1]
+            end
+            nSbar += nshell_arr[m1]
+        end
     end
     if nSbar > 0
-        s1 = sum(Sshell[1][1:m0-1]); s2 = sum(Sshell[2][1:m0-1]); s3 = sum(Sshell[3][1:m0-1])
-        Sbar = SVector(s1, s2, s3) ./ nSbar
-        s21 = sum(S2shell[1][1:m0-1]); s22 = sum(S2shell[2][1:m0-1]); s23 = sum(S2shell[3][1:m0-1])
-        Sbar2 = SVector(s21, s22, s23) ./ nSbar
+        Sbar_m ./= nSbar
+        Sbar2_m ./= nSbar
     end
 
     # Energy factor Srb
     Srb = 0.0
-    RTHL5 = RTHL^5
-    for ms in 2:m0-1
-        Srb += 0.5 * (Fbar[ms-1] + Fbar[ms]) * (rad[ms]^5 - rad[ms-1]^5)
+    rad5p = 0.0
+    if m0 > 2
+        for mp in 2:m0-1
+            rad5 = rad[mp]^5
+            Srb += 0.5 * (Fbar[mp-1] + Fbar[mp]) * (rad5 - rad5p)
+            rad5p = rad5
+        end
     end
-    Srb = Fbarx > 0 && RTHL5 > 0 ? Srb / (Fbarx * RTHL5) : 0.0
+    if zvir1 > 0.0 && dZvir != 0.0
+        Srb += 0.5 * (Fbar[m0-1] + Fbarx) * (RTHL5 - rad5p)
+    end
+    if Fbarx * RTHL5 > 0.0
+        Srb /= (Fbarx * RTHL5)
+    end
 
     # Laplacian d2F
     d2F = 0.0
@@ -458,7 +563,7 @@ function analyse_peak_gpu(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
         nd2 > 0 && (d2F /= nd2)
     end
 
-    # Masking
+    # Masking (match original: set mask to 1 for cells within RTHL)
     if pg.mask !== nothing
         for s in 1:stab.nshells
             sqrt(Float64(stab.shell_r2[s])) > RTHL && break
@@ -470,8 +575,7 @@ function analyse_peak_gpu(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
                 if iv1 > nbuff && iv1 <= n1 - nbuff &&
                    iv2 > nbuff && iv2 <= n2 - nbuff &&
                    iv3 > nbuff && iv3 <= n3 - nbuff
-                    pg.mask[iv1, iv2, iv3] = max(pg.mask[iv1, iv2, iv3],
-                        Int8(min(floor(Int, RTHL), 127)))
+                    pg.mask[iv1, iv2, iv3] = Int8(1)
                 end
             end
         end
@@ -479,8 +583,8 @@ function analyse_peak_gpu(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
 
     zvir_half = 0.0  # simplified: skip formation redshift for prototype
 
-    return PeakResult(RTHL, Srb, Sbar, Sbar2, strain_final,
-                      gradpk_final, gradpkrf, Fbarx, e_v_f, p_v_f,
+    return PeakResult(RTHL, Srb, SVector{3}(Sbar_m), SVector{3}(Sbar2_m),
+                      strain_final, gradpk_final, gradpkrf, Fbarx, e_v_f, p_v_f,
                       zvir_half, gradpkf_final, d2F)
 end
 
