@@ -3,7 +3,7 @@ module MPIExt
 using PeakPatch
 using MPI
 using PencilFFTs
-using PencilFFTs.Transforms: RFFT
+using PencilFFTs.Transforms: RFFT, RFFT!
 using PencilArrays
 using PencilArrays: Transpositions
 using FFTW
@@ -403,6 +403,139 @@ function _distributed_laplacian_k(delta_k_pencil, N::Int, boxsize::Float64)
 end
 
 # ============================================================
+# In-place k-space kernel helpers (write into pre-allocated output)
+# ============================================================
+# These avoid allocating a ~155 GB temporary PencilArray per call.
+
+"""Apply 1LPT kernel im*ki/k² to delta_k, writing result into output_k."""
+function _apply_1lpt_kernel!(output_k, delta_k_pencil, dim::Int, N::Int, boxsize::Float64)
+    dk = 2π / boxsize
+    kx_arr = Float64.(FFTW.rfftfreq(N, N * dk))
+    ky_arr = Float64.(FFTW.fftfreq(N, N * dk))
+    kz_arr = Float64.(FFTW.fftfreq(N, N * dk))
+    nyq = N ÷ 2; nk = N ÷ 2 + 1
+
+    pen = PencilArrays.pencil(output_k)
+    ranges = PencilArrays.range_local(pen)
+    gv_out = PencilArrays.global_view(output_k)
+    gv_in = PencilArrays.global_view(delta_k_pencil)
+
+    for giz in ranges[3], giy in ranges[2], gix in ranges[1]
+        kx = kx_arr[gix]; ky = ky_arr[giy]; kz = kz_arr[giz]
+        k2 = kx^2 + ky^2 + kz^2
+        if k2 == 0.0 || gix == nk || giy == nyq + 1 || giz == nyq + 1
+            gv_out[gix, giy, giz] = 0
+            continue
+        end
+        ki = dim == 1 ? kx : dim == 2 ? ky : kz
+        gv_out[gix, giy, giz] = im * ki / k2 * gv_in[gix, giy, giz]
+    end
+end
+
+"""Apply 2LPT kernel -im*ki/k² to src2_k, writing result into output_k."""
+function _apply_2lpt_kernel!(output_k, src2_k_pencil, dim::Int, N::Int, boxsize::Float64)
+    dk = 2π / boxsize
+    kx_arr = Float64.(FFTW.rfftfreq(N, N * dk))
+    ky_arr = Float64.(FFTW.fftfreq(N, N * dk))
+    kz_arr = Float64.(FFTW.fftfreq(N, N * dk))
+    nyq = N ÷ 2; nk = N ÷ 2 + 1
+
+    pen = PencilArrays.pencil(output_k)
+    ranges = PencilArrays.range_local(pen)
+    gv_out = PencilArrays.global_view(output_k)
+    gv_in = PencilArrays.global_view(src2_k_pencil)
+
+    for giz in ranges[3], giy in ranges[2], gix in ranges[1]
+        kx = kx_arr[gix]; ky = ky_arr[giy]; kz = kz_arr[giz]
+        k2 = kx^2 + ky^2 + kz^2
+        if k2 == 0.0 || gix == nk || giy == nyq + 1 || giz == nyq + 1
+            gv_out[gix, giy, giz] = 0
+            continue
+        end
+        ki = dim == 1 ? kx : dim == 2 ? ky : kz
+        gv_out[gix, giy, giz] = -im * ki / k2 * gv_in[gix, giy, giz]
+    end
+end
+
+"""Apply phi_ij kernel -ki*kj/k² to delta_k, writing result into output_k."""
+function _apply_phi_ij_kernel!(output_k, delta_k_pencil, di::Int, dj::Int,
+                               N::Int, boxsize::Float64)
+    dk = 2π / boxsize
+    kx_arr = Float64.(FFTW.rfftfreq(N, N * dk))
+    ky_arr = Float64.(FFTW.fftfreq(N, N * dk))
+    kz_arr = Float64.(FFTW.fftfreq(N, N * dk))
+    nyq = N ÷ 2; nk = N ÷ 2 + 1
+
+    pen = PencilArrays.pencil(output_k)
+    ranges = PencilArrays.range_local(pen)
+    gv_out = PencilArrays.global_view(output_k)
+    gv_in = PencilArrays.global_view(delta_k_pencil)
+
+    for giz in ranges[3], giy in ranges[2], gix in ranges[1]
+        kx = kx_arr[gix]; ky = ky_arr[giy]; kz = kz_arr[giz]
+        k2 = kx^2 + ky^2 + kz^2
+        if k2 == 0.0 || gix == nk || giy == nyq + 1 || giz == nyq + 1
+            gv_out[gix, giy, giz] = 0
+            continue
+        end
+        ki = di == 1 ? kx : di == 2 ? ky : kz
+        kj = dj == 1 ? kx : dj == 2 ? ky : kz
+        gv_out[gix, giy, giz] = -ki * kj / k2 * gv_in[gix, giy, giz]
+    end
+end
+
+"""Apply smoothing window to delta_k, writing result into output_k."""
+function _apply_window_kernel!(output_k, delta_k_pencil, N::Int, boxsize::Float64,
+                               Rf::Float64, wsmooth::Int)
+    dk = 2π / boxsize
+    kx_arr = FFTW.rfftfreq(N, N * dk)
+    ky_arr = FFTW.fftfreq(N, N * dk)
+    kz_arr = FFTW.fftfreq(N, N * dk)
+
+    pen = PencilArrays.pencil(output_k)
+    ranges = PencilArrays.range_local(pen)
+    gv_out = PencilArrays.global_view(output_k)
+    gv_in = PencilArrays.global_view(delta_k_pencil)
+
+    for giz in ranges[3], giy in ranges[2], gix in ranges[1]
+        kx = kx_arr[gix]; ky = ky_arr[giy]; kz = kz_arr[giz]
+        k = sqrt(kx^2 + ky^2 + kz^2)
+        fkR = k * Rf
+        if fkR == 0.0
+            gv_out[gix, giy, giz] = gv_in[gix, giy, giz]
+            continue
+        end
+        if wsmooth == 0
+            w = PeakPatch.gaussian_window_fortran(fkR)
+        elseif wsmooth == 3
+            w = PeakPatch.gaussian_window_fortran(fkR) * k^2
+        else
+            w = PeakPatch.tophat_window(fkR)
+        end
+        gv_out[gix, giy, giz] = w * gv_in[gix, giy, giz]
+    end
+end
+
+"""Apply Laplacian kernel k² to delta_k, writing result into output_k."""
+function _apply_laplacian_kernel!(output_k, delta_k_pencil, N::Int, boxsize::Float64)
+    dk = 2π / boxsize
+    kx_arr = FFTW.rfftfreq(N, N * dk)
+    ky_arr = FFTW.fftfreq(N, N * dk)
+    kz_arr = FFTW.fftfreq(N, N * dk)
+
+    pen = PencilArrays.pencil(output_k)
+    ranges = PencilArrays.range_local(pen)
+    gv_out = PencilArrays.global_view(output_k)
+    gv_in = PencilArrays.global_view(delta_k_pencil)
+
+    for giz in ranges[3], giy in ranges[2], gix in ranges[1]
+        kx = kx_arr[gix]; ky = ky_arr[giy]; kz = kz_arr[giz]
+        k2 = kx^2 + ky^2 + kz^2
+        gv_out[gix, giy, giz] = k2 * gv_in[gix, giy, giz]
+    end
+end
+
+# ============================================================
 # Shell analysis helper (shared by standard and lowmem paths)
 # ============================================================
 
@@ -563,41 +696,46 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
 
     rank == 0 && verbose && @info "Phase 0: N=$N, ntile=$ntile, nranks=$nranks, tiles/rank=$(length(my_tiles))$(ievol == 1 ? ", lightcone mode" : "")$(lowmem ? ", lowmem" : "")"
 
-    # ---- PencilFFT setup (Float32 to halve distributed memory) ----
+    # ---- PencilFFT setup (in-place RFFT!, Float32) ----
+    # In-place RFFT! saves ~310 GB/node by sharing a single data buffer for
+    # real and complex views, eliminating ibuf/obuf intermediate arrays.
     proc_dims = _factor_procs(nranks)
-    # Create a temporary Float64 plan to get the pencil decomposition, then build
-    # the real Float32 plan from a PencilArray with the correct type.
     _plan_tmp = PencilFFTPlan((N, N, N), RFFT(), proc_dims, comm)
     _noise_tmp = PencilFFTs.allocate_input(_plan_tmp)
     _pen = PencilArrays.pencil(_noise_tmp)
     noise_pencil = PencilArray{Float32}(undef, _pen)
     _plan_tmp = nothing; _noise_tmp = nothing
-    plan = PencilFFTPlan(noise_pencil, RFFT())
+    plan = PencilFFTPlan(noise_pencil, RFFT!())
+    noise_pencil = nothing
+    # A is a ManyPencilArrayRFFT! — first(A) = real view, last(A) = complex k-space view.
+    # All views share the same memory buffer (~155 GB at 6144³ Float32, 6 ranks).
+    A = PencilFFTs.allocate_input(plan)
 
     # ---- Phase 1a: Distributed noise generation (Threefry counter-based RNG) ----
     pk = PeakPatch.load_pk(cfg.pkfile)
 
-    pen = PencilArrays.pencil(noise_pencil)
+    pen = PencilArrays.pencil(first(A))
     ranges = PencilArrays.range_local(pen)
-    PeakPatch.fill_noise_threefry_region!(parent(noise_pencil), ranges, N, seed)
+    PeakPatch.fill_noise_threefry_region!(parent(first(A)), ranges, N, seed)
 
     rank == 0 && verbose && @info "Phase 1a: distributed noise generated (Threefry, Float32)"
 
     # ---- Phase 1b: Distributed forward FFT + P(k) convolution ----
-    delta_k_pencil = plan * noise_pencil
-    noise_pencil = nothing; GC.gc()
+    plan * A
+    # last(A) now contains delta_k in the final pencil configuration
+    _distributed_convolve_pk!(last(A), pk, N, boxsize_full)
 
-    _distributed_convolve_pk!(delta_k_pencil, pk, N, boxsize_full)
-
-    # Save delta_k for reuse in smoothing loop and LPT
-    delta_k_saved = similar(delta_k_pencil)
-    delta_k_saved .= delta_k_pencil
+    # Save delta_k for reuse (separate allocation; last(A) will be overwritten by IFFTs)
+    delta_k_saved = similar(last(A))
+    delta_k_saved .= last(A)
 
     rank == 0 && verbose && @info "Phase 1b: forward FFT + P(k) done"
 
     # ================================================================
     # Phase 1 field extraction: standard vs lowmem
     # ================================================================
+    # All backward FFTs use in-place: write kernel into last(A), plan \ A,
+    # read result from first(A).  first(A) is overwritten each time.
 
     delta_tiles = nothing
     psi_tiles = nothing
@@ -608,74 +746,76 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
     if !lowmem
         # ---- Standard: extract all tiles during Phase 1 ----
 
-        # Phase 1c: delta tiles
-        delta_real_pencil = plan \ delta_k_pencil
-        delta_tiles = _extract_my_tiles(delta_real_pencil, my_tiles, ntile, nsub, nmesh,
+        # Phase 1c: delta tiles (IFFT of delta_k)
+        last(A) .= delta_k_saved
+        plan \ A
+        delta_tiles = _extract_my_tiles(first(A), my_tiles, ntile, nsub, nmesh,
                                         Float32, comm)
-        delta_real_pencil = nothing; GC.gc()
 
         # Phase 1d: 1LPT displacement tiles
         psi_tiles = Dict{Int, Dict{NTuple{3,Int}, Array{Float32,3}}}()
         for dim in 1:3
-            psi_k = _distributed_1lpt_component(delta_k_saved, dim, N, boxsize_full)
-            psi_real = plan \ psi_k
-            psi_tiles[dim] = _extract_my_tiles(psi_real, my_tiles, ntile, nsub, nmesh,
+            _apply_1lpt_kernel!(last(A), delta_k_saved, dim, N, boxsize_full)
+            plan \ A
+            psi_tiles[dim] = _extract_my_tiles(first(A), my_tiles, ntile, nsub, nmesh,
                                                Float32, comm)
         end
 
         rank == 0 && verbose && @info "Phase 1d: 1LPT done"
 
-        # Phase 1e: 2LPT displacement tiles (incremental src2)
+        # Phase 1e: 2LPT displacement tiles (trace identity for src2)
         if ilpt >= 2
-            src2_pencil = PencilFFTs.allocate_input(plan)
-            parent(src2_pencil) .= 0.0
+            # src2 = (delta² - Σ phi_ii²) / 2 - Σ_{i<j} phi_ij²
+            # Uses trace identity: Σ_{i<j} phi_ii*phi_jj = ((Σ phi_ii)² - Σ phi_ii²)/2
+            # where Σ phi_ii = -delta (Poisson equation).
+            # This avoids holding 2 phi arrays simultaneously (saves ~155 GB).
+            src2_pencil = PencilArray{Float32}(undef, PencilArrays.pencil(first(A)))
+            parent(src2_pencil) .= 0.0f0
 
-            for (di, dj) in ((1,2), (1,3), (2,3))
-                phi_k = _distributed_phi_ij_component(delta_k_saved, di, dj, N, boxsize_full)
-                phi_real = plan \ phi_k
-                parent(src2_pencil) .-= parent(phi_real) .^ 2
-                phi_real = nothing; phi_k = nothing
+            # delta² / 2  (trace squared = delta²)
+            last(A) .= delta_k_saved
+            plan \ A
+            parent(src2_pencil) .+= parent(first(A)) .^ 2 .* 0.5f0
+
+            # - phi_ii² / 2 for each diagonal
+            for d in 1:3
+                _apply_phi_ij_kernel!(last(A), delta_k_saved, d, d, N, boxsize_full)
+                plan \ A
+                parent(src2_pencil) .-= parent(first(A)) .^ 2 .* 0.5f0
             end
 
-            phi11_k = _distributed_phi_ij_component(delta_k_saved, 1, 1, N, boxsize_full)
-            phi11_real = plan \ phi11_k; phi11_k = nothing
+            # - phi_ij² for each off-diagonal
+            for (di, dj) in ((1,2), (1,3), (2,3))
+                _apply_phi_ij_kernel!(last(A), delta_k_saved, di, dj, N, boxsize_full)
+                plan \ A
+                parent(src2_pencil) .-= parent(first(A)) .^ 2
+            end
 
-            phi22_k = _distributed_phi_ij_component(delta_k_saved, 2, 2, N, boxsize_full)
-            phi22_real = plan \ phi22_k; phi22_k = nothing
-            parent(src2_pencil) .+= parent(phi11_real) .* parent(phi22_real)
-            phi22_real = nothing; GC.gc()
-
-            phi33_k = _distributed_phi_ij_component(delta_k_saved, 3, 3, N, boxsize_full)
-            phi33_real = plan \ phi33_k; phi33_k = nothing
-            parent(src2_pencil) .+= parent(phi11_real) .* parent(phi33_real)
-            phi11_real = nothing; GC.gc()
-
-            # Recompute phi22 for the last cross-product (1 extra IFFT, saves holding 3 arrays)
-            phi22_k = _distributed_phi_ij_component(delta_k_saved, 2, 2, N, boxsize_full)
-            phi22_real = plan \ phi22_k; phi22_k = nothing
-            parent(src2_pencil) .+= parent(phi22_real) .* parent(phi33_real)
-            phi22_real = nothing; phi33_real = nothing; GC.gc()
-
-            src2_k_local = plan * src2_pencil
+            # Forward FFT src2 to get src2_k
+            parent(first(A)) .= parent(src2_pencil)
             src2_pencil = nothing; GC.gc()
+            plan * A
+            src2_k_local = similar(last(A))
+            src2_k_local .= last(A)
 
+            # Extract psi2 tiles from src2_k
             psi2_tiles = Dict{Int, Dict{NTuple{3,Int}, Array{Float32,3}}}()
             for dim in 1:3
-                psi2_k = _distributed_2lpt_component(src2_k_local, dim, N, boxsize_full)
-                psi2_real = plan \ psi2_k
-                psi2_tiles[dim] = _extract_my_tiles(psi2_real, my_tiles, ntile, nsub, nmesh,
+                _apply_2lpt_kernel!(last(A), src2_k_local, dim, N, boxsize_full)
+                plan \ A
+                psi2_tiles[dim] = _extract_my_tiles(first(A), my_tiles, ntile, nsub, nmesh,
                                                     Float32, comm)
             end
             src2_k_local = nothing; GC.gc()
 
-            rank == 0 && verbose && @info "Phase 1e: 2LPT done (incremental src2)"
+            rank == 0 && verbose && @info "Phase 1e: 2LPT done (trace identity src2)"
         end
 
         # Phase 1f: Laplacian tiles
         if ioutshear >= 1
-            lapd_k = _distributed_laplacian_k(delta_k_saved, N, boxsize_full)
-            lapd_real = plan \ lapd_k
-            lapd_tiles = _extract_my_tiles(lapd_real, my_tiles, ntile, nsub, nmesh,
+            _apply_laplacian_kernel!(last(A), delta_k_saved, N, boxsize_full)
+            plan \ A
+            lapd_tiles = _extract_my_tiles(first(A), my_tiles, ntile, nsub, nmesh,
                                            Float32, comm)
             scale = Float32(1.0 / Float64(N)^3)
             for (_, arr) in lapd_tiles
@@ -689,38 +829,33 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
         # ---- Lowmem: compute src2_k only, defer tile extraction to Phase 3-4 ----
 
         if ilpt >= 2
-            src2_pencil = PencilFFTs.allocate_input(plan)
-            parent(src2_pencil) .= 0.0
+            src2_pencil = PencilArray{Float32}(undef, PencilArrays.pencil(first(A)))
+            parent(src2_pencil) .= 0.0f0
 
-            for (di, dj) in ((1,2), (1,3), (2,3))
-                phi_k = _distributed_phi_ij_component(delta_k_saved, di, dj, N, boxsize_full)
-                phi_real = plan \ phi_k
-                parent(src2_pencil) .-= parent(phi_real) .^ 2
-                phi_real = nothing; phi_k = nothing
+            # Trace identity (same as standard path)
+            last(A) .= delta_k_saved
+            plan \ A
+            parent(src2_pencil) .+= parent(first(A)) .^ 2 .* 0.5f0
+
+            for d in 1:3
+                _apply_phi_ij_kernel!(last(A), delta_k_saved, d, d, N, boxsize_full)
+                plan \ A
+                parent(src2_pencil) .-= parent(first(A)) .^ 2 .* 0.5f0
             end
 
-            phi11_k = _distributed_phi_ij_component(delta_k_saved, 1, 1, N, boxsize_full)
-            phi11_real = plan \ phi11_k; phi11_k = nothing
+            for (di, dj) in ((1,2), (1,3), (2,3))
+                _apply_phi_ij_kernel!(last(A), delta_k_saved, di, dj, N, boxsize_full)
+                plan \ A
+                parent(src2_pencil) .-= parent(first(A)) .^ 2
+            end
 
-            phi22_k = _distributed_phi_ij_component(delta_k_saved, 2, 2, N, boxsize_full)
-            phi22_real = plan \ phi22_k; phi22_k = nothing
-            parent(src2_pencil) .+= parent(phi11_real) .* parent(phi22_real)
-            phi22_real = nothing; GC.gc()
-
-            phi33_k = _distributed_phi_ij_component(delta_k_saved, 3, 3, N, boxsize_full)
-            phi33_real = plan \ phi33_k; phi33_k = nothing
-            parent(src2_pencil) .+= parent(phi11_real) .* parent(phi33_real)
-            phi11_real = nothing; GC.gc()
-
-            phi22_k = _distributed_phi_ij_component(delta_k_saved, 2, 2, N, boxsize_full)
-            phi22_real = plan \ phi22_k; phi22_k = nothing
-            parent(src2_pencil) .+= parent(phi22_real) .* parent(phi33_real)
-            phi22_real = nothing; phi33_real = nothing; GC.gc()
-
-            src2_k_pencil = plan * src2_pencil
+            parent(first(A)) .= parent(src2_pencil)
             src2_pencil = nothing; GC.gc()
+            plan * A
+            src2_k_pencil = similar(last(A))
+            src2_k_pencil .= last(A)
 
-            rank == 0 && verbose && @info "Phase 1e: src2_k computed (lowmem, tiles deferred)"
+            rank == 0 && verbose && @info "Phase 1e: src2_k computed (lowmem, trace identity)"
         end
     end
 
@@ -737,16 +872,16 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
     for ic in 1:length(filters)
         Rf = filters[ic][3]
 
-        smoothed_k = _distributed_apply_window(delta_k_saved, N, boxsize_full, Rf, wsmooth)
-        smoothed_real = plan \ smoothed_k
-        delta_s_tiles = _extract_my_tiles(smoothed_real, my_tiles, ntile, nsub, nmesh,
+        _apply_window_kernel!(last(A), delta_k_saved, N, boxsize_full, Rf, wsmooth)
+        plan \ A
+        delta_s_tiles = _extract_my_tiles(first(A), my_tiles, ntile, nsub, nmesh,
                                           Float32, comm)
 
         lapd_s_tiles = nothing
         if ioutshear >= 1
-            lapd_s_k = _distributed_apply_window(delta_k_saved, N, boxsize_full, Rf, 3)
-            lapd_s_real = plan \ lapd_s_k
-            lapd_s_tiles = _extract_my_tiles(lapd_s_real, my_tiles, ntile, nsub, nmesh,
+            _apply_window_kernel!(last(A), delta_k_saved, N, boxsize_full, Rf, 3)
+            plan \ A
+            lapd_s_tiles = _extract_my_tiles(first(A), my_tiles, ntile, nsub, nmesh,
                                              Float32, comm)
         end
 
@@ -856,52 +991,42 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
             rank == 0 && verbose && @info "  Batch $bi/$n_batches: $(length(batch_global)) tiles ($(length(my_batch)) local)"
 
             # Extract delta tiles
-            delta_k_copy = similar(delta_k_saved)
-            delta_k_copy .= delta_k_saved
-            delta_real = plan \ delta_k_copy
-            delta_k_copy = nothing
-            batch_delta = _extract_my_tiles(delta_real, my_batch, ntile, nsub, nmesh,
+            last(A) .= delta_k_saved
+            plan \ A
+            batch_delta = _extract_my_tiles(first(A), my_batch, ntile, nsub, nmesh,
                                             Float32, comm; global_tile_list=batch_global)
-            delta_real = nothing; GC.gc()
 
             # Extract 1LPT displacement tiles
             batch_psi = Dict{Int, Dict{NTuple{3,Int}, Array{Float32,3}}}()
             for dim in 1:3
-                psi_k = _distributed_1lpt_component(delta_k_saved, dim, N, boxsize_full)
-                psi_real = plan \ psi_k
-                psi_k = nothing
-                batch_psi[dim] = _extract_my_tiles(psi_real, my_batch, ntile, nsub, nmesh,
+                _apply_1lpt_kernel!(last(A), delta_k_saved, dim, N, boxsize_full)
+                plan \ A
+                batch_psi[dim] = _extract_my_tiles(first(A), my_batch, ntile, nsub, nmesh,
                                                    Float32, comm; global_tile_list=batch_global)
-                psi_real = nothing; GC.gc()
             end
 
             # Extract 2LPT displacement tiles
             batch_psi2 = Dict{Int, Dict{NTuple{3,Int}, Array{Float32,3}}}()
             if ilpt >= 2 && src2_k_pencil !== nothing
                 for dim in 1:3
-                    psi2_k = _distributed_2lpt_component(src2_k_pencil, dim, N, boxsize_full)
-                    psi2_real = plan \ psi2_k
-                    psi2_k = nothing
-                    batch_psi2[dim] = _extract_my_tiles(psi2_real, my_batch, ntile, nsub, nmesh,
+                    _apply_2lpt_kernel!(last(A), src2_k_pencil, dim, N, boxsize_full)
+                    plan \ A
+                    batch_psi2[dim] = _extract_my_tiles(first(A), my_batch, ntile, nsub, nmesh,
                                                         Float32, comm; global_tile_list=batch_global)
-                    psi2_real = nothing; GC.gc()
                 end
             end
 
             # Extract Laplacian tiles
             batch_lapd = nothing
             if ioutshear >= 1
-                lapd_k = _distributed_laplacian_k(delta_k_saved, N, boxsize_full)
-                lapd_real = plan \ lapd_k
-                lapd_k = nothing
-                batch_lapd = _extract_my_tiles(lapd_real, my_batch, ntile, nsub, nmesh,
+                _apply_laplacian_kernel!(last(A), delta_k_saved, N, boxsize_full)
+                plan \ A
+                batch_lapd = _extract_my_tiles(first(A), my_batch, ntile, nsub, nmesh,
                                                Float32, comm; global_tile_list=batch_global)
-                lapd_real = nothing
                 scale = Float32(1.0 / Float64(N)^3)
                 for (_, arr) in batch_lapd
                     arr .*= scale
                 end
-                GC.gc()
             end
 
             # Shell analysis for this batch
