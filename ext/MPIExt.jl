@@ -699,6 +699,9 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
     # ---- PencilFFT setup (in-place RFFT!, Float32) ----
     # In-place RFFT! saves ~310 GB/node by sharing a single data buffer for
     # real and complex views, eliminating ibuf/obuf intermediate arrays.
+    nthreads = Threads.nthreads()
+    FFTW.set_num_threads(nthreads)
+    rank == 0 && verbose && @info "FFTW threads: $nthreads"
     proc_dims = _factor_procs(nranks)
     _plan_tmp = PencilFFTPlan((N, N, N), RFFT(), proc_dims, comm)
     _noise_tmp = PencilFFTs.allocate_input(_plan_tmp)
