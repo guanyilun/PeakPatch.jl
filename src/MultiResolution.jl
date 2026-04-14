@@ -346,7 +346,8 @@ tile-sized domain.
 Memory per tile: O(nmesh³) instead of O(N³). No MPI or distributed FFT.
 """
 function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
-                              verbose::Bool=false, coarse_factor::Int=5)
+                              verbose::Bool=false, coarse_factor::Int=0,
+                              coarse_grid::Int=0)
     # ---- Geometry ----
     nmesh = cfg.n
     nbuff = cfg.nbuff
@@ -384,8 +385,27 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     chi2z = ievol == 1 ? build_chi_to_z(cosmo; z_max=z_max + 1.0) : nothing
 
     # ---- Multi-resolution setup ----
-    M = ntile * coarse_factor
-    @assert N % M == 0 "N=$N must be divisible by M=$M (try coarse_factor=$(N ÷ ntile))"
+    # Determine coarse grid size M. Priority: coarse_grid > coarse_factor > auto.
+    # M must divide N. Optimal block (N/M) is ~nmesh/3 to nmesh/2 for best
+    # halo count accuracy (residual is short-range, isolated FFT captures it well).
+    if coarse_grid > 0
+        M = coarse_grid
+    elseif coarse_factor > 0
+        M = ntile * coarse_factor
+    else
+        # Auto-select: find M that gives block ≈ nmesh/3
+        target_block = nmesh ÷ 3
+        best_M = 0; best_dist = N
+        for m in 2:N÷2
+            N % m == 0 || continue
+            dist = abs(N ÷ m - target_block)
+            if dist < best_dist
+                best_dist = dist; best_M = m
+            end
+        end
+        M = best_M
+    end
+    @assert N % M == 0 "N=$N must be divisible by M=$M"
     block = N ÷ M
 
     verbose && @info "Phase 0: N=$N, ntile=$ntile, M_coarse=$M, block=$block"
@@ -686,13 +706,13 @@ Returns a vector of NamedTuples with fields:
 """
 function compare_fields_split(pk, N::Int, boxsize::Float64, seed::Int,
                                ntile::Int, coarse_factor::Int;
-                               nbuff::Int=8, verbose::Bool=false)
+                               nbuff::Int=8, coarse_grid::Int=0, verbose::Bool=false)
     # Infer tile geometry: N = nsub*ntile + 2*nbuff → nsub = (N - 2*nbuff)/ntile
     nsub = (N - 2 * nbuff) ÷ ntile
     nmesh = nsub + 2 * nbuff
     @assert nsub * ntile + 2 * nbuff == N "N=$N not consistent with ntile=$ntile, nbuff=$nbuff"
 
-    M = ntile * coarse_factor
+    M = coarse_grid > 0 ? coarse_grid : ntile * coarse_factor
     @assert N % M == 0 "N=$N must be divisible by M=$M"
     block = N ÷ M
     alatt = boxsize / N
