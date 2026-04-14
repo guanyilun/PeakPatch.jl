@@ -67,12 +67,14 @@ function main()
     # ---- Run pipeline ----
     is_rank0 = true
     halos = if use_mpi
-        # MPI path: requires MPI.jl loaded at top level before calling main()
+        # MPI path: load MPI + PencilFFTs to trigger MPIExt package extension,
+        # then @invokelatest to call methods defined in the new world age.
         @eval using MPI
-        MPI.Initialized() || MPI.Init()
-        is_rank0 = MPI.Comm_rank(MPI.COMM_WORLD) == 0
+        @eval using PencilFFTs
+        Base.invokelatest(MPI.Init)
+        is_rank0 = Base.invokelatest(MPI.Comm_rank, MPI.COMM_WORLD) == 0
         is_rank0 && @info "Running MPI multi-tile pipeline (ntile=$ntile)"
-        run_multitile_mpi(cfg; ntile=ntile, seed=seed, verbose=verbose)
+        Base.invokelatest(run_multitile_mpi, cfg; ntile=ntile, seed=seed, verbose=verbose, lowmem=lowmem)
     elseif ntile > 1 && lowmem
         run_multitile_lowmem(cfg; ntile=ntile, seed=seed, verbose=verbose,
                               use_lcg=use_lcg, fortran_compat=fortran_compat)
@@ -86,7 +88,7 @@ function main()
 
     # Post-processing and output only on rank 0 (all halos gathered there)
     if !is_rank0
-        MPI.Barrier(MPI.COMM_WORLD)
+        Base.invokelatest(MPI.Barrier, MPI.COMM_WORLD)
         return
     end
 
@@ -120,7 +122,7 @@ function main()
 
     @info "Done: $(length(halos)) halos written (format=$format)"
 
-    use_mpi && MPI.Barrier(MPI.COMM_WORLD)
+    use_mpi && Base.invokelatest(MPI.Barrier, MPI.COMM_WORLD)
 end
 
 main()

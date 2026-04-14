@@ -171,6 +171,71 @@ if nranks >= 2
     end
 end
 
+# ============================================================
+# Test 4: lowmem mode matches standard MPI mode
+# ============================================================
+@testset "MPI lowmem ntile=2 matches standard (np=$nranks)" begin
+    tmpdir = mktempdir()
+    cfg = _make_config(tmpdir; n=20, boxsize=60.0, z=0.0, ilpt=2, nbuff=3)
+
+    halos_std = PeakPatch.run_multitile_mpi(cfg; ntile=2, seed=42,
+                                             verbose=false, comm=comm, lowmem=false)
+    halos_lm = PeakPatch.run_multitile_mpi(cfg; ntile=2, seed=42,
+                                            verbose=false, comm=comm, lowmem=true)
+
+    if rank == 0
+        @test length(halos_std) == length(halos_lm)
+
+        if !isempty(halos_std) && !isempty(halos_lm)
+            sort!(halos_std; by=h -> (h.x, h.y, h.z))
+            sort!(halos_lm; by=h -> (h.x, h.y, h.z))
+
+            for i in 1:length(halos_std)
+                @test halos_std[i].x ≈ halos_lm[i].x atol=1e-6
+                @test halos_std[i].y ≈ halos_lm[i].y atol=1e-6
+                @test halos_std[i].z ≈ halos_lm[i].z atol=1e-6
+                @test halos_std[i].RTHL ≈ halos_lm[i].RTHL atol=1e-6
+            end
+        end
+    else
+        @test isempty(halos_std)
+        @test isempty(halos_lm)
+    end
+
+    rm(tmpdir; recursive=true)
+end
+
+# ============================================================
+# Test 5: lowmem with ioutshear matches standard
+# ============================================================
+@testset "MPI lowmem ioutshear=1 matches standard (np=$nranks)" begin
+    tmpdir = mktempdir()
+    cfg = _make_config(tmpdir; n=20, boxsize=60.0, z=0.0, ilpt=2, nbuff=3,
+                       ioutshear=1, rmax2rs=1.0)
+
+    halos_std = PeakPatch.run_multitile_mpi(cfg; ntile=2, seed=42,
+                                             verbose=false, comm=comm, lowmem=false)
+    halos_lm = PeakPatch.run_multitile_mpi(cfg; ntile=2, seed=42,
+                                            verbose=false, comm=comm, lowmem=true)
+
+    if rank == 0
+        @test length(halos_std) == length(halos_lm)
+
+        if !isempty(halos_std) && !isempty(halos_lm)
+            sort!(halos_std; by=h -> (h.x, h.y, h.z))
+            sort!(halos_lm; by=h -> (h.x, h.y, h.z))
+
+            for i in 1:length(halos_std)
+                @test halos_std[i].x ≈ halos_lm[i].x atol=1e-6
+                @test halos_std[i].RTHL ≈ halos_lm[i].RTHL atol=1e-6
+                @test halos_std[i].e_v ≈ halos_lm[i].e_v atol=1e-4
+            end
+        end
+    end
+
+    rm(tmpdir; recursive=true)
+end
+
 rank == 0 && println("\nAll MPI tests passed (nranks=$nranks)")
 
 MPI.Finalize()

@@ -5,7 +5,42 @@ using MPI
 using PencilFFTs
 using PencilFFTs.Transforms: RFFT
 using PencilArrays
+using PencilArrays: Transpositions
 using FFTW
+
+# ============================================================
+# MPI large-count workaround
+# ============================================================
+# MPI.Buffer.count is Cint (Int32), limiting messages to 2^31-1 elements.
+# At 6144³ with few ranks, pencil transposes exceed this.  Use MPI derived
+# contiguous datatypes so that count = nelements ÷ chunk fits in Int32.
+
+"""Find smallest divisor of `n` such that `n ÷ divisor ≤ typemax(Cint)`."""
+function _large_count_chunk(n::Integer)
+    max_count = Int(typemax(Cint))
+    n ≤ max_count && return 1
+    m = cld(n, max_count)
+    while n % m != 0
+        m += 1
+    end
+    return m
+end
+
+# Override PencilArrays' internal mpi_buffer to handle large messages.
+# The original (Transpositions.jl:272) does MPI.Buffer(view) which calls
+# Cint(length(view)) and crashes for >2^31 elements.
+# Deferred to __init__ to avoid "method overwriting during precompilation" error.
+function _mpi_buffer_large(buf::AbstractArray, off, len)
+    inds = (off + 1):(off + len)
+    v = view(buf, inds)
+    if len ≤ typemax(Cint)
+        return MPI.Buffer(v)
+    end
+    chunk = _large_count_chunk(len)
+    bigtype = MPI.Types.create_contiguous(Cint(chunk), MPI.Datatype(eltype(buf)))
+    MPI.Types.commit!(bigtype)
+    return MPI.Buffer(v, Cint(len ÷ chunk), bigtype)
+end
 
 # ============================================================
 # Helpers
@@ -56,11 +91,15 @@ Each rank receives only the nmesh³ subcubes for its own tiles via point-to-poin
 MPI (Isend/Irecv), instead of gathering the full N³ field.  Memory per rank is
 O(ntile_local × nmesh³) instead of O(N³).
 
+When `global_tile_list` is provided, only those tiles participate in communication
+(for batched extraction). All ranks must pass the same `global_tile_list`.
+
 Returns `Dict{NTuple{3,Int}, Array{T,3}}` mapping tile IDs to nmesh³ arrays.
 """
 function _extract_my_tiles(pencil_arr, my_tiles::Vector{NTuple{3,Int}},
                            ntile::Int, nsub::Int, nmesh::Int,
-                           ::Type{T}, comm::MPI.Comm) where T
+                           ::Type{T}, comm::MPI.Comm;
+                           global_tile_list::Union{Nothing, Vector{NTuple{3,Int}}}=nothing) where T
     rank = MPI.Comm_rank(comm)
     nranks = MPI.Comm_size(comm)
 
@@ -84,9 +123,13 @@ function _extract_my_tiles(pencil_arr, my_tiles::Vector{NTuple{3,Int}},
     end
 
     # --- Canonical tile list (consistent ordering → consistent MPI tags) ---
-    all_tiles = NTuple{3,Int}[]
-    for kt in 1:ntile, jt in 1:ntile, it in 1:ntile
-        push!(all_tiles, (it, jt, kt))
+    if global_tile_list === nothing
+        all_tiles = NTuple{3,Int}[]
+        for kt in 1:ntile, jt in 1:ntile, it in 1:ntile
+            push!(all_tiles, (it, jt, kt))
+        end
+    else
+        all_tiles = global_tile_list
     end
 
     # --- Initialize output arrays ---
@@ -360,12 +403,98 @@ function _distributed_laplacian_k(delta_k_pencil, N::Int, boxsize::Float64)
 end
 
 # ============================================================
+# Shell analysis helper (shared by standard and lowmem paths)
+# ============================================================
+
+"""Run shell analysis for peaks in one tile. Appends halos to output vectors."""
+function _analyse_tile_shells!(halos_basic, halos_ext,
+        tid, peaks, peak_Rfs, peak_FcRfs, peak_d2Rfs, mask_tile,
+        delta_tile, psi_x, psi_y, psi_z,
+        psi2_x, psi2_y, psi2_z, lapd_tile,
+        nmesh, nbuff, alatt, ntile, dcore_box,
+        obs, ievol, z_max, chi2z, growth_tables, ZZon,
+        Omnr, cosmo, ct, shells, cfg, ioutshear, ilpt)
+
+    isempty(peaks) && return
+
+    it, jt, kt = tid
+    fill!(mask_tile, 0)
+
+    pg = PeakPatch.PeakGrid(delta_tile, psi_x, psi_y, psi_z,
+                              psi2_x, psi2_y, psi2_z,
+                              mask_tile, (nmesh, nmesh, nmesh), lapd_tile)
+
+    for idx in 1:length(peaks)
+        peak = peaks[idx]
+        Rf = peak_Rfs[idx]
+        ir2min = min(floor(Int, (1.75 * Rf / alatt)^2),
+                     floor(Int, (40.0 / alatt - 1)^2))
+
+        ZZon_pk = ZZon
+        if ievol == 1
+            z_pk = PeakPatch.peak_redshift(obs[1], obs[2], obs[3], peak.x, peak.y, peak.z, chi2z)
+            ZZon_pk = 1.0 + z_pk
+            z_pk > z_max && continue
+        end
+
+        result = PeakPatch.analyse_peak(pg, peak.ipp, alatt, ir2min, ZZon_pk, Rf, ct, shells;
+                                         nbuff=nbuff, growth_tables=growth_tables,
+                                         rmax2rs=cfg.rmax2rs)
+
+        if result.RTHL > 0
+            a_pk = 1.0 / ZZon_pk
+            _, _, D_pk = PeakPatch.Dlinear_ab(a_pk, growth_tables)
+
+            RTHL_phys = Float32(result.RTHL * alatt)
+            Sbar_vel = result.Sbar .* D_pk
+
+            Sbar2_vel = zeros(3)
+            if ilpt >= 2
+                Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
+                Sbar2_vel = -result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)
+            end
+
+            if ioutshear >= 1
+                sm = result.strain_mat
+                push!(halos_ext, PeakPatch.ExtHaloRecord(
+                    Float32(peak.x), Float32(peak.y), Float32(peak.z),
+                    Float32(Sbar_vel[1]), Float32(Sbar_vel[2]), Float32(Sbar_vel[3]),
+                    RTHL_phys,
+                    Float32(Sbar2_vel[1]), Float32(Sbar2_vel[2]), Float32(Sbar2_vel[3]),
+                    Float32(result.Fbarx),
+                    Float32(result.e_v), Float32(result.p_v),
+                    Float32(sm[1,1]), Float32(sm[2,2]), Float32(sm[3,3]),
+                    Float32(sm[2,3]), Float32(sm[1,3]), Float32(sm[1,2]),
+                    Float32(result.d2F),
+                    Float32(result.zvir_half),
+                    Float32(result.gradpk[1]), Float32(result.gradpk[2]), Float32(result.gradpk[3]),
+                    Float32(result.gradpkf[1]), Float32(result.gradpkf[2]), Float32(result.gradpkf[3]),
+                    Float32(Rf),
+                    peak_FcRfs[idx],
+                    peak_d2Rfs[idx],
+                    Float32(result.gradpkrf[1]), Float32(result.gradpkrf[2]), Float32(result.gradpkrf[3])
+                ))
+            else
+                push!(halos_basic, PeakPatch.HaloRecord(
+                    Float32(peak.x), Float32(peak.y), Float32(peak.z),
+                    Float32(Sbar_vel[1]), Float32(Sbar_vel[2]), Float32(Sbar_vel[3]),
+                    RTHL_phys,
+                    Float32(Sbar2_vel[1]), Float32(Sbar2_vel[2]), Float32(Sbar2_vel[3]),
+                    Float32(result.Fbarx)
+                ))
+            end
+        end
+    end
+end
+
+# ============================================================
 # Main distributed driver
 # ============================================================
 
 function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
         ntile::Int, seed::Integer=42, verbose::Bool=false,
-        comm::MPI.Comm=MPI.COMM_WORLD)
+        comm::MPI.Comm=MPI.COMM_WORLD, lowmem::Bool=false,
+        available_gb::Float64=900.0)
 
     rank = MPI.Comm_rank(comm)
     nranks = MPI.Comm_size(comm)
@@ -418,6 +547,7 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
     my_tiles = _assign_tiles(ntile, nranks, rank)
 
     # Lightcone: prune tiles beyond maximum_redshift
+    chi_max = 0.0
     if ievol == 1
         chi_max = PeakPatch.chi(z_max, cosmo)
         half = dcore_box / 2.0
@@ -431,21 +561,27 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
         end
     end
 
-    rank == 0 && verbose && @info "Phase 0: N=$N, ntile=$ntile, nranks=$nranks, tiles/rank=$(length(my_tiles))$(ievol == 1 ? ", lightcone mode" : "")"
+    rank == 0 && verbose && @info "Phase 0: N=$N, ntile=$ntile, nranks=$nranks, tiles/rank=$(length(my_tiles))$(ievol == 1 ? ", lightcone mode" : "")$(lowmem ? ", lowmem" : "")"
 
-    # ---- PencilFFT setup ----
+    # ---- PencilFFT setup (Float32 to halve distributed memory) ----
     proc_dims = _factor_procs(nranks)
-    plan = PencilFFTPlan((N, N, N), RFFT(), proc_dims, comm)
+    # Create a temporary Float64 plan to get the pencil decomposition, then build
+    # the real Float32 plan from a PencilArray with the correct type.
+    _plan_tmp = PencilFFTPlan((N, N, N), RFFT(), proc_dims, comm)
+    _noise_tmp = PencilFFTs.allocate_input(_plan_tmp)
+    _pen = PencilArrays.pencil(_noise_tmp)
+    noise_pencil = PencilArray{Float32}(undef, _pen)
+    _plan_tmp = nothing; _noise_tmp = nothing
+    plan = PencilFFTPlan(noise_pencil, RFFT())
 
     # ---- Phase 1a: Distributed noise generation (Threefry counter-based RNG) ----
     pk = PeakPatch.load_pk(cfg.pkfile)
 
-    noise_pencil = PencilFFTs.allocate_input(plan)
     pen = PencilArrays.pencil(noise_pencil)
     ranges = PencilArrays.range_local(pen)
     PeakPatch.fill_noise_threefry_region!(parent(noise_pencil), ranges, N, seed)
 
-    rank == 0 && verbose && @info "Phase 1a: distributed noise generated (Threefry)"
+    rank == 0 && verbose && @info "Phase 1a: distributed noise generated (Threefry, Float32)"
 
     # ---- Phase 1b: Distributed forward FFT + P(k) convolution ----
     delta_k_pencil = plan * noise_pencil
@@ -459,94 +595,139 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
 
     rank == 0 && verbose && @info "Phase 1b: forward FFT + P(k) done"
 
-    # ---- Phase 1c: delta tiles (distributed inverse FFT → tile extraction) ----
-    delta_real_pencil = plan \ delta_k_pencil
-    delta_tiles = _extract_my_tiles(delta_real_pencil, my_tiles, ntile, nsub, nmesh,
-                                    Float32, comm)
-    delta_real_pencil = nothing; GC.gc()
+    # ================================================================
+    # Phase 1 field extraction: standard vs lowmem
+    # ================================================================
 
-    # ---- Phase 1d: 1LPT displacement tiles (distributed) ----
-    psi_tiles = Dict{Int, Dict{NTuple{3,Int}, Array{Float32,3}}}()
-    for dim in 1:3
-        psi_k = _distributed_1lpt_component(delta_k_saved, dim, N, boxsize_full)
-        psi_real = plan \ psi_k
-        psi_tiles[dim] = _extract_my_tiles(psi_real, my_tiles, ntile, nsub, nmesh,
-                                           Float32, comm)
-    end
-
-    rank == 0 && verbose && @info "Phase 1d: 1LPT done"
-
-    # ---- Phase 1e: 2LPT displacement tiles (distributed, incremental src2) ----
+    delta_tiles = nothing
+    psi_tiles = nothing
     psi2_tiles = nothing
-    if ilpt >= 2
-        # Compute src2 incrementally to avoid holding all 6 phi_ij simultaneously.
-        # Peak memory: delta_k_saved + src2 + 2 phi arrays (vs 6 in the old approach).
-        src2_pencil = PencilFFTs.allocate_input(plan)
-        parent(src2_pencil) .= 0.0
-
-        # Off-diagonals: each used once, free immediately
-        for (di, dj) in ((1,2), (1,3), (2,3))
-            phi_k = _distributed_phi_ij_component(delta_k_saved, di, dj, N, boxsize_full)
-            phi_real = plan \ phi_k
-            parent(src2_pencil) .-= parent(phi_real) .^ 2
-            phi_real = nothing; phi_k = nothing
-        end
-
-        # Diagonals: need pairwise products, hold at most 2 at a time
-        phi11_k = _distributed_phi_ij_component(delta_k_saved, 1, 1, N, boxsize_full)
-        phi11_real = plan \ phi11_k; phi11_k = nothing
-
-        phi22_k = _distributed_phi_ij_component(delta_k_saved, 2, 2, N, boxsize_full)
-        phi22_real = plan \ phi22_k; phi22_k = nothing
-        parent(src2_pencil) .+= parent(phi11_real) .* parent(phi22_real)
-        phi22_real = nothing; GC.gc()
-
-        phi33_k = _distributed_phi_ij_component(delta_k_saved, 3, 3, N, boxsize_full)
-        phi33_real = plan \ phi33_k; phi33_k = nothing
-        parent(src2_pencil) .+= parent(phi11_real) .* parent(phi33_real)
-        phi11_real = nothing; GC.gc()
-
-        # Recompute phi22 for the last cross-product (1 extra IFFT, saves 1 full array)
-        phi22_k = _distributed_phi_ij_component(delta_k_saved, 2, 2, N, boxsize_full)
-        phi22_real = plan \ phi22_k; phi22_k = nothing
-        parent(src2_pencil) .+= parent(phi22_real) .* parent(phi33_real)
-        phi22_real = nothing; phi33_real = nothing; GC.gc()
-
-        # Forward FFT src2
-        src2_k_pencil = plan * src2_pencil
-        src2_pencil = nothing; GC.gc()
-
-        # Compute psi2_i tiles from src2_k
-        psi2_tiles = Dict{Int, Dict{NTuple{3,Int}, Array{Float32,3}}}()
-        for dim in 1:3
-            psi2_k = _distributed_2lpt_component(src2_k_pencil, dim, N, boxsize_full)
-            psi2_real = plan \ psi2_k
-            psi2_tiles[dim] = _extract_my_tiles(psi2_real, my_tiles, ntile, nsub, nmesh,
-                                                Float32, comm)
-        end
-        src2_k_pencil = nothing; GC.gc()
-
-        rank == 0 && verbose && @info "Phase 1e: 2LPT done (incremental src2)"
-    end
-
-    # ---- Phase 1f: Laplacian tiles (distributed) ----
     lapd_tiles = nothing
-    if ioutshear >= 1
-        lapd_k = _distributed_laplacian_k(delta_k_saved, N, boxsize_full)
-        lapd_real = plan \ lapd_k
-        lapd_tiles_f64 = _extract_my_tiles(lapd_real, my_tiles, ntile, nsub, nmesh,
-                                           Float64, comm)
-        # Match serial: divide by N³ (serial _compute_laplacian does irfft / n³)
-        lapd_tiles = Dict{NTuple{3,Int}, Array{Float32,3}}()
-        for (tid, arr) in lapd_tiles_f64
-            lapd_tiles[tid] = Float32.(arr ./ Float64(N)^3)
-        end
-        lapd_tiles_f64 = nothing; GC.gc()
+    src2_k_pencil = nothing
 
-        rank == 0 && verbose && @info "Phase 1f: Laplacian done"
+    if !lowmem
+        # ---- Standard: extract all tiles during Phase 1 ----
+
+        # Phase 1c: delta tiles
+        delta_real_pencil = plan \ delta_k_pencil
+        delta_tiles = _extract_my_tiles(delta_real_pencil, my_tiles, ntile, nsub, nmesh,
+                                        Float32, comm)
+        delta_real_pencil = nothing; GC.gc()
+
+        # Phase 1d: 1LPT displacement tiles
+        psi_tiles = Dict{Int, Dict{NTuple{3,Int}, Array{Float32,3}}}()
+        for dim in 1:3
+            psi_k = _distributed_1lpt_component(delta_k_saved, dim, N, boxsize_full)
+            psi_real = plan \ psi_k
+            psi_tiles[dim] = _extract_my_tiles(psi_real, my_tiles, ntile, nsub, nmesh,
+                                               Float32, comm)
+        end
+
+        rank == 0 && verbose && @info "Phase 1d: 1LPT done"
+
+        # Phase 1e: 2LPT displacement tiles (incremental src2)
+        if ilpt >= 2
+            src2_pencil = PencilFFTs.allocate_input(plan)
+            parent(src2_pencil) .= 0.0
+
+            for (di, dj) in ((1,2), (1,3), (2,3))
+                phi_k = _distributed_phi_ij_component(delta_k_saved, di, dj, N, boxsize_full)
+                phi_real = plan \ phi_k
+                parent(src2_pencil) .-= parent(phi_real) .^ 2
+                phi_real = nothing; phi_k = nothing
+            end
+
+            phi11_k = _distributed_phi_ij_component(delta_k_saved, 1, 1, N, boxsize_full)
+            phi11_real = plan \ phi11_k; phi11_k = nothing
+
+            phi22_k = _distributed_phi_ij_component(delta_k_saved, 2, 2, N, boxsize_full)
+            phi22_real = plan \ phi22_k; phi22_k = nothing
+            parent(src2_pencil) .+= parent(phi11_real) .* parent(phi22_real)
+            phi22_real = nothing; GC.gc()
+
+            phi33_k = _distributed_phi_ij_component(delta_k_saved, 3, 3, N, boxsize_full)
+            phi33_real = plan \ phi33_k; phi33_k = nothing
+            parent(src2_pencil) .+= parent(phi11_real) .* parent(phi33_real)
+            phi11_real = nothing; GC.gc()
+
+            # Recompute phi22 for the last cross-product (1 extra IFFT, saves holding 3 arrays)
+            phi22_k = _distributed_phi_ij_component(delta_k_saved, 2, 2, N, boxsize_full)
+            phi22_real = plan \ phi22_k; phi22_k = nothing
+            parent(src2_pencil) .+= parent(phi22_real) .* parent(phi33_real)
+            phi22_real = nothing; phi33_real = nothing; GC.gc()
+
+            src2_k_local = plan * src2_pencil
+            src2_pencil = nothing; GC.gc()
+
+            psi2_tiles = Dict{Int, Dict{NTuple{3,Int}, Array{Float32,3}}}()
+            for dim in 1:3
+                psi2_k = _distributed_2lpt_component(src2_k_local, dim, N, boxsize_full)
+                psi2_real = plan \ psi2_k
+                psi2_tiles[dim] = _extract_my_tiles(psi2_real, my_tiles, ntile, nsub, nmesh,
+                                                    Float32, comm)
+            end
+            src2_k_local = nothing; GC.gc()
+
+            rank == 0 && verbose && @info "Phase 1e: 2LPT done (incremental src2)"
+        end
+
+        # Phase 1f: Laplacian tiles
+        if ioutshear >= 1
+            lapd_k = _distributed_laplacian_k(delta_k_saved, N, boxsize_full)
+            lapd_real = plan \ lapd_k
+            lapd_tiles = _extract_my_tiles(lapd_real, my_tiles, ntile, nsub, nmesh,
+                                           Float32, comm)
+            scale = Float32(1.0 / Float64(N)^3)
+            for (_, arr) in lapd_tiles
+                arr .*= scale
+            end
+
+            rank == 0 && verbose && @info "Phase 1f: Laplacian done"
+        end
+
+    else
+        # ---- Lowmem: compute src2_k only, defer tile extraction to Phase 3-4 ----
+
+        if ilpt >= 2
+            src2_pencil = PencilFFTs.allocate_input(plan)
+            parent(src2_pencil) .= 0.0
+
+            for (di, dj) in ((1,2), (1,3), (2,3))
+                phi_k = _distributed_phi_ij_component(delta_k_saved, di, dj, N, boxsize_full)
+                phi_real = plan \ phi_k
+                parent(src2_pencil) .-= parent(phi_real) .^ 2
+                phi_real = nothing; phi_k = nothing
+            end
+
+            phi11_k = _distributed_phi_ij_component(delta_k_saved, 1, 1, N, boxsize_full)
+            phi11_real = plan \ phi11_k; phi11_k = nothing
+
+            phi22_k = _distributed_phi_ij_component(delta_k_saved, 2, 2, N, boxsize_full)
+            phi22_real = plan \ phi22_k; phi22_k = nothing
+            parent(src2_pencil) .+= parent(phi11_real) .* parent(phi22_real)
+            phi22_real = nothing; GC.gc()
+
+            phi33_k = _distributed_phi_ij_component(delta_k_saved, 3, 3, N, boxsize_full)
+            phi33_real = plan \ phi33_k; phi33_k = nothing
+            parent(src2_pencil) .+= parent(phi11_real) .* parent(phi33_real)
+            phi11_real = nothing; GC.gc()
+
+            phi22_k = _distributed_phi_ij_component(delta_k_saved, 2, 2, N, boxsize_full)
+            phi22_real = plan \ phi22_k; phi22_k = nothing
+            parent(src2_pencil) .+= parent(phi22_real) .* parent(phi33_real)
+            phi22_real = nothing; phi33_real = nothing; GC.gc()
+
+            src2_k_pencil = plan * src2_pencil
+            src2_pencil = nothing; GC.gc()
+
+            rank == 0 && verbose && @info "Phase 1e: src2_k computed (lowmem, tiles deferred)"
+        end
     end
 
-    # ---- Phase 2: Multi-scale peak finding ----
+    # ================================================================
+    # Phase 2: Multi-scale peak finding (shared by both modes)
+    # ================================================================
+
     tile_masks    = Dict(tid => zeros(Int8, nmesh, nmesh, nmesh) for tid in my_tiles)
     tile_peaks    = Dict(tid => PeakPatch.PeakCandidate[] for tid in my_tiles)
     tile_peak_Rf  = Dict(tid => Float64[] for tid in my_tiles)
@@ -556,7 +737,6 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
     for ic in 1:length(filters)
         Rf = filters[ic][3]
 
-        # Distributed smoothing: k-space window + inverse FFT → tile extraction
         smoothed_k = _distributed_apply_window(delta_k_saved, N, boxsize_full, Rf, wsmooth)
         smoothed_real = plan \ smoothed_k
         delta_s_tiles = _extract_my_tiles(smoothed_real, my_tiles, ntile, nsub, nmesh,
@@ -576,7 +756,6 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
             delta_s_tile = delta_s_tiles[tid]
             xbx, ybx, zbx = PeakPatch.tile_center(it, jt, kt, ntile, dcore_box)
 
-            # Per-tile fcrit in lightcone mode
             fcrit_tile = fcrit
             if ievol == 1
                 z_tile = PeakPatch.peak_redshift(obs[1], obs[2], obs[3], xbx, ybx, zbx, chi2z)
@@ -604,106 +783,149 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
         rank == 0 && verbose && @info "  Filter $ic: Rf=$(round(Rf;digits=3)), peaks=$filter_peak_count"
     end
 
-    delta_k_saved = nothing; GC.gc()
+    if !lowmem
+        delta_k_saved = nothing; GC.gc()
+    end
 
     total_peaks = sum(length(tile_peaks[tid]) for tid in my_tiles; init=0)
     rank == 0 && verbose && @info "Phase 2 done: $total_peaks peaks on rank $rank"
 
-    # ---- Phase 3-4: Shell analysis per tile (local, no comm) ----
+    # ================================================================
+    # Phase 3-4: Shell analysis
+    # ================================================================
+
     halos_basic = PeakPatch.HaloRecord[]
     halos_ext   = PeakPatch.ExtHaloRecord[]
 
-    for tid in my_tiles
-        it, jt, kt = tid
-        peaks = tile_peaks[tid]
-        isempty(peaks) && continue
-
-        delta_tile = delta_tiles[tid]
-        psi_x_tile = psi_tiles[1][tid]
-        psi_y_tile = psi_tiles[2][tid]
-        psi_z_tile = psi_tiles[3][tid]
-
-        psi2_x_tile = psi2_y_tile = psi2_z_tile = nothing
-        if psi2_tiles !== nothing
-            psi2_x_tile = psi2_tiles[1][tid]
-            psi2_y_tile = psi2_tiles[2][tid]
-            psi2_z_tile = psi2_tiles[3][tid]
+    if !lowmem
+        # ---- Standard: use pre-extracted tiles ----
+        for tid in my_tiles
+            _analyse_tile_shells!(halos_basic, halos_ext,
+                tid, tile_peaks[tid], tile_peak_Rf[tid],
+                tile_peak_FcRf[tid], tile_peak_d2Rf[tid], tile_masks[tid],
+                delta_tiles[tid],
+                psi_tiles[1][tid], psi_tiles[2][tid], psi_tiles[3][tid],
+                psi2_tiles !== nothing ? psi2_tiles[1][tid] : nothing,
+                psi2_tiles !== nothing ? psi2_tiles[2][tid] : nothing,
+                psi2_tiles !== nothing ? psi2_tiles[3][tid] : nothing,
+                lapd_tiles !== nothing ? lapd_tiles[tid] : nothing,
+                nmesh, nbuff, alatt, ntile, dcore_box,
+                obs, ievol, z_max, chi2z, growth_tables, ZZon,
+                Omnr, cosmo, ct, shells, cfg, ioutshear, ilpt)
         end
+    else
+        # ---- Lowmem: batched tile extraction + shell analysis ----
 
-        lapd_tile = lapd_tiles !== nothing ? lapd_tiles[tid] : nothing
-
-        mask_tile = tile_masks[tid]
-        fill!(mask_tile, 0)
-
-        pg = PeakPatch.PeakGrid(delta_tile, psi_x_tile, psi_y_tile, psi_z_tile,
-                                  psi2_x_tile, psi2_y_tile, psi2_z_tile,
-                                  mask_tile, (nmesh, nmesh, nmesh), lapd_tile)
-
-        for idx in 1:length(peaks)
-            peak = peaks[idx]
-            Rf = tile_peak_Rf[tid][idx]
-            ir2min = min(floor(Int, (1.75 * Rf / alatt)^2),
-                         floor(Int, (40.0 / alatt - 1)^2))
-
-            # Per-peak ZZon in lightcone mode
-            ZZon_pk = ZZon
+        # Build global active tile list (deterministic, all ranks agree)
+        all_active_tiles = NTuple{3,Int}[]
+        half_lc = dcore_box / 2.0
+        for kt in 1:ntile, jt in 1:ntile, it in 1:ntile
+            tid = (it, jt, kt)
             if ievol == 1
-                z_pk = PeakPatch.peak_redshift(obs[1], obs[2], obs[3], peak.x, peak.y, peak.z, chi2z)
-                ZZon_pk = 1.0 + z_pk
-                if z_pk > z_max
-                    continue
-                end
+                xbx, ybx, zbx = PeakPatch.tile_center(it, jt, kt, ntile, dcore_box)
+                dx = max(abs(xbx - obs[1]) - half_lc, 0.0)
+                dy = max(abs(ybx - obs[2]) - half_lc, 0.0)
+                dz = max(abs(zbx - obs[3]) - half_lc, 0.0)
+                sqrt(dx^2 + dy^2 + dz^2) <= chi_max || continue
             end
-
-            result = PeakPatch.analyse_peak(pg, peak.ipp, alatt, ir2min, ZZon_pk, Rf, ct, shells;
-                                             nbuff=nbuff, growth_tables=growth_tables,
-                                             rmax2rs=cfg.rmax2rs)
-
-            if result.RTHL > 0
-                # Per-peak growth factor and velocity scaling
-                a_pk = 1.0 / ZZon_pk
-                _, _, D_pk = PeakPatch.Dlinear_ab(a_pk, growth_tables)
-
-                RTHL_phys = Float32(result.RTHL * alatt)
-                Sbar_vel = result.Sbar .* D_pk
-
-                Sbar2_vel = zeros(3)
-                if psi2_tiles !== nothing
-                    Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
-                    Sbar2_vel = -result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)
-                end
-
-                if ioutshear >= 1
-                    sm = result.strain_mat
-                    push!(halos_ext, PeakPatch.ExtHaloRecord(
-                        Float32(peak.x), Float32(peak.y), Float32(peak.z),
-                        Float32(Sbar_vel[1]), Float32(Sbar_vel[2]), Float32(Sbar_vel[3]),
-                        RTHL_phys,
-                        Float32(Sbar2_vel[1]), Float32(Sbar2_vel[2]), Float32(Sbar2_vel[3]),
-                        Float32(result.Fbarx),
-                        Float32(result.e_v), Float32(result.p_v),
-                        Float32(sm[1,1]), Float32(sm[2,2]), Float32(sm[3,3]),
-                        Float32(sm[2,3]), Float32(sm[1,3]), Float32(sm[1,2]),
-                        Float32(result.d2F),
-                        Float32(result.zvir_half),
-                        Float32(result.gradpk[1]), Float32(result.gradpk[2]), Float32(result.gradpk[3]),
-                        Float32(result.gradpkf[1]), Float32(result.gradpkf[2]), Float32(result.gradpkf[3]),
-                        Float32(Rf),
-                        tile_peak_FcRf[tid][idx],
-                        tile_peak_d2Rf[tid][idx],
-                        Float32(result.gradpkrf[1]), Float32(result.gradpkrf[2]), Float32(result.gradpkrf[3])
-                    ))
-                else
-                    push!(halos_basic, PeakPatch.HaloRecord(
-                        Float32(peak.x), Float32(peak.y), Float32(peak.z),
-                        Float32(Sbar_vel[1]), Float32(Sbar_vel[2]), Float32(Sbar_vel[3]),
-                        RTHL_phys,
-                        Float32(Sbar2_vel[1]), Float32(Sbar2_vel[2]), Float32(Sbar2_vel[3]),
-                        Float32(result.Fbarx)
-                    ))
-                end
-            end
+            push!(all_active_tiles, tid)
         end
+
+        # Compute batch size from memory budget
+        # Peak during IFFT: delta_k + src2_k + field_k + field_real + (n_fields-1) batch tiles
+        # = (n_stored + 2) × dk_bytes + (n_fields-1) × B × tile_bytes
+        local_dk_bytes = sizeof(parent(delta_k_saved))
+        tile_field_bytes = nmesh^3 * sizeof(Float32)
+        n_stored = src2_k_pencil !== nothing ? 2 : 1  # delta_k + maybe src2_k
+        n_tile_fields = 1 + 3 + (ilpt >= 2 ? 3 : 0) + (ioutshear >= 1 ? 1 : 0)
+        overhead_bytes = (n_stored + 2) * local_dk_bytes
+        avail_for_tiles = available_gb * 1e9 - overhead_bytes
+        tiles_per_batch = max(1, floor(Int, avail_for_tiles / ((n_tile_fields - 1) * tile_field_bytes)))
+
+        my_tile_set = Set(my_tiles)
+        n_batches = cld(length(all_active_tiles), tiles_per_batch)
+
+        rank == 0 && verbose && @info "Phase 3-4: lowmem batched, $(length(all_active_tiles)) active tiles, batch_size=$tiles_per_batch, $n_batches batches"
+
+        for bi in 1:n_batches
+            batch_start = (bi - 1) * tiles_per_batch + 1
+            batch_end = min(bi * tiles_per_batch, length(all_active_tiles))
+            batch_global = all_active_tiles[batch_start:batch_end]
+            my_batch = [t for t in batch_global if t in my_tile_set]
+
+            rank == 0 && verbose && @info "  Batch $bi/$n_batches: $(length(batch_global)) tiles ($(length(my_batch)) local)"
+
+            # Extract delta tiles
+            delta_k_copy = similar(delta_k_saved)
+            delta_k_copy .= delta_k_saved
+            delta_real = plan \ delta_k_copy
+            delta_k_copy = nothing
+            batch_delta = _extract_my_tiles(delta_real, my_batch, ntile, nsub, nmesh,
+                                            Float32, comm; global_tile_list=batch_global)
+            delta_real = nothing; GC.gc()
+
+            # Extract 1LPT displacement tiles
+            batch_psi = Dict{Int, Dict{NTuple{3,Int}, Array{Float32,3}}}()
+            for dim in 1:3
+                psi_k = _distributed_1lpt_component(delta_k_saved, dim, N, boxsize_full)
+                psi_real = plan \ psi_k
+                psi_k = nothing
+                batch_psi[dim] = _extract_my_tiles(psi_real, my_batch, ntile, nsub, nmesh,
+                                                   Float32, comm; global_tile_list=batch_global)
+                psi_real = nothing; GC.gc()
+            end
+
+            # Extract 2LPT displacement tiles
+            batch_psi2 = Dict{Int, Dict{NTuple{3,Int}, Array{Float32,3}}}()
+            if ilpt >= 2 && src2_k_pencil !== nothing
+                for dim in 1:3
+                    psi2_k = _distributed_2lpt_component(src2_k_pencil, dim, N, boxsize_full)
+                    psi2_real = plan \ psi2_k
+                    psi2_k = nothing
+                    batch_psi2[dim] = _extract_my_tiles(psi2_real, my_batch, ntile, nsub, nmesh,
+                                                        Float32, comm; global_tile_list=batch_global)
+                    psi2_real = nothing; GC.gc()
+                end
+            end
+
+            # Extract Laplacian tiles
+            batch_lapd = nothing
+            if ioutshear >= 1
+                lapd_k = _distributed_laplacian_k(delta_k_saved, N, boxsize_full)
+                lapd_real = plan \ lapd_k
+                lapd_k = nothing
+                batch_lapd = _extract_my_tiles(lapd_real, my_batch, ntile, nsub, nmesh,
+                                               Float32, comm; global_tile_list=batch_global)
+                lapd_real = nothing
+                scale = Float32(1.0 / Float64(N)^3)
+                for (_, arr) in batch_lapd
+                    arr .*= scale
+                end
+                GC.gc()
+            end
+
+            # Shell analysis for this batch
+            for tid in my_batch
+                _analyse_tile_shells!(halos_basic, halos_ext,
+                    tid, tile_peaks[tid], tile_peak_Rf[tid],
+                    tile_peak_FcRf[tid], tile_peak_d2Rf[tid], tile_masks[tid],
+                    batch_delta[tid],
+                    batch_psi[1][tid], batch_psi[2][tid], batch_psi[3][tid],
+                    haskey(batch_psi2, 1) ? batch_psi2[1][tid] : nothing,
+                    haskey(batch_psi2, 2) ? batch_psi2[2][tid] : nothing,
+                    haskey(batch_psi2, 3) ? batch_psi2[3][tid] : nothing,
+                    batch_lapd !== nothing ? batch_lapd[tid] : nothing,
+                    nmesh, nbuff, alatt, ntile, dcore_box,
+                    obs, ievol, z_max, chi2z, growth_tables, ZZon,
+                    Omnr, cosmo, ct, shells, cfg, ioutshear, ilpt)
+            end
+
+            # Free batch data
+            batch_delta = nothing; batch_psi = nothing
+            batch_psi2 = nothing; batch_lapd = nothing; GC.gc()
+        end
+
+        delta_k_saved = nothing; src2_k_pencil = nothing; GC.gc()
     end
 
     local_halos = ioutshear >= 1 ? halos_ext : halos_basic
@@ -748,6 +970,12 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
         MPI.Gatherv!(local_data, nothing, 0, comm)
         return T_halo[]
     end
+end
+
+# Install mpi_buffer override at module load time (not precompile time)
+function __init__()
+    @eval Transpositions.mpi_buffer(buf::AbstractArray, off, len) =
+        _mpi_buffer_large(buf, off, len)
 end
 
 end # module MPIExt

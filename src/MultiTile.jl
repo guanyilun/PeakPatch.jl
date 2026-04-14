@@ -238,7 +238,7 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
         filter_peak_count = 0
         for tid in tile_ids
             it, jt, kt = tid
-            delta_s_tile = extract_tile(Tf.(delta_s_full), it, jt, kt, nsub, nmesh)
+            delta_s_tile = Tf.(extract_tile(delta_s_full, it, jt, kt, nsub, nmesh))
             xbx, ybx, zbx = tile_center(it, jt, kt, ntile, dcore_box)
 
             # Per-tile fcrit in lightcone mode
@@ -258,7 +258,7 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             if !isempty(new_peaks)
                 lapd_s_tile = nothing
                 if lapd_s_full !== nothing
-                    lapd_s_tile = extract_tile(Tf.(lapd_s_full), it, jt, kt, nsub, nmesh)
+                    lapd_s_tile = Tf.(extract_tile(lapd_s_full, it, jt, kt, nsub, nmesh))
                 end
 
                 for pk in new_peaks
@@ -576,7 +576,7 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
         filter_peak_count = 0
         for tid in tile_ids
             it, jt, kt = tid
-            delta_s_tile = extract_tile(Tf.(delta_s_full), it, jt, kt, nsub, nmesh)
+            delta_s_tile = Tf.(extract_tile(delta_s_full, it, jt, kt, nsub, nmesh))
             xbx, ybx, zbx = tile_center(it, jt, kt, ntile, dcore_box)
 
             fcrit_tile = fcrit
@@ -594,7 +594,7 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             if !isempty(new_peaks)
                 lapd_s_tile = nothing
                 if lapd_s_full !== nothing
-                    lapd_s_tile = extract_tile(Tf.(lapd_s_full), it, jt, kt, nsub, nmesh)
+                    lapd_s_tile = Tf.(extract_tile(lapd_s_full, it, jt, kt, nsub, nmesh))
                 end
                 for pk in new_peaks
                     i, j, k = _ipp_to_ijk(pk.ipp, nmesh)
