@@ -476,25 +476,41 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
 
     rank == 0 && verbose && @info "Phase 1d: 1LPT done"
 
-    # ---- Phase 1e: 2LPT displacement tiles (distributed) ----
+    # ---- Phase 1e: 2LPT displacement tiles (distributed, incremental src2) ----
     psi2_tiles = nothing
     if ilpt >= 2
-        # Compute phi_ij in k-space → inverse FFT → real-space PencilArrays
-        phi_pairs = [(1,1), (2,2), (3,3), (1,2), (1,3), (2,3)]
-        phi_real = Dict{Tuple{Int,Int}, Any}()
-        for (di, dj) in phi_pairs
+        # Compute src2 incrementally to avoid holding all 6 phi_ij simultaneously.
+        # Peak memory: delta_k_saved + src2 + 2 phi arrays (vs 6 in the old approach).
+        src2_pencil = PencilFFTs.allocate_input(plan)
+        parent(src2_pencil) .= 0.0
+
+        # Off-diagonals: each used once, free immediately
+        for (di, dj) in ((1,2), (1,3), (2,3))
             phi_k = _distributed_phi_ij_component(delta_k_saved, di, dj, N, boxsize_full)
-            phi_real[(di,dj)] = plan \ phi_k
+            phi_real = plan \ phi_k
+            parent(src2_pencil) .-= parent(phi_real) .^ 2
+            phi_real = nothing; phi_k = nothing
         end
 
-        # Compute src2 in distributed real space
-        src2_pencil = PencilFFTs.allocate_input(plan)
-        p11 = parent(phi_real[(1,1)]); p22 = parent(phi_real[(2,2)]); p33 = parent(phi_real[(3,3)])
-        p12 = parent(phi_real[(1,2)]); p13 = parent(phi_real[(1,3)]); p23 = parent(phi_real[(2,3)])
-        parent(src2_pencil) .= p11 .* p22 .- p12 .^ 2 .+
-                                p11 .* p33 .- p13 .^ 2 .+
-                                p22 .* p33 .- p23 .^ 2
-        phi_real = nothing; GC.gc()
+        # Diagonals: need pairwise products, hold at most 2 at a time
+        phi11_k = _distributed_phi_ij_component(delta_k_saved, 1, 1, N, boxsize_full)
+        phi11_real = plan \ phi11_k; phi11_k = nothing
+
+        phi22_k = _distributed_phi_ij_component(delta_k_saved, 2, 2, N, boxsize_full)
+        phi22_real = plan \ phi22_k; phi22_k = nothing
+        parent(src2_pencil) .+= parent(phi11_real) .* parent(phi22_real)
+        phi22_real = nothing; GC.gc()
+
+        phi33_k = _distributed_phi_ij_component(delta_k_saved, 3, 3, N, boxsize_full)
+        phi33_real = plan \ phi33_k; phi33_k = nothing
+        parent(src2_pencil) .+= parent(phi11_real) .* parent(phi33_real)
+        phi11_real = nothing; GC.gc()
+
+        # Recompute phi22 for the last cross-product (1 extra IFFT, saves 1 full array)
+        phi22_k = _distributed_phi_ij_component(delta_k_saved, 2, 2, N, boxsize_full)
+        phi22_real = plan \ phi22_k; phi22_k = nothing
+        parent(src2_pencil) .+= parent(phi22_real) .* parent(phi33_real)
+        phi22_real = nothing; phi33_real = nothing; GC.gc()
 
         # Forward FFT src2
         src2_k_pencil = plan * src2_pencil
@@ -510,7 +526,7 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
         end
         src2_k_pencil = nothing; GC.gc()
 
-        rank == 0 && verbose && @info "Phase 1e: 2LPT done"
+        rank == 0 && verbose && @info "Phase 1e: 2LPT done (incremental src2)"
     end
 
     # ---- Phase 1f: Laplacian tiles (distributed) ----

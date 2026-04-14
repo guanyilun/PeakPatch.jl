@@ -259,4 +259,141 @@ end
     rm(tmpdir; recursive=true)
 end
 
+# =================================================================
+# Test 8: lowmem ntile=1 matches run_tile exactly
+# =================================================================
+@testset "lowmem ntile=1 matches run_tile" begin
+    tmpdir = mktempdir()
+    cfg = _make_config(tmpdir; n=32, boxsize=100.0, z=0.0, ilpt=1, nbuff=3)
+
+    halos_single = PeakPatch.Pipeline.run_tile(cfg; seed=42, verbose=false)
+
+    cfg_lm = PipelineConfig(
+        Omx = cfg.Omx, OmB = cfg.OmB, Omvac = cfg.Omvac, h = cfg.h,
+        n = cfg.n, boxsize = cfg.boxsize, nbuff = cfg.nbuff,
+        z_out = cfg.z_out, z_max = cfg.z_max, ilpt = cfg.ilpt,
+        rmax2rs = cfg.rmax2rs, pkfile = cfg.pkfile, filterfile = cfg.filterfile,
+        fileout = joinpath(tmpdir, "test_out_lm.pksc"), tabfile = cfg.tabfile,
+    )
+
+    halos_lm = run_multitile_lowmem(cfg_lm; ntile=1, seed=42, verbose=false)
+
+    @test length(halos_single) == length(halos_lm)
+
+    if !isempty(halos_single) && !isempty(halos_lm)
+        sort!(halos_single; by=h -> (h.x, h.y, h.z))
+        sort!(halos_lm; by=h -> (h.x, h.y, h.z))
+        for i in 1:length(halos_single)
+            @test halos_single[i].x ≈ halos_lm[i].x atol=1e-6
+            @test halos_single[i].y ≈ halos_lm[i].y atol=1e-6
+            @test halos_single[i].z ≈ halos_lm[i].z atol=1e-6
+            @test halos_single[i].RTHL ≈ halos_lm[i].RTHL atol=1e-6
+        end
+    end
+
+    rm(tmpdir; recursive=true)
+end
+
+# =================================================================
+# Test 9: lowmem ntile=2 matches standard ntile=2
+# =================================================================
+@testset "lowmem ntile=2 matches standard" begin
+    tmpdir = mktempdir()
+    cfg = _make_config(tmpdir; n=20, boxsize=60.0, z=0.0, ilpt=1, nbuff=3)
+
+    halos_std = PeakPatch.MultiTile.run_multitile(cfg; ntile=2, seed=42, verbose=false)
+
+    cfg_lm = PipelineConfig(
+        Omx = cfg.Omx, OmB = cfg.OmB, Omvac = cfg.Omvac, h = cfg.h,
+        n = cfg.n, boxsize = cfg.boxsize, nbuff = cfg.nbuff,
+        z_out = cfg.z_out, z_max = cfg.z_max, ilpt = cfg.ilpt,
+        rmax2rs = cfg.rmax2rs, pkfile = cfg.pkfile, filterfile = cfg.filterfile,
+        fileout = joinpath(tmpdir, "test_out_lm2.pksc"), tabfile = cfg.tabfile,
+    )
+
+    halos_lm = run_multitile_lowmem(cfg_lm; ntile=2, seed=42, verbose=false)
+
+    @test length(halos_std) == length(halos_lm)
+
+    if !isempty(halos_std) && !isempty(halos_lm)
+        sort!(halos_std; by=h -> (h.x, h.y, h.z))
+        sort!(halos_lm; by=h -> (h.x, h.y, h.z))
+        for i in 1:length(halos_std)
+            @test halos_std[i].x ≈ halos_lm[i].x atol=1e-6
+            @test halos_std[i].RTHL ≈ halos_lm[i].RTHL atol=1e-6
+        end
+    end
+
+    rm(tmpdir; recursive=true)
+end
+
+# =================================================================
+# Test 10: lowmem ntile=2 with 2LPT matches standard
+# =================================================================
+@testset "lowmem ntile=2 with 2LPT" begin
+    tmpdir = mktempdir()
+    cfg = _make_config(tmpdir; n=20, boxsize=60.0, z=0.0, ilpt=2, nbuff=3)
+
+    halos_std = PeakPatch.MultiTile.run_multitile(cfg; ntile=2, seed=99, verbose=false)
+
+    cfg_lm = PipelineConfig(
+        Omx = cfg.Omx, OmB = cfg.OmB, Omvac = cfg.Omvac, h = cfg.h,
+        n = cfg.n, boxsize = cfg.boxsize, nbuff = cfg.nbuff,
+        z_out = cfg.z_out, z_max = cfg.z_max, ilpt = cfg.ilpt,
+        rmax2rs = cfg.rmax2rs, pkfile = cfg.pkfile, filterfile = cfg.filterfile,
+        fileout = joinpath(tmpdir, "test_out_lm3.pksc"), tabfile = cfg.tabfile,
+    )
+
+    halos_lm = run_multitile_lowmem(cfg_lm; ntile=2, seed=99, verbose=false)
+
+    @test length(halos_std) == length(halos_lm)
+
+    if !isempty(halos_std) && !isempty(halos_lm)
+        sort!(halos_std; by=h -> (h.x, h.y, h.z))
+        sort!(halos_lm; by=h -> (h.x, h.y, h.z))
+        for i in 1:length(halos_std)
+            @test halos_std[i].RTHL ≈ halos_lm[i].RTHL atol=1e-6
+            @test halos_std[i].vx ≈ halos_lm[i].vx atol=1e-6
+        end
+    end
+
+    rm(tmpdir; recursive=true)
+end
+
+# =================================================================
+# Test 11: lowmem with extended output (ioutshear=1)
+# =================================================================
+@testset "lowmem with ioutshear" begin
+    tmpdir = mktempdir()
+    cfg = _make_config(tmpdir; n=32, boxsize=100.0, z=0.0, ilpt=2, nbuff=3,
+                       ioutshear=1)
+
+    halos_std = PeakPatch.MultiTile.run_multitile(cfg; ntile=1, seed=42, verbose=false)
+
+    cfg_lm = PipelineConfig(
+        Omx = cfg.Omx, OmB = cfg.OmB, Omvac = cfg.Omvac, h = cfg.h,
+        n = cfg.n, boxsize = cfg.boxsize, nbuff = cfg.nbuff,
+        z_out = cfg.z_out, z_max = cfg.z_max, ilpt = cfg.ilpt,
+        ioutshear = cfg.ioutshear, rmax2rs = cfg.rmax2rs,
+        pkfile = cfg.pkfile, filterfile = cfg.filterfile,
+        fileout = joinpath(tmpdir, "test_out_lm4.pksc"), tabfile = cfg.tabfile,
+    )
+
+    halos_lm = run_multitile_lowmem(cfg_lm; ntile=1, seed=42, verbose=false)
+
+    @test length(halos_std) == length(halos_lm)
+
+    if !isempty(halos_std) && !isempty(halos_lm)
+        sort!(halos_std; by=h -> (h.x, h.y, h.z))
+        sort!(halos_lm; by=h -> (h.x, h.y, h.z))
+        for i in 1:length(halos_std)
+            @test halos_std[i].RTHL ≈ halos_lm[i].RTHL atol=1e-4
+            @test halos_std[i].e_v ≈ halos_lm[i].e_v atol=1e-4
+            @test halos_std[i].strain_11 ≈ halos_lm[i].strain_11 atol=1e-4
+        end
+    end
+
+    rm(tmpdir; recursive=true)
+end
+
 end # MultiTile testset

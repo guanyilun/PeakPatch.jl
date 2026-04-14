@@ -30,7 +30,9 @@ using .LCG: LCG
 using .NonGaussian: apply_fnl_correlated!, apply_fnl_uncorrelated!
 using .RandomField: generate_grf, generate_grf_lcg,
     fill_noise_threefry!, fill_noise_threefry_region!
-using .LPT: displacements_1lpt, displacements_2lpt
+using .LPT: displacements_1lpt, displacements_2lpt,
+    displacement_1lpt_component, displacement_2lpt_component,
+    compute_src2_k, compute_laplacian_field
 using .Filters: gaussian_window, gaussian_window_fortran, tophat_window, read_filterbank
 using .PeakFind: PeakCandidate, find_peaks
 using .RadialShell: ShellCell, PeakGrid, PeakResult, no_collapse,
@@ -52,7 +54,7 @@ using .MassFunction: rho_mean, R_of_M, M_of_R, sigma_R, sigma_M,
 using .AbundanceMatch: AbundanceTable, build_abundance_table,
     abundance_match, save_abundance_table, load_abundance_table
 using .Pipeline: run_tile
-using .MultiTile: run_multitile, extract_tile, tile_center
+using .MultiTile: run_multitile, run_multitile_lowmem, extract_tile, tile_center
 
 # MPI extension stub — method defined in ext/MPIExt.jl when MPI+PencilFFTs are loaded
 function run_multitile_mpi end
@@ -69,6 +71,8 @@ export
     generate_grf,
     fill_noise_threefry!, fill_noise_threefry_region!,
     displacements_1lpt, displacements_2lpt,
+    displacement_1lpt_component, displacement_2lpt_component,
+    compute_src2_k, compute_laplacian_field,
     gaussian_window, gaussian_window_fortran, tophat_window, read_filterbank,
     PeakCandidate, find_peaks,
     ShellCell, PeakGrid, PeakResult,
@@ -87,7 +91,7 @@ export
     AbundanceTable, build_abundance_table,
     abundance_match, save_abundance_table, load_abundance_table,
     run_tile,
-    run_multitile, extract_tile, tile_center,
+    run_multitile, run_multitile_lowmem, extract_tile, tile_center,
     run_multitile_mpi,
     write_catalog_hdf5
 

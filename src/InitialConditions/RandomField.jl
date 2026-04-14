@@ -70,11 +70,13 @@ For a distributed sub-region (e.g. PencilArray), use `fill_noise_threefry_region
 function fill_noise_threefry!(noise::AbstractArray{T,3}, n::Int, seed::Integer) where T
     s = UInt64(seed)
     n3 = n * n * n
-    @inbounds for k in 1:n, j in 1:n, i in 1:n
-        idx = i + (j - 1) * n + (k - 1) * n * n  # 1-based linear index
-        pair_idx = UInt64((idx - 1) >> 1)          # 0-based pair index
-        g1, g2 = _threefry_gaussian(s, pair_idx)
-        noise[i, j, k] = T(iseven(idx - 1) ? g1 : g2)
+    Threads.@threads for k in 1:n
+        @inbounds for j in 1:n, i in 1:n
+            idx = i + (j - 1) * n + (k - 1) * n * n  # 1-based linear index
+            pair_idx = UInt64((idx - 1) >> 1)          # 0-based pair index
+            g1, g2 = _threefry_gaussian(s, pair_idx)
+            noise[i, j, k] = T(iseven(idx - 1) ? g1 : g2)
+        end
     end
     # If n³ is odd, the last cell uses g1 from the last pair (g2 is discarded)
     return noise
@@ -93,8 +95,8 @@ for the same global index — decomposition-independent and deterministic.
 function fill_noise_threefry_region!(arr, global_ranges, n::Int, seed::Integer)
     s = UInt64(seed)
     irange, jrange, krange = global_ranges
-    @inbounds for (lk, gk) in enumerate(krange)
-        for (lj, gj) in enumerate(jrange)
+    Threads.@threads for (lk, gk) in collect(enumerate(krange))
+        @inbounds for (lj, gj) in enumerate(jrange)
             for (li, gi) in enumerate(irange)
                 idx = gi + (gj - 1) * n + (gk - 1) * n * n
                 pair_idx = UInt64((idx - 1) >> 1)

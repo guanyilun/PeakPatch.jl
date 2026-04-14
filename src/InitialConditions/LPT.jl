@@ -190,4 +190,186 @@ function displacements_2lpt(delta_k, n::Int, boxsize::Real)
     )
 end
 
+"""
+    displacement_1lpt_component(delta_k, n, boxsize, dim) -> Array
+
+Compute a single 1LPT displacement component (dim=1,2,3 for x,y,z).
+Returns the real-space field ψ_dim(x).
+
+Kernel: ψ_dim(k) = im * k_dim / k² * δ̃(k)
+"""
+function displacement_1lpt_component(delta_k, n::Int, boxsize::Real, dim::Int)
+    dk = 2π / Float64(boxsize)
+    nk = size(delta_k, 1)
+    CT = eltype(delta_k)
+
+    kx_arr = Float64.(FFTW.rfftfreq(n, n * dk))
+    ky_arr = Float64.(FFTW.fftfreq(n, n * dk))
+    kz_arr = Float64.(FFTW.fftfreq(n, n * dk))
+    k_arrs = (kx_arr, ky_arr, kz_arr)
+
+    out_k = similar(delta_k, CT)
+    nyq = n ÷ 2 + 1
+
+    Threads.@threads for iz in 1:n
+        for iy in 1:n, ix in 1:nk
+            kx = kx_arr[ix]; ky = ky_arr[iy]; kz = kz_arr[iz]
+            k2 = kx^2 + ky^2 + kz^2
+
+            if k2 == 0.0 || ix == nk || iy == nyq || iz == nyq
+                out_k[ix, iy, iz] = 0
+                continue
+            end
+            out_k[ix, iy, iz] = im * k_arrs[dim][dim == 1 ? ix : (dim == 2 ? iy : iz)] / k2 * delta_k[ix, iy, iz]
+        end
+    end
+
+    dummy_k = similar(out_k)
+    invplan = plan_irfft(dummy_k, n; flags=FFTW.MEASURE)
+    return invplan * out_k
+end
+
+"""
+    displacement_2lpt_component(src2_k, n, boxsize, dim) -> Array
+
+Compute a single 2LPT displacement component from the source term in k-space.
+Returns the real-space field ψ²_dim(x).
+
+Kernel: ψ²_dim(k) = -im * k_dim / k² * s̃(k)
+"""
+function displacement_2lpt_component(src2_k, n::Int, boxsize::Real, dim::Int)
+    dk = 2π / Float64(boxsize)
+    nk = size(src2_k, 1)
+    CT = eltype(src2_k)
+
+    kx_arr = Float64.(FFTW.rfftfreq(n, n * dk))
+    ky_arr = Float64.(FFTW.fftfreq(n, n * dk))
+    kz_arr = Float64.(FFTW.fftfreq(n, n * dk))
+    k_arrs = (kx_arr, ky_arr, kz_arr)
+
+    out_k = similar(src2_k, CT)
+    nyq = n ÷ 2 + 1
+
+    Threads.@threads for iz in 1:n
+        for iy in 1:n, ix in 1:nk
+            kx = kx_arr[ix]; ky = ky_arr[iy]; kz = kz_arr[iz]
+            k2 = kx^2 + ky^2 + kz^2
+
+            if k2 == 0.0 || ix == nk || iy == nyq || iz == nyq
+                out_k[ix, iy, iz] = 0
+                continue
+            end
+            out_k[ix, iy, iz] = -im * k_arrs[dim][dim == 1 ? ix : (dim == 2 ? iy : iz)] / k2 * src2_k[ix, iy, iz]
+        end
+    end
+
+    dummy_k = similar(out_k)
+    invplan = plan_irfft(dummy_k, n; flags=FFTW.MEASURE)
+    return invplan * out_k
+end
+
+"""
+    compute_src2_k(delta_k, n, boxsize) -> src2_k
+
+Compute the 2LPT source term in k-space with minimal peak memory.
+
+Instead of computing all 6 phi_ij simultaneously (6 full-grid arrays),
+computes them incrementally: off-diagonals one at a time (free immediately),
+then diagonals in a memory-efficient order.
+
+Peak memory: delta_k + src2 + 3 diagonal phi arrays (vs 6 simultaneous in `displacements_2lpt`).
+"""
+function compute_src2_k(delta_k, n::Int, boxsize::Real)
+    dk = 2π / Float64(boxsize)
+    nk = size(delta_k, 1)
+    CT = eltype(delta_k)
+    Tf = real(CT)
+
+    kx_arr = Float64.(FFTW.rfftfreq(n, n * dk))
+    ky_arr = Float64.(FFTW.fftfreq(n, n * dk))
+    kz_arr = Float64.(FFTW.fftfreq(n, n * dk))
+
+    # Accumulator for the source term
+    src2 = zeros(Tf, n, n, n)
+
+    # Reusable k-space buffer
+    phi_k = similar(delta_k, CT)
+
+    # FFTW plans (reuse for all phi_ij computations)
+    dummy_k = similar(phi_k)
+    invplan = plan_irfft(dummy_k, n; flags=FFTW.MEASURE)
+
+    # Helper: compute phi_ij in k-space
+    function _fill_phi_k!(phi_k, di::Int, dj::Int)
+        k_arrs = (kx_arr, ky_arr, kz_arr)
+        Threads.@threads for iz in 1:n
+            for iy in 1:n, ix in 1:nk
+                kx = kx_arr[ix]; ky = ky_arr[iy]; kz = kz_arr[iz]
+                k2 = kx^2 + ky^2 + kz^2
+                if k2 == 0.0
+                    phi_k[ix, iy, iz] = 0
+                    continue
+                end
+                ki = k_arrs[di][di == 1 ? ix : (di == 2 ? iy : iz)]
+                kj = k_arrs[dj][dj == 1 ? ix : (dj == 2 ? iy : iz)]
+                phi_k[ix, iy, iz] = -ki * kj / k2 * delta_k[ix, iy, iz]
+            end
+        end
+    end
+
+    # --- Off-diagonals (each used once, free immediately) ---
+    for (di, dj) in ((1,2), (1,3), (2,3))
+        _fill_phi_k!(phi_k, di, dj)
+        phi_ij = invplan * phi_k
+        src2 .-= phi_ij .^ 2
+    end
+
+    # --- Diagonals (need pairwise products) ---
+    _fill_phi_k!(phi_k, 1, 1)
+    phi_11 = invplan * phi_k
+
+    _fill_phi_k!(phi_k, 2, 2)
+    phi_22 = invplan * phi_k
+
+    _fill_phi_k!(phi_k, 3, 3)
+    phi_33 = invplan * phi_k
+
+    src2 .+= phi_11 .* phi_22 .+ phi_11 .* phi_33 .+ phi_22 .* phi_33
+
+    # Free diagonals
+    phi_11 = phi_22 = phi_33 = nothing
+
+    # FFT source to k-space
+    fwdplan = plan_rfft(src2; flags=FFTW.MEASURE)
+    src2_k = fwdplan * src2
+
+    return src2_k
+end
+
+"""
+    compute_laplacian_field(delta_k, n, boxsize) -> Array
+
+Compute k²-weighted field: irfft(k² × δ_k).
+Matches the Fortran convention (positive k², no sign flip).
+"""
+function compute_laplacian_field(delta_k, n::Int, boxsize::Real)
+    Tf = real(eltype(delta_k))
+    dk = Tf(2π / boxsize)
+    nk = n ÷ 2 + 1
+    nyq = n ÷ 2
+
+    lapd_k = similar(delta_k)
+    Threads.@threads for iz in 1:n
+        for iy in 1:n, ix in 1:nk
+            kx = Tf(ix - 1) * dk
+            ky = Tf(iy <= nyq + 1 ? iy - 1 : iy - 1 - n) * dk
+            kz = Tf(iz <= nyq + 1 ? iz - 1 : iz - 1 - n) * dk
+            k2 = kx^2 + ky^2 + kz^2
+            lapd_k[ix, iy, iz] = k2 * delta_k[ix, iy, iz]
+        end
+    end
+    lapd = irfft(lapd_k, n) ./ Tf(n)^3
+    return Tf.(lapd)
+end
+
 end # module LPT

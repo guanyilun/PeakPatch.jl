@@ -42,6 +42,7 @@ function main()
     ode_solver = Symbol(get(run_cfg, "ode_solver", "rk4"))
     use_lcg       = get(run_cfg, "use_lcg", false)
     fortran_compat = get(run_cfg, "fortran_compat", false)
+    lowmem        = get(run_cfg, "lowmem", false)
 
     # Output parameters
     out_cfg = get(config, "output", Dict{String,Any}())
@@ -72,6 +73,9 @@ function main()
         is_rank0 = MPI.Comm_rank(MPI.COMM_WORLD) == 0
         is_rank0 && @info "Running MPI multi-tile pipeline (ntile=$ntile)"
         run_multitile_mpi(cfg; ntile=ntile, seed=seed, verbose=verbose)
+    elseif ntile > 1 && lowmem
+        run_multitile_lowmem(cfg; ntile=ntile, seed=seed, verbose=verbose,
+                              use_lcg=use_lcg, fortran_compat=fortran_compat)
     elseif ntile > 1
         run_multitile(cfg; ntile=ntile, seed=seed, verbose=verbose,
                       use_lcg=use_lcg, fortran_compat=fortran_compat)
@@ -106,6 +110,7 @@ function main()
     end
 
     if format in ("hdf5", "both")
+        @eval using HDF5
         hdf5_path = joinpath(outdir, replace(basename(cfg.fileout), r"\.\w+$" => ".h5"))
         Om_total = cfg.Omx + cfg.OmB
         cosmo = CosmologyParams(Om_total, cfg.OmB, cfg.Omvac, cfg.h, 0.965, 0.808)
