@@ -20,6 +20,7 @@ include("MassFunction/MassFunction.jl")
 include("AbundanceMatch/AbundanceMatch.jl")
 include("Pipeline.jl")
 include("MultiTile.jl")
+include("MultiResolution.jl")
 
 # Re-export public API
 using .Cosmology: CosmologyParams, E2, H, chi, growth_factor, growth_rate, delta_c,
@@ -55,6 +56,7 @@ using .AbundanceMatch: AbundanceTable, build_abundance_table,
     abundance_match, save_abundance_table, load_abundance_table
 using .Pipeline: run_tile
 using .MultiTile: run_multitile, run_multitile_lowmem, extract_tile, tile_center
+using .MultiResolution: run_multitile_split
 
 # MPI extension stub — method defined in ext/MPIExt.jl when MPI+PencilFFTs are loaded
 function run_multitile_mpi end
