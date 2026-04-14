@@ -1,0 +1,71 @@
+#!/bin/bash
+#PBS -N pp_6144_multires
+#PBS -q greenq
+#PBS -l nodes=6:ppn=32
+#PBS -l walltime=48:00:00
+#PBS -o websky_6144_multires.out
+#PBS -e websky_6144_multires.err
+
+# Multi-resolution run of Websky 6144^3 on greenq nodes (128 GB RAM each).
+# No MPI needed — tiles are processed independently via run_multitile_split.
+#
+# Usage:
+#   qsub run_websky_6144_multires.pbs
+
+module load julia/1.11.5
+
+cd /home/yguan/work/cita/PeakPatch.jl
+
+CONFIG="validation/websky_6144/config_websky_6144_oct000.toml"
+OUTDIR="/fs/lustre/scratch/yguan/work/peakpatch/websky_6144_multires"
+mkdir -p ${OUTDIR}
+
+echo "=== PeakPatch.jl Websky 6144^3 — multi-resolution ==="
+echo "Start: $(date)"
+echo "Hosts: $(cat $PBS_NODEFILE | sort -u | tr '\n' ' ')"
+echo "Nodes: $(cat $PBS_NODEFILE | sort -u | wc -l)"
+
+NODES=($(cat $PBS_NODEFILE | sort -u))
+NNODES=${#NODES[@]}
+
+export JULIA_NUM_THREADS=32
+
+# Precompile on head node
+echo "Precompiling..."
+julia --project=. -e 'using PeakPatch; println("OK")' 2>&1 | tail -1
+
+# Run multi-resolution on each node in parallel.
+# Each node processes its share of the 729 tiles (ntile=9).
+# The split driver handles tile iteration internally, but we can
+# simply run the full pipeline on each node — run_multitile_split
+# is serial over tiles, so we run one instance per node.
+#
+# For a proper parallel run, we'd split tile ranges across nodes.
+# For now, run the full pipeline on node 0 as a demonstration and
+# timing comparison against the MPI approach.
+
+echo "Running multi-resolution pipeline on ${NODES[0]}..."
+ssh ${NODES[0]} "cd /home/yguan/work/cita/PeakPatch.jl && \
+    JULIA_NUM_THREADS=32 /cita/modules/julia/1.11.5/bin/julia --project=. -t 32 -e '
+using PeakPatch, TOML
+
+config = TOML.parsefile(\"${CONFIG}\")
+cfg = PipelineConfig(config)
+ntile = config[\"run\"][\"ntile\"]
+
+println(\"Starting multi-resolution run: N=6144, ntile=\$ntile\")
+println(\"Memory per tile: ~40 GB (fits in 128 GB greenq node)\")
+
+t0 = time()
+halos = run_multitile_split(cfg; ntile=ntile, seed=12345, verbose=true)
+elapsed = time() - t0
+
+println(\"\\nDone: \$(length(halos)) halos in \$(round(elapsed/60; digits=1)) minutes\")
+
+# Write catalog
+outpath = joinpath(\"${OUTDIR}\", \"catalog_multires_oct000.pksc\")
+write_pksc(outpath, halos)
+println(\"Wrote: \$outpath\")
+'" 2>&1 | tee ${OUTDIR}/multires_oct000.log
+
+echo "End: $(date)"
