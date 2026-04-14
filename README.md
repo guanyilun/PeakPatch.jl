@@ -14,6 +14,7 @@ This code is developed by a coding agent, so use with more care!
 - **Lightcone evolution** (`ievol=1`): per-peak redshift from observer distance, with tile pruning and horizon cuts
 - **Single-tile and multi-tile pipelines** with 1LPT and 2LPT displacement fields
 - **MPI-distributed multi-tile** via PencilFFTs.jl pencil decomposition (scales to N² ranks)
+- **Multi-resolution mode** (MUSIC-style): O(nmesh³) memory per tile, no MPI needed, 1.2% halo count accuracy
 - **Deterministic RNG**: Threefry2x counter-based noise (same seed, same field, any rank count)
 - **Lagrangian exclusion and volume reduction** (merger) for multi-tile catalogs
 - **Extended catalog output**: 33-field records with strain, gradients, Laplacian, formation redshift
@@ -82,6 +83,34 @@ using PencilFFTs, PencilArrays, PeakPatch
 
 halos = run_multitile_mpi(cfg; ntile=4, seed=42, comm=MPI.COMM_WORLD)
 ```
+
+### Multi-resolution (memory-efficient, no MPI)
+
+For very large grids where the global FFT exceeds available memory, the
+multi-resolution mode splits the convolution into a cheap global coarse-grid
+FFT and per-tile isolated FFTs, following the MUSIC approach (Hahn & Abel
+2011). This reduces memory from O(N³) to O(nmesh³) per tile — no MPI or
+distributed FFT needed.
+
+```julia
+halos = run_multitile_split(cfg; ntile=4, seed=42,
+                            coarse_factor=5,  # optimal for halo counts
+                            verbose=true)
+```
+
+The algorithm uses the Hoffman-Ribak constrained noise split: residual noise
+(with zero mean per coarse cell) is convolved locally with an isolated FFT,
+while long-wavelength modes are captured by a periodic FFT on the coarse grid
+and interpolated to each tile via tri-cubic Catmull-Rom interpolation.
+
+**Accuracy**: 1.2% halo count agreement vs global FFT on test grids (N=120,
+ntile=2). The `coarse_factor` parameter controls the coarse/fine split; cf=5
+is the default and optimal for halo counts. See
+[`docs/multi_resolution_fft.md`](docs/multi_resolution_fft.md) for the full
+accuracy analysis and error budget.
+
+**Memory**: ~15 GB per tile at nmesh=768 (vs ~1 TB for global FFT at N=6144).
+Tiles are independent and can be trivially parallelized.
 
 ### Lightcone mode
 
@@ -217,6 +246,7 @@ PeakPatch.jl/
     AbundanceMatch/AbundanceMatch.jl # N(>M,z) matching → M_target(M_TH, z) table
     Pipeline.jl                    # Single-tile driver (5-phase pipeline, lightcone support)
     MultiTile.jl                   # Serial multi-tile driver (lightcone + tile pruning)
+    MultiResolution.jl             # Memory-efficient multi-tile via MUSIC decomposition
   ext/
     MPIExt.jl                      # MPI-distributed driver (PencilFFTs)
     HDF5Ext.jl                     # HDF5 catalog output (for XGPaint.jl)
@@ -334,6 +364,7 @@ reference implementation:
 | Multi-tile (ntile=1) | Bit-identical to single-tile |
 | Multi-tile (ntile=2 vs Fortran MPI) | 550,431 vs 555,030 halos (0.83%) |
 | Multi-tile (ntile=2 vs single-tile 468³) | 1 halo difference (identical) |
+| Multi-resolution (ntile=2, cf=5, 120³) | 2127 vs 2101 halos (1.2%) |
 | MPI (np=1,2,4) | Exact match with serial |
 
 ### End-to-end halo catalog comparisons

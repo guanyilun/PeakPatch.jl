@@ -46,79 +46,124 @@ function _make_config(dir; n=60, boxsize=100.0, z=0.0, ilpt=1, nbuff=8,
     )
 end
 
+# Simple P(k) interpolator for field-level tests
+function _make_pk()
+    tmpfile = tempname() * ".dat"
+    ks = 10.0 .^ range(-4, stop=1, length=200)
+    open(tmpfile, "w") do f
+        for k in ks
+            Pk = 1e4 * k^(-1.5)
+            println(f, "$k  $Pk")
+        end
+    end
+    pk = PeakPatch.load_pk(tmpfile)
+    rm(tmpfile)
+    return pk
+end
+
 # ============================================================
-# Test 1: Multi-resolution ntile=2 vs global FFT ntile=2
+# Test 1: Field-level comparison (main accuracy test)
 # ============================================================
-@testset "Multi-resolution vs global FFT (ntile=2, 1LPT)" begin
+@testset "Field-level accuracy (ntile=2, N=120)" begin
+    # N=120, ntile=2, nbuff=8 → nsub=52, nmesh=68
+    # coarse_factor=5 → M=10, block=12
+    N = 120; ntile = 2; nbuff = 8; cf = 5
+    boxsize = 400.0; seed = 42
+    pk = _make_pk()
+
+    results = compare_fields_split(pk, N, boxsize, seed, ntile, cf;
+                                    nbuff=nbuff, verbose=true)
+
+    for r in results
+        println("  Tile $(r.tile): corr_δ=$(round(r.corr_delta; digits=5)), " *
+                "rms_δ=$(round(r.rms_delta*100; digits=2))%, " *
+                "corr_ψ₁=$(round(r.corr_psi1; digits=5)), " *
+                "rms_ψ₁=$(round(r.rms_psi1*100; digits=2))%")
+    end
+
+    for r in results
+        @test r.corr_delta > 0.999
+        @test r.rms_delta < 0.05
+        @test r.corr_psi1 > 0.93
+        @test r.rms_psi1 < 0.40
+    end
+end
+
+# ============================================================
+# Test 2: Coarse factor sweep
+# ============================================================
+@testset "Coarse factor sweep (N=120)" begin
+    N = 120; ntile = 2; nbuff = 8
+    boxsize = 400.0; seed = 42
+    pk = _make_pk()
+
+    # Accuracy is NOT monotonic in cf. Small cf → better delta (residual is
+    # more short-range) but worse ψ₁ (coarse grid too coarse for 1/k² modes).
+    # Large cf → worse delta (residual has long modes) but better ψ₁.
+    # cf=3-5 is optimal for halo counts (delta-dominated).
+    for cf in [3, 5, 6, 10, 20]
+        results = compare_fields_split(pk, N, boxsize, seed, ntile, cf;
+                                        nbuff=nbuff, verbose=false)
+        mean_corr_d = sum(r.corr_delta for r in results) / length(results)
+        mean_rms_d = sum(r.rms_delta for r in results) / length(results)
+        mean_corr_p = sum(r.corr_psi1 for r in results) / length(results)
+        mean_rms_p = sum(r.rms_psi1 for r in results) / length(results)
+        println("  cf=$cf (M=$(2*cf), block=$(N÷(2*cf))): " *
+                "δ: corr=$(round(mean_corr_d; digits=5)) rms=$(round(mean_rms_d*100; digits=2))% | " *
+                "ψ₁: corr=$(round(mean_corr_p; digits=5)) rms=$(round(mean_rms_p*100; digits=2))%")
+
+        @test mean_corr_d > 0.99
+        @test mean_rms_d < 0.15
+    end
+end
+
+# ============================================================
+# Test 3: Halo count comparison (end-to-end, 1LPT)
+# ============================================================
+@testset "Halo count comparison (ntile=2, 1LPT)" begin
     tmpdir = mktempdir()
-    # n=18, nbuff=3 → nsub=12, N=12*2+6=30. M=2*5=10 divides 30.
-    cfg = _make_config(tmpdir; n=18, boxsize=60.0, z=0.0, ilpt=1, nbuff=3)
+    # n=68, nbuff=8 → nsub=52, N=120. cf=5→M=10 divides 120.
+    cfg = _make_config(tmpdir; n=68, boxsize=226.67, z=0.0, ilpt=1, nbuff=8)
 
     halos_global = PeakPatch.run_multitile(cfg; ntile=2, seed=42, verbose=false)
     halos_split = PeakPatch.run_multitile_split(cfg; ntile=2, seed=42, verbose=true,
                                                   coarse_factor=5)
 
-    println("  Global FFT: $(length(halos_global)) halos")
-    println("  Split mode: $(length(halos_split)) halos")
-
-    # Both should find halos (test isn't useful if both are empty)
-    # On small grids, the mode split introduces ~10% RMS error in the fields,
-    # so halo counts won't match exactly.  Check that they're in the same
-    # ballpark (within 50% or ±2, whichever is larger).
     n_g = length(halos_global)
     n_s = length(halos_split)
-    tol = max(2, n_g ÷ 2)
-    @test abs(n_s - n_g) ≤ tol
+    println("  Global FFT: $n_g halos")
+    println("  Split mode: $n_s halos")
+
+    if n_g > 0
+        frac_diff = abs(n_s - n_g) / n_g
+        println("  Fractional difference: $(round(frac_diff*100; digits=1))%")
+        @test frac_diff < 0.05 || abs(n_s - n_g) <= 3  # <5% or ≤3 halos
+    end
 
     rm(tmpdir; recursive=true)
 end
 
 # ============================================================
-# Test 2: Multi-resolution ntile=2 with 2LPT
+# Test 4: Halo count comparison with 2LPT
 # ============================================================
-@testset "Multi-resolution vs global FFT (ntile=2, 2LPT)" begin
+@testset "Halo count comparison (ntile=2, 2LPT)" begin
     tmpdir = mktempdir()
-    cfg = _make_config(tmpdir; n=18, boxsize=60.0, z=0.0, ilpt=2, nbuff=3)
+    cfg = _make_config(tmpdir; n=68, boxsize=226.67, z=0.0, ilpt=2, nbuff=8)
 
     halos_global = PeakPatch.run_multitile(cfg; ntile=2, seed=42, verbose=false)
     halos_split = PeakPatch.run_multitile_split(cfg; ntile=2, seed=42, verbose=false,
                                                   coarse_factor=5)
 
-    println("  Global FFT (2LPT): $(length(halos_global)) halos")
-    println("  Split mode (2LPT): $(length(halos_split)) halos")
+    n_g = length(halos_global)
+    n_s = length(halos_split)
+    println("  Global FFT (2LPT): $n_g halos")
+    println("  Split mode (2LPT): $n_s halos")
 
-    if !isempty(halos_global) && !isempty(halos_split)
-        @test abs(length(halos_split) - length(halos_global)) ≤ max(1, length(halos_global) ÷ 10)
-    else
-        @test true
+    if n_g > 0
+        frac_diff = abs(n_s - n_g) / n_g
+        println("  Fractional difference: $(round(frac_diff*100; digits=1))%")
+        @test frac_diff < 0.05 || abs(n_s - n_g) <= 3
     end
-
-    rm(tmpdir; recursive=true)
-end
-
-# ============================================================
-# Test 3: Vary coarse_factor to show convergence
-# ============================================================
-@testset "Convergence with coarse_factor" begin
-    tmpdir = mktempdir()
-    # n=22, nbuff=4 → nsub=14, N=14*2+8=36. M=2*cf must divide 36.
-    # cf=2→M=4 (36/4=9✓), cf=3→M=6 (36/6=6✓), cf=6→M=12 (36/12=3✓), cf=9→M=18 (36/18=2✓)
-    cfg = _make_config(tmpdir; n=22, boxsize=100.0, z=0.0, ilpt=1, nbuff=4)
-
-    halos_global = PeakPatch.run_multitile(cfg; ntile=2, seed=42, verbose=false)
-    n_global = length(halos_global)
-
-    println("  Global FFT: $n_global halos")
-
-    for cf in [2, 3, 6, 9]
-        halos_split = PeakPatch.run_multitile_split(cfg; ntile=2, seed=42, verbose=false,
-                                                      coarse_factor=cf)
-        n_split = length(halos_split)
-        println("  coarse_factor=$cf: $n_split halos (Δ=$(n_split - n_global))")
-    end
-
-    # Just check it runs without error
-    @test true
 
     rm(tmpdir; recursive=true)
 end

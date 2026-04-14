@@ -47,10 +47,17 @@ We split the noise into a coarse component and a residual:
 
     ξ(x) = ξ̃₀(x) + ξ₁(x)
 
-where ξ̃₀ is the block-averaged coarse noise interpolated back to the fine
-grid, and ξ₁ = ξ - ξ̃₀ is the residual. By construction, ξ₁ has zero mean
-in each coarse cell (the Hoffman-Ribak constraint). This means T * ξ₁ is
-dominated by short-wavelength modes that decay quickly in real space.
+where ξ̃₀ is the block-averaged coarse noise spread to the fine grid via
+**nearest-neighbor** assignment (each fine cell gets the mean of its coarse
+cell), and ξ₁ = ξ - ξ̃₀ is the residual. By construction, ξ₁ has **exactly**
+zero mean in each coarse cell (the Hoffman-Ribak constraint). This means
+T * ξ₁ is dominated by short-wavelength modes that decay quickly in real
+space.
+
+**Important**: The spreading must use nearest-neighbor (not interpolation) to
+preserve the exact zero-mean property. Tri-linear or tri-cubic interpolation
+would blend across cell boundaries, breaking the constraint and introducing
+spurious long-wavelength modes in the residual.
 
 Then:
 
@@ -75,23 +82,20 @@ Memory: M³ × 4 bytes. For M=36 (ntile=9, cf=4): 187 KB. Trivial.
 
 For each tile (it, jt, kt):
 
-1. **Regenerate local noise**: Use Threefry to generate ξ on the tile's
-   nmesh³ region of the global grid (exact same values as global approach)
+1. **Generate residual noise**: Use Threefry to regenerate ξ on the tile's
+   nmesh³ region, then subtract the nearest-neighbor spread of coarse block
+   means. The residual ξ₁ has exactly zero mean per coarse cell.
 
-2. **Compute residual**: ξ₁ = ξ - interpolate(coarse_noise / √block³)
-   The division by √block³ converts coarse noise (unit variance) back to
-   block-mean scale for subtraction.
-
-3. **Isolated FFT convolution**: Zero-pad ξ₁ to (2×nmesh)³, apply
+2. **Isolated FFT convolution**: Zero-pad ξ₁ to (2×nmesh)³, apply
    T(k) = √(P(k) dk³ n³), IFFT, trim to nmesh³. The 2× padding ensures
    non-periodic (isolated) boundary conditions, avoiding wrap-around.
 
-4. **Interpolate coarse contribution**: Tri-linear interpolation of δ_coarse
-   from M³ grid to tile's nmesh³ region.
+3. **Interpolate coarse contribution**: Tri-cubic Catmull-Rom interpolation
+   of δ_coarse from M³ grid to tile's nmesh³ region.
 
-5. **Combine**: δ_tile = δ_self + δ_coarse_interp
+4. **Combine**: δ_tile = δ_self + δ_coarse_interp
 
-6. **Displacement fields**: Same split for ψ (1LPT kernel ik/k²).
+5. **Displacement fields**: Same split for ψ (1LPT kernel ik/k²).
    For 2LPT, compute src2 from the combined δ_tile on the local grid
    (periodic FFT OK since 2LPT is a second-order correction).
 
@@ -106,53 +110,73 @@ approach.
 
 ## Accuracy
 
-The decomposition is mathematically exact in the limit of:
-- Infinite coarse grid resolution (M → N)
-- Perfect interpolation (coarse → fine)
+### Error Decomposition
 
-In practice, errors arise from:
+Analysis on a 120³ test grid (ntile=2, cf=5, M=10) reveals the error budget:
 
-1. **Coarse interpolation**: Tri-linear interpolation of the coarse field
-   introduces smoothing at the coarse cell scale. Higher-order interpolation
-   (tri-cubic, as used by MUSIC) would reduce this.
+| Component | Correlation | RMS Error | Notes |
+|-----------|------------|-----------|-------|
+| Self term (isolated FFT of residual) | 99.998% | 0.57% | Near perfect |
+| Coarse term (M³ FFT + interpolation) | 96.4% | 26.6% | **The bottleneck** |
+| Combined (δ_self + δ_coarse_interp) | 99.9% | 3.5-4.3% | Coarse term is ~13% of total variance |
 
-2. **Isolated FFT boundary**: The residual noise ξ₁ is not truly periodic on
-   the tile domain. The 2× zero-padding handles most of this, but the
-   transfer function kernel extends beyond the padded domain for very
-   long-wavelength modes. These modes are captured by δ_coarse, so the error
-   is at the transition scale.
+The self term (isolated FFT of the Hoffman-Ribak residual) is essentially
+exact. The error is dominated by the coarse grid: the M³ periodic FFT cannot
+represent the high-frequency harmonics of the step-function block averaging.
+When the coarse field is interpolated to the fine tile grid, these missing
+harmonics show up as interpolation error.
 
-3. **Buffer region**: Errors are largest near tile boundaries. PeakPatch's
-   buffer region (nbuff cells) already excludes boundary peaks, so these
-   errors don't affect the final catalog.
+### Coarse Factor Tradeoff
 
-### Validation Results (Small Grid)
+The `coarse_factor` parameter controls the balance between two competing
+error sources:
 
-On a 30³ grid with ntile=2 (N=30, nmesh=18, coarse_factor varies):
+| cf | M (ntile=2) | block | δ RMS | ψ₁ RMS | Halo Δ | Notes |
+|----|-------------|-------|-------|--------|--------|-------|
+| 3  | 6  | 20 | 2.5% | 37% | 2.7% | Best delta, worst displacement |
+| 5  | 10 | 12 | 3.7% | 28% | **1.2%** | **Best halo counts** |
+| 6  | 12 | 10 | 3.9% | 26% | 5.9% | |
+| 10 | 20 | 6  | 6.0% | 21% | 13% | |
+| 20 | 40 | 3  | 10.9% | 17% | — | Best displacement, worst delta |
 
-| coarse_factor | M  | Global halos | Split halos | Δ   |
-|---------------|-----|-------------|-------------|-----|
-| 2             | 4   | 45          | 28          | -17 |
-| 3             | 6   | 45          | 26          | -19 |
-| 6             | 12  | 45          | 39          | -6  |
-| 9             | 18  | 45          | 34          | -11 |
+- **Small cf** → large blocks → residual has very short-range correlations →
+  isolated FFT is very accurate. But coarse grid has few cells → poor
+  interpolation for displacement fields (1/k² kernel amplifies long modes).
 
-Field-level comparison (N=30, M=6): correlation = 0.993, RMS error = 11%.
-The remaining error is dominated by NGP interpolation of the coarse field
-and the small grid size. On production grids (N=6144, nmesh=768), the
-coarse-to-tile ratio is much more favorable.
+- **Large cf** → small blocks → residual retains long-wavelength modes that
+  the tile-sized isolated FFT cannot capture. But coarse grid is fine →
+  better displacement field interpolation.
 
-### MUSIC's Boundary Correction (Future Improvement)
+- **cf=5** is the optimal compromise for halo count accuracy, achieving
+  **1.2% agreement** on a 120³ test grid.
 
-MUSIC adds a third term δ_bnd that corrects for the coarse-fine boundary
-mismatch. This is computed by:
-1. "Unapplying" Hoffman-Ribak: subtract parent mean from children cells
-2. This gives noise that is nonzero only in the padding region
-3. Convolve with T(k) on the padded grid
+### Why Boundary Correction Doesn't Help
 
-Adding this correction would improve accuracy at tile boundaries, potentially
-bringing the error to ~10⁻⁴ as MUSIC achieves. For PeakPatch, this may not
-be necessary since the buffer region already excludes boundary peaks.
+MUSIC's third term (δ_bnd) corrects for residual noise beyond the tile
+boundary contributing to the field inside the tile. We investigated this by
+extending the isolated FFT to include a shell of residual noise from beyond
+the tile (nshell parameter).
+
+Result: negligible improvement. The self term already captures 99.998% of its
+contribution. The dominant error source is the coarse grid interpolation, not
+the missing boundary noise. The existing tile buffer zone (nbuff cells)
+already extends the noise region sufficiently.
+
+### Validation Results
+
+**Field-level comparison** (N=120, ntile=2, cf=5):
+- Delta: 99.9% correlation, 3.5-4.3% RMS error across all 8 tiles
+- Displacement ψ₁: 94-98% correlation, 20-38% RMS
+
+**Halo count comparison** (N=120, ntile=2, cf=5):
+- Global FFT: 2101 halos
+- Multi-resolution: 2127 halos
+- Difference: **1.2%** (both 1LPT and 2LPT)
+
+On production grids (N=6144, ntile=4+), accuracy should improve because:
+1. Tiles are a smaller fraction of the box (better isolated FFT)
+2. More coarse cells per dimension (better interpolation)
+3. Buffer is a smaller fraction of the tile (less boundary effect)
 
 ## Memory Comparison
 
@@ -164,8 +188,8 @@ be necessary since the buffer region already excludes boundary peaks.
 
 ## Implementation
 
-- `src/MultiResolution.jl`: `run_multitile_split` function
-- `test/test_multiresolution.jl`: Validation against global FFT
+- `src/MultiResolution.jl`: `run_multitile_split` and `compare_fields_split`
+- `test/test_multiresolution.jl`: Field-level and halo count validation
 - `docs/multi_resolution_fft.md`: This document
 
 ### Key Functions
@@ -173,10 +197,12 @@ be necessary since the buffer region already excludes boundary peaks.
 | Function | Purpose |
 |----------|---------|
 | `_downsample_noise` | Block-average Threefry noise to coarse grid |
-| `_generate_tile_noise` | Regenerate fine noise for a tile region |
+| `_generate_extended_residual` | Generate Hoffman-Ribak residual for tile region |
 | `_isolated_convolve` | 2×-padded FFT convolution (non-periodic) |
-| `_interpolate_to_tile` | Tri-linear interpolation of coarse field |
+| `_interpolate_to_tile` | Tri-cubic Catmull-Rom interpolation of coarse field |
+| `_spread_coarse_to_tile` | Nearest-neighbor spreading (for residual computation) |
 | `_periodic_convolve!` | Standard periodic FFT convolution (coarse grid) |
+| `compare_fields_split` | Field-level accuracy diagnostic vs global FFT |
 
 ### Threefry as the Key Enabler
 
@@ -186,23 +212,31 @@ independently regenerate its own noise region without communication or
 storing the full N³ array. This plays the same role as Panphasia's
 hierarchical octree in MUSIC.
 
+## Usage
+
+```julia
+using PeakPatch
+
+halos = run_multitile_split(cfg; ntile=4, seed=42,
+                            coarse_factor=5,  # optimal for halo counts
+                            verbose=true)
+```
+
 ## Future Work
 
-1. **Tri-cubic interpolation**: Replace tri-linear with conservative tri-cubic
-   (as in MUSIC) for coarse-to-fine mapping. Should reduce interpolation error
-   by ~1 order of magnitude.
-
-2. **Boundary correction term**: Implement MUSIC's δ_bnd for higher accuracy
-   at tile boundaries.
-
-3. **Production integration**: Add `lowmem_split=true` option to
+1. **Production integration**: Add `lowmem_split=true` option to
    `bin/peakpatch.jl` for runs that bypass the global FFT entirely.
 
-4. **Parallel execution**: Since tiles are independent, trivially parallelize
+2. **Parallel execution**: Since tiles are independent, trivially parallelize
    with `Threads.@threads` or distributed across nodes without MPI FFT.
 
-5. **Benchmarking at scale**: Validate on 1760³ (existing reference) and 6144³
-   against the global FFT + MPI approach.
+3. **Benchmarking at scale**: Validate on 6144³ against the global MPI FFT
+   approach to confirm accuracy improvement at production scales.
+
+4. **Improved coarse interpolation**: The dominant error source is the M³
+   coarse grid interpolation. Spectral methods or higher-order schemes could
+   reduce this, though the current 1.2% halo count accuracy may be
+   sufficient for most applications.
 
 ## References
 

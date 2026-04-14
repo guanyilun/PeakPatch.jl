@@ -14,8 +14,9 @@ using FFTW
 using ..Cosmology: CosmologyParams, Dlinear_tables, Dlinear_ab, chi,
     build_chi_to_z, peak_redshift
 using ..PowerSpectrum: load_pk
-using ..RandomField: _threefry_gaussian
+using ..RandomField: _threefry_gaussian, generate_grf, fill_noise_threefry!
 using ..LPT
+using ..LPT: displacements_1lpt
 using ..Filters: smooth_field, gaussian_window_fortran, tophat_window, read_filterbank
 using ..PeakFind: PeakCandidate, find_peaks
 using ..RadialShell: PeakGrid, precompute_shells, analyse_peak, fsc_of_z
@@ -24,7 +25,7 @@ using ..Catalog: HaloRecord, ExtHaloRecord
 using ..CollapseTable: CollapseTableInterp, read_homeltab
 using ..MultiTile: tile_center, extract_tile
 
-export run_multitile_split
+export run_multitile_split, compare_fields_split
 
 # ============================================================
 # Core building blocks
@@ -111,60 +112,148 @@ function _interpolate_to_tile(coarse::Array{Float32,3},
         fy = (gj - 0.5) / block + 0.5
         fz = (gk - 0.5) / block + 0.5
 
-        tile[li, lj, lk] = _trilinear(coarse, fx, fy, fz, M)
+        tile[li, lj, lk] = _tricubic(coarse, fx, fy, fz, M)
     end
     return tile
 end
 
-"""Tri-linear interpolation with periodic wrapping on M³ grid."""
-function _trilinear(field::Array{Float32,3}, fx, fy, fz, M)
+"""
+Nearest-neighbor spreading of coarse grid to fine tile grid.
+Each fine cell gets the value of the coarse cell it belongs to.
+This preserves the Hoffman-Ribak property: residual = fine - spread(coarse)
+has exactly zero mean per coarse cell.
+"""
+function _spread_coarse_to_tile(coarse::Array{Float32,3},
+                                it::Int, jt::Int, kt::Int,
+                                nsub::Int, nmesh::Int, N::Int, M::Int)
+    block = N ÷ M
+    nbuff = (nmesh - nsub) ÷ 2
+    tile = Array{Float32,3}(undef, nmesh, nmesh, nmesh)
+
+    i0 = (it - 1) * nsub + 1 - nbuff
+    j0 = (jt - 1) * nsub + 1 - nbuff
+    k0 = (kt - 1) * nsub + 1 - nbuff
+
+    for lk in 1:nmesh, lj in 1:nmesh, li in 1:nmesh
+        gi = mod1(i0 + li - 1, N)
+        gj = mod1(j0 + lj - 1, N)
+        gk = mod1(k0 + lk - 1, N)
+        # Which coarse cell does this fine cell belong to?
+        ci = (gi - 1) ÷ block + 1
+        cj = (gj - 1) ÷ block + 1
+        ck = (gk - 1) ÷ block + 1
+        @inbounds tile[li, lj, lk] = coarse[ci, cj, ck]
+    end
+    return tile
+end
+
+"""Catmull-Rom cubic interpolation weight for offset t ∈ [0,1)."""
+@inline function _catmull_rom(t::Float32)
+    # Returns weights for points at -1, 0, 1, 2 relative to the cell
+    t2 = t * t; t3 = t2 * t
+    w0 = -0.5f0 * t3 + t2 - 0.5f0 * t
+    w1 =  1.5f0 * t3 - 2.5f0 * t2 + 1.0f0
+    w2 = -1.5f0 * t3 + 2.0f0 * t2 + 0.5f0 * t
+    w3 =  0.5f0 * t3 - 0.5f0 * t2
+    return (w0, w1, w2, w3)
+end
+
+"""Tri-cubic (Catmull-Rom) interpolation with periodic wrapping on M³ grid."""
+function _tricubic(field::Array{Float32,3}, fx, fy, fz, M)
     ix = floor(Int, fx); dx = Float32(fx - ix)
     iy = floor(Int, fy); dy = Float32(fy - iy)
     iz = floor(Int, fz); dz = Float32(fz - iz)
 
-    i0 = mod1(ix, M);   i1 = mod1(ix + 1, M)
-    j0 = mod1(iy, M);   j1 = mod1(iy + 1, M)
-    k0 = mod1(iz, M);   k1 = mod1(iz + 1, M)
+    wx = _catmull_rom(dx)
+    wy = _catmull_rom(dy)
+    wz = _catmull_rom(dz)
 
-    @inbounds begin
-        c000 = field[i0, j0, k0]; c100 = field[i1, j0, k0]
-        c010 = field[i0, j1, k0]; c110 = field[i1, j1, k0]
-        c001 = field[i0, j0, k1]; c101 = field[i1, j0, k1]
-        c011 = field[i0, j1, k1]; c111 = field[i1, j1, k1]
+    val = 0.0f0
+    @inbounds for (dkk, wk) in zip(-1:2, wz)
+        kk = mod1(iz + dkk, M)
+        for (djj, wj) in zip(-1:2, wy)
+            jj = mod1(iy + djj, M)
+            for (dii, wi) in zip(-1:2, wx)
+                ii = mod1(ix + dii, M)
+                val += wi * wj * wk * field[ii, jj, kk]
+            end
+        end
     end
+    return val
+end
 
-    c00 = c000 * (1 - dx) + c100 * dx
-    c10 = c010 * (1 - dx) + c110 * dx
-    c01 = c001 * (1 - dx) + c101 * dx
-    c11 = c011 * (1 - dx) + c111 * dx
+"""
+Generate the Hoffman-Ribak residual noise for an extended region around a tile.
+The extended region has size (nmesh + 2*nshell)³, centered on the tile.
+The residual = fine_noise - nearest_neighbor(coarse_block_mean) has exactly
+zero mean per coarse cell, ensuring T*residual is short-range.
+"""
+function _generate_extended_residual(it::Int, jt::Int, kt::Int,
+                                      nsub::Int, nmesh::Int, N::Int, seed::Integer,
+                                      coarse_noise::Array{Float32,3}, M::Int,
+                                      nshell::Int)
+    block = N ÷ M
+    nbuff = (nmesh - nsub) ÷ 2
+    next = nmesh + 2 * nshell
+    inv_sqrt_block3 = Float32(1.0 / sqrt(Float64(block)^3))
+    s = UInt64(seed)
 
-    c0 = c00 * (1 - dy) + c10 * dy
-    c1 = c01 * (1 - dy) + c11 * dy
+    # Origin of extended region in global coordinates
+    i0 = (it - 1) * nsub + 1 - nbuff - nshell
+    j0 = (jt - 1) * nsub + 1 - nbuff - nshell
+    k0 = (kt - 1) * nsub + 1 - nbuff - nshell
 
-    return c0 * (1 - dz) + c1 * dz
+    residual = Array{Float32,3}(undef, next, next, next)
+
+    Threads.@threads for lk in 1:next
+        @inbounds for lj in 1:next, li in 1:next
+            gi = mod1(i0 + li - 1, N)
+            gj = mod1(j0 + lj - 1, N)
+            gk = mod1(k0 + lk - 1, N)
+
+            # Fine noise from Threefry
+            idx = gi + (gj - 1) * N + (gk - 1) * N * N
+            pair_idx = UInt64((idx - 1) >> 1)
+            g1, g2 = _threefry_gaussian(s, pair_idx)
+            fine_val = Float32(iseven(idx - 1) ? g1 : g2)
+
+            # Coarse block mean (nearest-neighbor)
+            ci = (gi - 1) ÷ block + 1
+            cj = (gj - 1) ÷ block + 1
+            ck = (gk - 1) ÷ block + 1
+            block_mean = coarse_noise[ci, cj, ck] * inv_sqrt_block3
+
+            residual[li, lj, lk] = fine_val - block_mean
+        end
+    end
+    return residual
 end
 
 """
 Isolated (non-periodic) FFT convolution of noise with transfer function √P(k).
 Zero-pads to 2× size to avoid circular wrap-around.
-Returns the convolved field trimmed back to the original size.
+
+When `nshell > 0`, the input noise is an extended (nmesh+2*nshell)³ array
+centered on the tile. The result is trimmed to the tile's nmesh³ region,
+capturing boundary contributions from the shell.
 """
 function _isolated_convolve(noise::Array{Float32,3}, pk, boxsize_local::Float64,
-                             n::Int; kernel_fn=nothing)
-    # Zero-pad to 2n for isolated (non-periodic) convolution
-    n2 = 2 * n
+                             n::Int; kernel_fn=nothing, nshell::Int=0)
+    n_input = size(noise, 1)  # n (no shell) or n + 2*nshell
+    dx = boxsize_local / n    # cell size (same for tile and extended region)
+    boxsize_ext = n_input * dx
+    n2 = 2 * n_input
+
     padded = zeros(Float32, n2, n2, n2)
-    padded[1:n, 1:n, 1:n] .= noise
+    padded[1:n_input, 1:n_input, 1:n_input] .= noise
 
     padded_k = rfft(padded)
 
-    dk = 2π / (n2 * boxsize_local / n)  # dk for the padded box
+    dk = 2π / (n2 * dx)  # dk for the padded box
     kx_arr = FFTW.rfftfreq(n2, n2 * dk)
     ky_arr = FFTW.fftfreq(n2, n2 * dk)
     kz_arr = FFTW.fftfreq(n2, n2 * dk)
 
-    # The amplitude normalization is the same regardless of padding:
-    # amp = √(P(k) · dk³ · n²) where dk and n refer to the padded grid
     for iz in 1:n2, iy in 1:n2, ix in 1:size(padded_k, 1)
         kx = Float64(kx_arr[ix]); ky = Float64(ky_arr[iy]); kz = Float64(kz_arr[iz])
         k2 = kx^2 + ky^2 + kz^2
@@ -182,7 +271,9 @@ function _isolated_convolve(noise::Array{Float32,3}, pk, boxsize_local::Float64,
     end
 
     result = irfft(padded_k, n2)
-    return result[1:n, 1:n, 1:n]
+    # Extract tile region (offset by nshell if extended)
+    s1 = nshell + 1; s2 = nshell + n
+    return result[s1:s2, s1:s2, s1:s2]
 end
 
 """Apply √P(k) convolution on a (small) periodic grid. Standard approach."""
@@ -255,7 +346,7 @@ tile-sized domain.
 Memory per tile: O(nmesh³) instead of O(N³). No MPI or distributed FFT.
 """
 function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
-                              verbose::Bool=false, coarse_factor::Int=4)
+                              verbose::Bool=false, coarse_factor::Int=5)
     # ---- Geometry ----
     nmesh = cfg.n
     nbuff = cfg.nbuff
@@ -352,8 +443,6 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     end
 
     # Keep coarse noise for residual computation per tile
-    # (re-downsample is expensive; cache it)
-    coarse_noise_cached = _downsample_noise(N, M, seed)
     coarse_k = nothing
 
     verbose && @info "Phase 1a: coarse fields done (M=$M)"
@@ -386,39 +475,23 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
 
         # ---- Phase 1b: Tile-local fields (MUSIC decomposition) ----
 
-        # 1. Generate fine noise for this tile region
-        tile_noise = _generate_tile_noise(it, jt, kt, nsub, nmesh, N, seed)
+        # 1. Generate residual noise for this tile.
+        #    The Hoffman-Ribak residual ξ₁ = ξ - block_mean(ξ) has zero mean
+        #    per coarse cell, ensuring T*ξ₁ is short-range.
+        residual = _generate_extended_residual(it, jt, kt, nsub, nmesh, N, seed,
+                                                coarse_noise, M, 0)
 
-        # 2. Interpolate coarse noise to tile grid, compute residual
-        #    Coarse noise has variance 1/cell (normalized by 1/√block³).
-        #    Interpolated to fine grid and scaled back: each fine cell gets
-        #    the coarse cell's contribution = coarse_val * √block³ / block³ = coarse_val / √block³.
-        #    But fine noise has variance 1/cell. The residual ξ₁ = ξ_fine - spread(ξ_coarse)
-        #    has zero coarse-cell mean (Hoffman-Ribak property).
-        # The coarse noise (from _downsample_noise) has unit variance per cell,
-        # normalized by 1/√block³.  Each coarse cell represents the mean of
-        # block³ fine cells times √block³.  To get the actual cell-average of
-        # fine noise (which has variance 1/block³ per coarse cell), divide by
-        # √block³.  This gives the block-mean of fine noise, which is what we
-        # subtract from the fine noise to get the Hoffman-Ribak residual.
-        coarse_noise_interp = _interpolate_to_tile(coarse_noise_cached,
-            it, jt, kt, nsub, nmesh, N, M)
-        block_mean_interp = coarse_noise_interp ./ Float32(sqrt(Float64(block)^3))
-        residual = tile_noise .- block_mean_interp
-
-        tile_noise = nothing; coarse_noise_interp = nothing; block_mean_interp = nothing
-
-        # 3. δ_self via isolated FFT of residual noise
+        # 2. δ_self via isolated FFT of residual noise
         delta_self = _isolated_convolve(residual, pk, boxsize_local, nmesh)
 
-        # 4. δ_coarse interpolated from global coarse field
+        # 3. δ_coarse interpolated from global coarse field
         delta_long = _interpolate_to_tile(delta_coarse, it, jt, kt, nsub, nmesh, N, M)
 
-        # 5. Combined tile field
+        # 4. Combined tile field
         delta_tile = delta_self .+ delta_long
         delta_self = nothing; delta_long = nothing
 
-        # 1LPT displacements (same noise-level split)
+        # 1LPT displacements (same residual + coarse split)
         psi_tile = Vector{Array{Float32,3}}(undef, 3)
         for dim in 1:3
             psi_self = _isolated_convolve(residual, pk, boxsize_local, nmesh;
@@ -600,6 +673,117 @@ function _apply_kernel_inplace!(arr_k, n::Int, boxsize::Float64, kernel_fn)
         end
         arr_k[ix, iy, iz] *= kernel_fn(kx, ky, kz, k2)
     end
+end
+
+"""
+    compare_fields_split(pk, N, boxsize, seed, ntile, coarse_factor; verbose=false)
+
+Generate delta and 1LPT displacement fields using both global FFT and the
+multi-resolution split, then return per-tile comparison metrics.
+
+Returns a vector of NamedTuples with fields:
+  tile, corr_delta, rms_delta, corr_psi1, rms_psi1, std_global_delta
+"""
+function compare_fields_split(pk, N::Int, boxsize::Float64, seed::Int,
+                               ntile::Int, coarse_factor::Int;
+                               nbuff::Int=8, verbose::Bool=false)
+    # Infer tile geometry: N = nsub*ntile + 2*nbuff → nsub = (N - 2*nbuff)/ntile
+    nsub = (N - 2 * nbuff) ÷ ntile
+    nmesh = nsub + 2 * nbuff
+    @assert nsub * ntile + 2 * nbuff == N "N=$N not consistent with ntile=$ntile, nbuff=$nbuff"
+
+    M = ntile * coarse_factor
+    @assert N % M == 0 "N=$N must be divisible by M=$M"
+    block = N ÷ M
+    alatt = boxsize / N
+
+    verbose && @info "compare_fields_split: N=$N, ntile=$ntile, nmesh=$nmesh, nsub=$nsub, M=$M, block=$block"
+
+    # ---- Global FFT reference ----
+    delta_global = generate_grf(N, pk, boxsize, seed)
+    delta_k_global = rfft(delta_global)
+    psi_global = displacements_1lpt(delta_k_global, N, boxsize)
+
+    # ---- Multi-resolution split ----
+    coarse_noise = _downsample_noise(N, M, seed)
+    coarse_k = rfft(coarse_noise)
+
+    # Coarse delta
+    delta_coarse_k = copy(coarse_k)
+    _periodic_convolve!(delta_coarse_k, pk, M, boxsize)
+    delta_coarse = irfft(delta_coarse_k, M)
+
+    # Coarse 1LPT displacements
+    psi_coarse = Vector{Array{Float32,3}}(undef, 3)
+    for dim in 1:3
+        psi_k = copy(coarse_k)
+        _periodic_convolve!(psi_k, pk, M, boxsize; kernel_fn=_kernel_1lpt(dim))
+        psi_coarse[dim] = irfft(psi_k, M)
+    end
+
+    boxsize_tile = nmesh * alatt
+
+    results = NamedTuple[]
+
+    for kt in 1:ntile, jt in 1:ntile, it in 1:ntile
+        # Extract global reference for the CORE of this tile (no buffer wrapping issues)
+        ig0 = (it - 1) * nsub + 1  # global start of core
+        jg0 = (jt - 1) * nsub + 1
+        kg0 = (kt - 1) * nsub + 1
+        ref_delta_core = delta_global[ig0:ig0+nsub-1, jg0:jg0+nsub-1, kg0:kg0+nsub-1]
+        ref_psi1_core  = psi_global[1][ig0:ig0+nsub-1, jg0:jg0+nsub-1, kg0:kg0+nsub-1]
+
+        # Residual noise (tile-only, no boundary shell)
+        residual = _generate_extended_residual(it, jt, kt, nsub, nmesh, N, seed,
+                                                coarse_noise, M, 0)
+
+        # δ_self (isolated) + δ_coarse (interpolated)
+        delta_self = _isolated_convolve(residual, pk, boxsize_tile, nmesh)
+        delta_long = _interpolate_to_tile(delta_coarse, it, jt, kt, nsub, nmesh, N, M)
+        delta_split = delta_self .+ delta_long
+
+        # ψ₁_self (isolated) + ψ₁_coarse (interpolated)
+        psi1_self = _isolated_convolve(residual, pk, boxsize_tile, nmesh;
+                                        kernel_fn=_kernel_1lpt(1))
+        psi1_long = _interpolate_to_tile(psi_coarse[1], it, jt, kt, nsub, nmesh, N, M)
+        psi1_split = psi1_self .+ psi1_long
+
+        # Core-only comparison (skip buffer regions)
+        core = (nbuff+1):(nbuff+nsub)
+        d_ref = Float64.(ref_delta_core)
+        d_spl = Float64.(delta_split[core, core, core])
+        p_ref = Float64.(ref_psi1_core)
+        p_spl = Float64.(psi1_split[core, core, core])
+
+        corr_d = _correlation(d_ref, d_spl)
+        rms_d  = _rms_frac(d_ref, d_spl)
+        corr_p = _correlation(p_ref, p_spl)
+        rms_p  = _rms_frac(p_ref, p_spl)
+        std_d  = sqrt(sum(d_ref .^ 2) / length(d_ref))
+
+        push!(results, (tile=(it,jt,kt), corr_delta=corr_d, rms_delta=rms_d,
+                         corr_psi1=corr_p, rms_psi1=rms_p, std_global_delta=std_d))
+
+        verbose && @info "  Tile ($it,$jt,$kt): corr_δ=$(round(corr_d; digits=6)), " *
+                         "rms_δ=$(round(rms_d*100; digits=2))%, " *
+                         "corr_ψ₁=$(round(corr_p; digits=6)), " *
+                         "rms_ψ₁=$(round(rms_p*100; digits=2))%"
+    end
+
+    return results
+end
+
+function _correlation(a, b)
+    ma = sum(a) / length(a); mb = sum(b) / length(b)
+    da = a .- ma; db = b .- mb
+    return sum(da .* db) / sqrt(sum(da .^ 2) * sum(db .^ 2))
+end
+
+function _rms_frac(a, b)
+    diff = a .- b
+    rms_diff = sqrt(sum(diff .^ 2) / length(diff))
+    rms_a = sqrt(sum(a .^ 2) / length(a))
+    return rms_a > 0 ? rms_diff / rms_a : 0.0
 end
 
 end # module MultiResolution
