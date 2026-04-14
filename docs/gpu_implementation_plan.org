@@ -19,19 +19,81 @@ PeakPatch.jl would be first-of-kind (as of 2026).
 
 * Prior Art
 
-| Code / Paper                       | Year | Relevance                                    |
-|------------------------------------+------+----------------------------------------------|
-| CompaSO (Hadzhiyska+ arXiv:2110.11408) | 2021 | GPU SO halo finder for Abacus. Searches     |
-|                                    |      | outward from peaks — same radial shell pattern |
-| jFoF (Horowitz & Bayer arXiv:2510.26851) | 2025 | GPU-native FOF in JAX, 10x over CPU.        |
-|                                    |      | Also differentiable. Shows GPU halo finding works |
-| GPU-PINOCCHIO (arXiv:2601.01935)   | 2026 | 8x speedup for LPT halo formation on GPU     |
-| CADISHI (arXiv:1808.01478)         | 2018 | GPU radial distance histogramming, 40x       |
-| Levine+ (PMC 3085256)              | 2011 | GPU RDF with tiled shared-mem reuse, 92x      |
+** CompaSO (Hadzhiyska+ 2021, arXiv:2110.11408) — CPU, not GPU
 
-Key insight from CompaSO: their spherical overdensity algorithm searches
-outward from density peaks to find collapse radius — structurally identical
-to PeakPatch's =analyse_peak=. They run on Summit GPUs during Abacus N-body.
+CompaSO is the Abacus halo finder but runs on *CPU threads*, not GPU.
+It runs alongside the GPU N-body solver and must be fast enough not to
+bottleneck the GPU gravity calculation.
+
+Useful techniques for PeakPatch:
+- *Radial partition, not sort*: steps outward in cell-width shells,
+  partitions particles by squared radius at each step. O(N) per shell
+  instead of O(N log N). Directly applicable to our shell analysis.
+- *SIMD-packed positions*: positions + particle index packed into a
+  16-byte-aligned quad-float, enabling vectorized distance computation
+  (the index dimension contributes zero but rides free in SIMD).
+- *Competitive SO via independent L0 groups*: parallelizes over
+  spatially disjoint FoF groups. Analogous to parallelizing over
+  independent peaks after exclusion masking.
+- *Performance*: ~30M particles/sec/node on Summit (CPU only).
+
+** jFoF (Horowitz & Bayer 2025, arXiv:2510.26851) — JAX/GPU
+
+GPU-native FOF finder. The most useful GPU patterns for us:
+
+- *Fixed-size padded arrays*: each particle has a neighbor list of
+  max K entries with sentinel -1 for empties. Boolean masking filters
+  invalid entries. Avoids variable-length GPU allocations entirely.
+  Applicable to our peak candidate lists and per-shell cell lists.
+- *Cell-sort + searchsorted*: particles sorted by cell index (via
+  =jnp.argsort=), then =searchsorted= locates cell boundaries.
+  Pure tensor ops, no tree traversal. Maps to sorting peaks by
+  Morton code for cache-friendly GPU processing.
+- *Iterative label propagation*: replaces recursive union-find with
+  T iterations of =label[i] = min(label[i], label[neighbors])=.
+  Pure tensor ops, no control flow divergence. Converges in ~10-20
+  iterations for typical cluster sizes.
+- *Differentiable halo finding*: FOF links become Bernoulli random
+  variables =p_ij = sigmoid(alpha * (b^2 - d_ij^2))=, gradients via
+  REINFORCE. Opens the door to differentiable PeakPatch in the future.
+- *Performance*: 10x over CPU at typical particle counts.
+
+** GPU-PINOCCHIO (2026, arXiv:2601.01935) — OpenMP target
+
+Only the collapse-time computation (per-grid-point ellipsoidal collapse
+ODE) runs on GPU. FFTs and hierarchical accretion stay on CPU.
+
+Key lessons:
+- *Per-point collapse is embarrassingly parallel*: each grid point
+  computes eigenvalues of the local deformation tensor and solves the
+  collapse ODE independently. No neighbor communication needed.
+  PeakPatch's per-peak collapse table lookup is the same pattern.
+- *OpenMP target for portability*: single source works on NVIDIA and
+  AMD GPUs. Performance: 8x on AMD MI250X, 2x on NVIDIA A100.
+- *FFTs and hierarchical accretion resist GPU*: the sequential
+  dependencies in halo merging/accretion keep step 3 on CPU. Same
+  challenge applies to PeakPatch's exclusion masking.
+
+** GPU radial gather codes
+
+| Code / Paper          | Year | Technique                          | Speedup |
+|-----------------------+------+------------------------------------+---------|
+| CADISHI (arXiv:1808.01478) | 2018 | GPU pair distance histogramming    | 40x     |
+| Levine+ (PMC 3085256)      | 2011 | GPU RDF, tiled shared-mem reuse    | 92x     |
+
+These solve the closest analog to our shell gather: computing radial
+statistics from scattered 3D data on GPU. Key techniques:
+- Tiled shared memory for reusing particle data across thread blocks
+- Atomic histogram updates for radial binning
+- Memory-bound performance (optimize for bandwidth, not FLOPS)
+
+** What no one has done
+
+No existing code does GPU-accelerated radial shell analysis from a
+*Eulerian grid* (as opposed to particle data). Our block-per-peak kernel
+gathering from a fixed 768^3 grid is novel. The closest pattern is GPU
+stencil codes (structured grid gather), but our shell radii are variable
+and the number of cells per shell grows as 4*pi*r^2.
 
 * Architecture Overview
 
@@ -596,16 +658,43 @@ warp intrinsics), but can be used for portable element-wise kernels.
 
 * Getting Started
 
+** Step 0: Setup and baseline
 1. Install CUDA.jl: =Pkg.add("CUDA")=
 2. Verify GPU: =CUDA.functional()= and =CUDA.memory_status()=
 3. Benchmark cuFFT: =rfft(CUDA.rand(Float32, 1536, 1536, 1536))=
-4. *Start with shell analysis* — this is the critical path:
-   a. Port =precompute_shells= offset table to GPU
-   b. Write a minimal block-per-peak gather kernel
-   c. Benchmark: target <1s for 100k peaks on 768^3 grid
-5. Then port FFTs (straightforward cuFFT swap)
-6. Then noise generation (Threefry kernel)
-7. Profile end-to-end: =CUDA.@profile= and =NVTX.@range=
+4. Profile CPU baseline: run =test/test_multiresolution.jl= with =@time=
+   on each phase to establish per-tile time breakdown
+
+** Step 1: Shell analysis on GPU (critical path)
+The research confirms no existing code does this. We'd be pioneering
+GPU Eulerian radial shell analysis. Start with a minimal prototype:
+
+1. Upload a 768^3 Float32 test grid to GPU
+2. Precompute shell offset tables (=_build_shell_offsets_gpu=)
+3. Write a simple block-per-peak gather kernel that just accumulates
+   =delta= in shells (ignore displacement, strain, collapse for now)
+4. Benchmark: target <1s for 100k peaks
+5. Add displacement field gathering (4 fields per cell)
+6. Add collapse table lookup (3D texture)
+7. Add early termination and full halo property output
+8. Validate against CPU =analyse_peak= results (bit-for-bit unnecessary,
+   but should match to Float32 precision)
+
+** Step 2: FFTs on GPU (straightforward)
+Swap FFTW for cuFFT in =_isolated_convolve=. This is mostly mechanical:
+=Array= -> =CuArray=, =rfft= calls cuFFT automatically. Pre-cache plans.
+
+** Step 3: Noise generation on GPU
+Port Threefry2x kernel (~30 lines of bitwise ops). One thread per cell.
+Fuse with residual computation (subtract block means in same kernel).
+
+** Step 4: Peak finding on GPU
+3D stencil kernel + atomic append to peak list. Follow jFoF's pattern
+of fixed-size padded output buffers.
+
+** Step 5: Full pipeline and multi-GPU
+Wire everything together. Profile with =CUDA.@profile= and =NVTX.@range=.
+Add multi-GPU support (one =@spawn= per device).
 
 * References
 
