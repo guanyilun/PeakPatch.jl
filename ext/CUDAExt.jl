@@ -66,6 +66,49 @@ function __init__()
 end
 
 # ============================================================
+# Cached cuFFT plans (one per (n, device) pair)
+# ============================================================
+#
+# cuFFT plan creation is non-trivial (workspace alloc + twiddle factor build).
+# Plans are size-only and can be reused across any contiguous CuArray of the
+# same shape, so we memoize them keyed on (cube size, device id). Each
+# multi-GPU worker task binds itself to a CUDA device before invoking these
+# helpers (see `set_cuda_device!`), so the device id captured here is the
+# task-local one.
+#
+# Used by isolated_convolve_gpu (n2 = 2*nmesh), compute_2lpt_gpu /
+# compute_laplacian_gpu / peak_find_tile_gpu (all n = nmesh).
+
+const _CUFFT_PLAN_LOCK = ReentrantLock()
+const _CUFFT_FWD_CACHE = Dict{Tuple{Int,Int},Any}()  # (n, devid) -> plan_rfft
+const _CUFFT_INV_CACHE = Dict{Tuple{Int,Int},Any}()  # (n, devid) -> plan_irfft
+
+@inline function _cufft_fwd_plan(arr::CuArray{Float32,3})
+    n = size(arr, 1)
+    devid = CUDA.deviceid(CUDA.device())
+    key = (n, devid)
+    lock(_CUFFT_PLAN_LOCK) do
+        get!(_CUFFT_FWD_CACHE, key) do
+            CUDA.CUFFT.plan_rfft(arr)
+        end
+    end
+end
+
+@inline function _cufft_inv_plan(arr::CuArray{ComplexF32,3}, n::Integer)
+    n_int = Int(n)
+    devid = CUDA.deviceid(CUDA.device())
+    key = (n_int, devid)
+    lock(_CUFFT_PLAN_LOCK) do
+        get!(_CUFFT_INV_CACHE, key) do
+            CUDA.CUFFT.plan_irfft(arr, n_int)
+        end
+    end
+end
+
+@inline _cufft_rfft(arr::CuArray{Float32,3})            = _cufft_fwd_plan(arr) * arr
+@inline _cufft_irfft(arr::CuArray{ComplexF32,3}, n::Integer) = _cufft_inv_plan(arr, n) * arr
+
+# ============================================================
 # hRinteg (GPU port) — piecewise polynomial used by kernel_strain
 # ============================================================
 
@@ -2224,23 +2267,38 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
     nshells = stab.nshells
 
     # ---------------- One-time uploads ----------------
-    delta_d  = CuArray{Float32}(delta_h)
-    etax_d   = CuArray{Float32}(etax_h)
-    etay_d   = CuArray{Float32}(etay_h)
-    etaz_d   = CuArray{Float32}(etaz_h)
-    eta2x_d  = CuArray{Float32}(eta2x_h)
-    eta2y_d  = CuArray{Float32}(eta2y_h)
-    eta2z_d  = CuArray{Float32}(eta2z_h)
-    lapd_d   = lapd === nothing ? CUDA.zeros(Float32, size(delta_h)...) :
-                                   (@assert size(lapd) == size(delta_h); CuArray{Float32}(lapd))
+    # Any of (delta_h, eta*_h, eta2*_h, lapd) may already be a device array —
+    # in that case we reuse it directly and avoid a redundant upload of the
+    # same O(nmesh³ × Float32) volume (~250 MB at nmesh=399). Caller owns
+    # inputs, so we only free the ones we just uploaded.
+    _upload(x) = x isa CuArray{Float32,3} ? (x, false) : (CuArray{Float32}(x), true)
+    delta_d,  _free_delta  = _upload(delta_h)
+    etax_d,   _free_etax   = _upload(etax_h)
+    etay_d,   _free_etay   = _upload(etay_h)
+    etaz_d,   _free_etaz   = _upload(etaz_h)
+    eta2x_d,  _free_eta2x  = _upload(eta2x_h)
+    eta2y_d,  _free_eta2y  = _upload(eta2y_h)
+    eta2z_d,  _free_eta2z  = _upload(eta2z_h)
+    _free_lapd = false
+    if lapd === nothing
+        lapd_d = CUDA.zeros(Float32, size(delta_d)...)
+        _free_lapd = true
+    elseif lapd isa CuArray{Float32,3}
+        @assert size(lapd) == size(delta_d)
+        lapd_d = lapd
+    else
+        @assert size(lapd) == size(delta_d)
+        lapd_d = CuArray{Float32}(lapd)
+        _free_lapd = true
+    end
     stab_d     = ShellTablesGPU(stab)
     shell_r2_d = CuArray{Int32}(stab.shell_r2)
     ct_table_d = CuArray{Float32}(ct_table_h)
 
     update_mask = mask !== nothing
-    n1_delta, n2_delta, n3_delta = size(delta_h)
+    n1_delta, n2_delta, n3_delta = size(delta_d)
     mask_d = if update_mask
-        @assert size(mask) == size(delta_h)
+        @assert size(mask) == size(delta_d)
         CuArray{Int8}(mask)
     else
         CuArray{Int8}(zeros(Int8, 1, 1, 1))
@@ -2386,11 +2444,17 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
         CUDA.unsafe_free!(d2F_d); CUDA.unsafe_free!(zvir_half_d)
     end
 
-    # Free the one-time uploads
-    CUDA.unsafe_free!(delta_d)
-    CUDA.unsafe_free!(etax_d); CUDA.unsafe_free!(etay_d); CUDA.unsafe_free!(etaz_d)
-    CUDA.unsafe_free!(eta2x_d); CUDA.unsafe_free!(eta2y_d); CUDA.unsafe_free!(eta2z_d)
-    CUDA.unsafe_free!(lapd_d); CUDA.unsafe_free!(shell_r2_d); CUDA.unsafe_free!(ct_table_d)
+    # Free the one-time uploads (only the buffers we allocated — caller-owned
+    # CuArrays that were passed in are left alone).
+    _free_delta && CUDA.unsafe_free!(delta_d)
+    _free_etax  && CUDA.unsafe_free!(etax_d)
+    _free_etay  && CUDA.unsafe_free!(etay_d)
+    _free_etaz  && CUDA.unsafe_free!(etaz_d)
+    _free_eta2x && CUDA.unsafe_free!(eta2x_d)
+    _free_eta2y && CUDA.unsafe_free!(eta2y_d)
+    _free_eta2z && CUDA.unsafe_free!(eta2z_d)
+    _free_lapd  && CUDA.unsafe_free!(lapd_d)
+    CUDA.unsafe_free!(shell_r2_d); CUDA.unsafe_free!(ct_table_d)
 
     mask_out = update_mask ? Array(mask_d) : nothing
     CUDA.unsafe_free!(mask_d)
@@ -2577,7 +2641,7 @@ function PeakPatch.isolated_convolve_gpu(noise::AbstractArray{<:Real,3},
     CUDA.unsafe_free!(noise_d)
 
     # ----- Forward FFT -----
-    padded_k_d = CUDA.CUFFT.rfft(padded_d)
+    padded_k_d = _cufft_rfft(padded_d)
     CUDA.unsafe_free!(padded_d)
 
     # ----- Apply transfer function -----
@@ -2602,7 +2666,7 @@ function PeakPatch.isolated_convolve_gpu(noise::AbstractArray{<:Real,3},
         padded_k_d, Int32(n2), _I1, Int32(n2 ÷ 2 + 1))
 
     # ----- Inverse FFT -----
-    result_d = CUDA.CUFFT.irfft(padded_k_d, n2)
+    result_d = _cufft_irfft(padded_k_d, n2)
     CUDA.unsafe_free!(padded_k_d)
 
     # ----- Extract tile region -----
@@ -2612,6 +2676,108 @@ function PeakPatch.isolated_convolve_gpu(noise::AbstractArray{<:Real,3},
     CUDA.unsafe_free!(result_d)
 
     return Array(tile_d)
+end
+
+# -------------------------------------------------------------------
+# Multi-output isolated convolution: shares one (upload + zero-pad +
+# forward rFFT) of the noise across N output kernels. Used in the tile
+# loop to compute (δ, ψ₁_x, ψ₁_y, ψ₁_z) from the same residual noise.
+# Each entry in `kernels` is a 3-tuple (kernel_fn_id, dim1, dim2)
+# matching the IDs accepted by isolated_convolve_gpu.
+#
+# Returns Vector{Array{Float32,3}} of length(kernels), each (n,n,n).
+# Hermitisation must be applied per-kernel because some transfer
+# kernels (1LPT i·kx/k²) break Hermitian symmetry on the Nyquist
+# planes; we re-hermitise on the per-kernel scratch buffer.
+# -------------------------------------------------------------------
+function PeakPatch.isolated_convolve_gpu_multi(noise::AbstractArray{<:Real,3},
+                                                pk, boxsize_local::Real, n::Integer;
+                                                kernels::AbstractVector,
+                                                nshell::Integer=0,
+                                                pk_table_n::Integer=8192,
+                                                threads::Integer=256,
+                                                return_device::Bool=false)
+    n_input = size(noise, 1)
+    @assert size(noise) == (n_input, n_input, n_input)
+    n2 = 2 * n_input
+    dx = Float64(boxsize_local) / n
+    dk = 2π / (n2 * dx)
+
+    # Shared P(k) lookup
+    k_min_raw = dk
+    k_max_raw = sqrt(3.0) * (n2 / 2) * dk
+    log_k = range(log(k_min_raw * 0.5), log(k_max_raw * 1.5), length=pk_table_n)
+    norm = dk^3 * Float64(n2)^3
+    pk_vals = Float32[sqrt(Float64(pk(exp(lk))) * norm) for lk in log_k]
+    pk_table_d = CuArray(pk_vals)
+    log_k_min_f = Float32(log_k[1])
+    d_log_k_f   = Float32(step(log_k))
+
+    # Shared upload + zero-pad + forward rFFT of the noise
+    padded_d = CUDA.zeros(Float32, n2, n2, n2)
+    noise_d  = CuArray{Float32}(noise)
+    @inbounds padded_d[1:n_input, 1:n_input, 1:n_input] .= noise_d
+    CUDA.unsafe_free!(noise_d)
+    base_k_d = _cufft_rfft(padded_d)
+    CUDA.unsafe_free!(padded_d)
+
+    nk = size(base_k_d, 1)
+    total = nk * n2 * n2
+    blocks = cld(total, threads)
+    plane_total = n2 * n2
+    plane_blocks = cld(plane_total, threads)
+    s1 = nshell + 1
+    s2 = nshell + n
+
+    if return_device
+        out_dev = Vector{CuArray{Float32,3}}(undef, length(kernels))
+        for (ki, ktup) in enumerate(kernels)
+            kernel_fn_id, dim1, dim2 = ktup
+            scratch_k_d = copy(base_k_d)
+            @cuda threads=threads blocks=blocks _transfer_kernel!(
+                scratch_k_d, pk_table_d,
+                log_k_min_f, d_log_k_f, Int32(pk_table_n),
+                Float64(dk), Int32(n2),
+                Int32(kernel_fn_id), Int32(dim1), Int32(dim2),
+            )
+            @cuda threads=threads blocks=plane_blocks _hermitize_planes_kernel!(
+                scratch_k_d, Int32(n2), _I1, Int32(n2 ÷ 2 + 1))
+            result_d = _cufft_irfft(scratch_k_d, n2)
+            CUDA.unsafe_free!(scratch_k_d)
+            # Materialise the (s1:s2)³ slice into an owning CuArray so the
+            # caller can free the result directly (slicing returns a view
+            # backed by result_d, which we must not free while the caller
+            # still holds it).
+            out_dev[ki] = CuArray{Float32}(result_d[s1:s2, s1:s2, s1:s2])
+            CUDA.unsafe_free!(result_d)
+        end
+        CUDA.unsafe_free!(base_k_d)
+        CUDA.unsafe_free!(pk_table_d)
+        return out_dev
+    else
+        out = Vector{Array{Float32,3}}(undef, length(kernels))
+        for (ki, ktup) in enumerate(kernels)
+            kernel_fn_id, dim1, dim2 = ktup
+            scratch_k_d = copy(base_k_d)
+            @cuda threads=threads blocks=blocks _transfer_kernel!(
+                scratch_k_d, pk_table_d,
+                log_k_min_f, d_log_k_f, Int32(pk_table_n),
+                Float64(dk), Int32(n2),
+                Int32(kernel_fn_id), Int32(dim1), Int32(dim2),
+            )
+            @cuda threads=threads blocks=plane_blocks _hermitize_planes_kernel!(
+                scratch_k_d, Int32(n2), _I1, Int32(n2 ÷ 2 + 1))
+            result_d = _cufft_irfft(scratch_k_d, n2)
+            CUDA.unsafe_free!(scratch_k_d)
+            tile_d = result_d[s1:s2, s1:s2, s1:s2]
+            CUDA.unsafe_free!(result_d)
+            out[ki] = Array(tile_d)
+            CUDA.unsafe_free!(tile_d)
+        end
+        CUDA.unsafe_free!(base_k_d)
+        CUDA.unsafe_free!(pk_table_d)
+        return out
+    end
 end
 
 # ===================================================================
@@ -2677,18 +2843,24 @@ end
 
 function PeakPatch.compute_2lpt_gpu(delta_tile::AbstractArray{<:Real,3},
                                       nmesh::Integer, boxsize_local::Real;
-                                      threads::Integer=256)
+                                      threads::Integer=256,
+                                      return_device::Bool=false)
     n = Int(nmesh)
     @assert size(delta_tile) == (n, n, n)
     dk = 2π / Float64(boxsize_local)
 
-    # Upload + forward FFT of δ
-    delta_d = CuArray{Float32}(delta_tile)
-    delta_k_d = CUDA.CUFFT.rfft(delta_d)
+    # Accept either host Array{Float32,3} or device CuArray{Float32,3}. If we
+    # already have a CuArray, reuse it (don't free — caller owns it); otherwise
+    # upload a fresh copy that we free after FFT.
+    delta_d_is_input = delta_tile isa CuArray{Float32,3}
+    delta_d = delta_d_is_input ? delta_tile : CuArray{Float32}(delta_tile)
+    delta_k_d = _cufft_rfft(delta_d)
 
     # src2 = 0.5 * δ²
     src2_d = delta_d .^ 2 .* 0.5f0
-    CUDA.unsafe_free!(delta_d)
+    if !delta_d_is_input
+        CUDA.unsafe_free!(delta_d)
+    end
 
     nk = size(delta_k_d, 1)
     total = nk * n * n
@@ -2701,7 +2873,7 @@ function PeakPatch.compute_2lpt_gpu(delta_tile::AbstractArray{<:Real,3},
         @cuda threads=threads blocks=blocks _periodic_kernel!(
             phi_k_d, Float64(dk), Int32(n),
             Int32(3), Int32(di), Int32(dj))
-        phi_r_d = CUDA.CUFFT.irfft(phi_k_d, n)
+        phi_r_d = _cufft_irfft(phi_k_d, n)
         CUDA.unsafe_free!(phi_k_d)
         src2_d .-= phi_r_d .^ 2 .* coef
         CUDA.unsafe_free!(phi_r_d)
@@ -2709,35 +2881,52 @@ function PeakPatch.compute_2lpt_gpu(delta_tile::AbstractArray{<:Real,3},
     CUDA.unsafe_free!(delta_k_d)
 
     # Forward FFT of src2, then ψ₂ for each dimension
-    src2_k_d = CUDA.CUFFT.rfft(src2_d)
+    src2_k_d = _cufft_rfft(src2_d)
     CUDA.unsafe_free!(src2_d)
 
-    psi2_host = Vector{Array{Float32,3}}(undef, 3)
-    for dim in 1:3
-        psi2_k_d = copy(src2_k_d)
-        @cuda threads=threads blocks=blocks _periodic_kernel!(
-            psi2_k_d, Float64(dk), Int32(n),
-            Int32(2), Int32(dim), Int32(0))
-        psi2_d = CUDA.CUFFT.irfft(psi2_k_d, n)
-        CUDA.unsafe_free!(psi2_k_d)
-        psi2_host[dim] = Array(psi2_d)
-        CUDA.unsafe_free!(psi2_d)
+    if return_device
+        psi2_dev = Vector{CuArray{Float32,3}}(undef, 3)
+        for dim in 1:3
+            psi2_k_d = copy(src2_k_d)
+            @cuda threads=threads blocks=blocks _periodic_kernel!(
+                psi2_k_d, Float64(dk), Int32(n),
+                Int32(2), Int32(dim), Int32(0))
+            psi2_dev[dim] = _cufft_irfft(psi2_k_d, n)
+            CUDA.unsafe_free!(psi2_k_d)
+        end
+        CUDA.unsafe_free!(src2_k_d)
+        return psi2_dev
+    else
+        psi2_host = Vector{Array{Float32,3}}(undef, 3)
+        for dim in 1:3
+            psi2_k_d = copy(src2_k_d)
+            @cuda threads=threads blocks=blocks _periodic_kernel!(
+                psi2_k_d, Float64(dk), Int32(n),
+                Int32(2), Int32(dim), Int32(0))
+            psi2_d = _cufft_irfft(psi2_k_d, n)
+            CUDA.unsafe_free!(psi2_k_d)
+            psi2_host[dim] = Array(psi2_d)
+            CUDA.unsafe_free!(psi2_d)
+        end
+        CUDA.unsafe_free!(src2_k_d)
+        return psi2_host
     end
-    CUDA.unsafe_free!(src2_k_d)
-
-    return psi2_host
 end
 
 function PeakPatch.compute_laplacian_gpu(delta_tile::AbstractArray{<:Real,3},
                                           nmesh::Integer, boxsize_local::Real;
-                                          threads::Integer=256)
+                                          threads::Integer=256,
+                                          return_device::Bool=false)
     n = Int(nmesh)
     @assert size(delta_tile) == (n, n, n)
     dk = 2π / Float64(boxsize_local)
 
-    delta_d = CuArray{Float32}(delta_tile)
-    delta_k_d = CUDA.CUFFT.rfft(delta_d)
-    CUDA.unsafe_free!(delta_d)
+    delta_d_is_input = delta_tile isa CuArray{Float32,3}
+    delta_d = delta_d_is_input ? delta_tile : CuArray{Float32}(delta_tile)
+    delta_k_d = _cufft_rfft(delta_d)
+    if !delta_d_is_input
+        CUDA.unsafe_free!(delta_d)
+    end
 
     nk = size(delta_k_d, 1)
     total = nk * n * n
@@ -2746,11 +2935,15 @@ function PeakPatch.compute_laplacian_gpu(delta_tile::AbstractArray{<:Real,3},
         delta_k_d, Float64(dk), Int32(n),
         Int32(4), Int32(0), Int32(0))
 
-    lapd_d = CUDA.CUFFT.irfft(delta_k_d, n)
+    lapd_d = _cufft_irfft(delta_k_d, n)
     CUDA.unsafe_free!(delta_k_d)
-    out = Array(lapd_d)
-    CUDA.unsafe_free!(lapd_d)
-    return out
+    if return_device
+        return lapd_d
+    else
+        out = Array(lapd_d)
+        CUDA.unsafe_free!(lapd_d)
+        return out
+    end
 end
 
 # ===================================================================
@@ -2888,10 +3081,15 @@ function PeakPatch.peak_find_tile_gpu(delta_tile::AbstractArray{<:Real,3},
     dk = 2π / (n * Float64(alatt))    # periodic: boxsize_local = n * alatt
     has_lapd = ioutshear >= 1 ? 1 : 0
 
-    # Upload δ, FFT once, keep on device
-    delta_d = CuArray{Float32}(delta_tile)
-    delta_k_d = CUDA.CUFFT.rfft(delta_d)
-    CUDA.unsafe_free!(delta_d)
+    # Upload δ if host, reuse if already on device. Caller owns the input
+    # CuArray (we never free it). FFT once, keep k-space buffer on device
+    # across the filter loop.
+    delta_d_is_input = delta_tile isa CuArray{Float32,3}
+    delta_d = delta_d_is_input ? delta_tile : CuArray{Float32}(delta_tile)
+    delta_k_d = _cufft_rfft(delta_d)
+    if !delta_d_is_input
+        CUDA.unsafe_free!(delta_d)
+    end
 
     # Mask on device (updated across filters)
     mask_d = CuArray(Int8.(tile_masks_in))
@@ -2923,14 +3121,14 @@ function PeakPatch.peak_find_tile_gpu(delta_tile::AbstractArray{<:Real,3},
         copyto!(smoothed_k_d, delta_k_d)
         @cuda threads=threads blocks=smooth_blocks _smooth_window_kernel!(
             smoothed_k_d, dk, Rf, Int32(n), Int32(wsmooth))
-        delta_s_d = CUDA.CUFFT.irfft(smoothed_k_d, n)
+        delta_s_d = _cufft_irfft(smoothed_k_d, n)
 
         # ---- optional wsmooth=3 field for lapd diagnostic ----
         lapd_s_d = if has_lapd == 1
             copyto!(lapd_k_d, delta_k_d)
             @cuda threads=threads blocks=smooth_blocks _smooth_window_kernel!(
                 lapd_k_d, dk, Rf, Int32(n), Int32(3))
-            CUDA.CUFFT.irfft(lapd_k_d, n)
+            _cufft_irfft(lapd_k_d, n)
         else
             delta_s_d  # dummy, kernel won't read
         end
@@ -3088,7 +3286,8 @@ function PeakPatch.interpolate_to_tile_gpu(coarse::AbstractArray{<:Real,3},
                                              it::Integer, jt::Integer, kt::Integer,
                                              nsub::Integer, nmesh::Integer,
                                              N::Integer, M::Integer;
-                                             threads::Integer=256)
+                                             threads::Integer=256,
+                                             return_device::Bool=false)
     @assert size(coarse) == (M, M, M)
     block = Int(N) ÷ Int(M)
     nbuff = (Int(nmesh) - Int(nsub)) ÷ 2
@@ -3096,7 +3295,8 @@ function PeakPatch.interpolate_to_tile_gpu(coarse::AbstractArray{<:Real,3},
     j0 = (Int(jt) - 1) * Int(nsub) + 1 - nbuff
     k0 = (Int(kt) - 1) * Int(nsub) + 1 - nbuff
 
-    coarse_d = CuArray{Float32}(coarse)
+    coarse_d_is_input = coarse isa CuArray{Float32,3}
+    coarse_d = coarse_d_is_input ? coarse : CuArray{Float32}(coarse)
     tile_d = CUDA.zeros(Float32, Int(nmesh), Int(nmesh), Int(nmesh))
 
     total = Int(nmesh)^3
@@ -3105,10 +3305,16 @@ function PeakPatch.interpolate_to_tile_gpu(coarse::AbstractArray{<:Real,3},
         tile_d, coarse_d, Int32(i0), Int32(j0), Int32(k0),
         Int32(block), Int32(nmesh), Int32(N), Int32(M))
 
-    out = Array(tile_d)
-    CUDA.unsafe_free!(coarse_d)
-    CUDA.unsafe_free!(tile_d)
-    return out
+    if !coarse_d_is_input
+        CUDA.unsafe_free!(coarse_d)
+    end
+    if return_device
+        return tile_d
+    else
+        out = Array(tile_d)
+        CUDA.unsafe_free!(tile_d)
+        return out
+    end
 end
 
 # Multi-GPU dispatcher helper: bind the current task to device `id` (0-based).

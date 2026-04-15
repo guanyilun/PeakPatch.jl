@@ -371,7 +371,7 @@ Batched GPU shell analysis: groups peaks by filter scale Rf (so `ir2min`,
 group. Returns a Vector of NamedTuple-like results indexed the same as `peaks`.
 Slots for peaks that no-collapse-on-GPU retain `RTHL = -1.0f0`.
 """
-function _gpu_analyse_peaks_batch(delta_tile::Array{Float32,3},
+function _gpu_analyse_peaks_batch(delta_tile,
                                     psi_x, psi_y, psi_z,
                                     psi2_x, psi2_y, psi2_z,
                                     lapd_tile, mask::Array{Int8,3},
@@ -441,10 +441,14 @@ function _gpu_analyse_peaks_batch(delta_tile::Array{Float32,3},
     end
 
     # psi2_* may be nothing (ilpt=1). Substitute zero arrays so the GPU
-    # kernel sees the expected input shapes.
-    z_arr  = psi2_x === nothing ? zeros(Float32, size(delta_tile)) : psi2_x
-    z_arr2 = psi2_y === nothing ? zeros(Float32, size(delta_tile)) : psi2_y
-    z_arr3 = psi2_z === nothing ? zeros(Float32, size(delta_tile)) : psi2_z
+    # kernel sees the expected input shapes. Use `similar(delta_tile)` so the
+    # zero buffer lives in the same memory space (host or device) as
+    # delta_tile; otherwise the downstream GPU call would end up mixing
+    # Array + CuArray and re-upload needlessly.
+    _zeros_like(t) = (x = similar(t); fill!(x, 0); x)
+    z_arr  = psi2_x === nothing ? _zeros_like(delta_tile) : psi2_x
+    z_arr2 = psi2_y === nothing ? _zeros_like(delta_tile) : psi2_y
+    z_arr3 = psi2_z === nothing ? _zeros_like(delta_tile) : psi2_z
 
     # One GPU call, fields uploaded once, kernels launched per-batch.
     batch_res = fn_gpu_multi(
@@ -728,54 +732,81 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                                                 coarse_noise, M, 0)
         _toc!("01_residual_gen", t0)
 
-        # 2. δ_self via isolated FFT of residual noise
-        t0 = _tic()
-        delta_self = _isolated_convolve_dispatch(use_gpu, residual, pk,
-                                                  boxsize_local, nmesh, 0, 0, 0)
-        _toc!("02_iso_fft_delta", t0)
+        # 2-4. δ_self + ψ₁_self via isolated FFT of residual noise.
+        # GPU path: one entry point shares the (upload + zero-pad + rfft) of
+        # the residual noise across the four output kernels (δ, ψ₁_x, ψ₁_y,
+        # ψ₁_z). All intermediates stay resident on the GPU — we only pay for
+        # one Float32(nmesh³) host→device copy of the residual, and nothing
+        # comes back to the host until shell analysis is done. CPU path
+        # keeps the per-kernel call.
+        delta_self = nothing
+        psi_self_arr = Vector{Any}(undef, 3)
+        if use_gpu
+            t0 = _tic()
+            fn_multi = getglobal(_pp_parent(), :isolated_convolve_gpu_multi)
+            outs = fn_multi(residual, pk, boxsize_local, nmesh;
+                             kernels=[(0, 0, 0), (1, 1, 0), (1, 2, 0), (1, 3, 0)],
+                             nshell=0, return_device=true)
+            delta_self = outs[1]                    # CuArray{Float32,3}
+            psi_self_arr[1] = outs[2]               # CuArray
+            psi_self_arr[2] = outs[3]
+            psi_self_arr[3] = outs[4]
+            _toc!("02_iso_fft_delta", t0)
+        else
+            t0 = _tic()
+            delta_self = _isolated_convolve_dispatch(false, residual, pk,
+                                                      boxsize_local, nmesh, 0, 0, 0)
+            _toc!("02_iso_fft_delta", t0)
+            for dim in 1:3
+                t0p = _tic()
+                psi_self_arr[dim] = _isolated_convolve_dispatch(false, residual, pk,
+                                                                  boxsize_local, nmesh, 1, dim, 0)
+                _toc!("04_iso_fft_psi1", t0p)
+            end
+        end
 
         # 3. δ_coarse interpolated from global coarse field
         t0 = _tic()
         delta_long = if use_gpu
             fn = getglobal(_pp_parent(), :interpolate_to_tile_gpu)
-            fn(delta_coarse, it, jt, kt, nsub, nmesh, N, M)
+            fn(delta_coarse, it, jt, kt, nsub, nmesh, N, M; return_device=true)
         else
             _interpolate_to_tile(delta_coarse, it, jt, kt, nsub, nmesh, N, M)
         end
         _toc!("03_interp_coarse_delta", t0)
 
-        # 4. Combined tile field
+        # 4. Combined tile field. Broadcast lives in the same memory space as
+        # the two inputs (CuArrays on GPU, host Arrays on CPU).
         delta_tile = delta_self .+ delta_long
         delta_self = nothing; delta_long = nothing
 
-        # 1LPT displacements (same residual + coarse split)
-        psi_tile = Vector{Array{Float32,3}}(undef, 3)
+        # 1LPT displacements: combine self (precomputed above) with
+        # interpolated coarse field.
+        psi_tile = Vector{Any}(undef, 3)
         for dim in 1:3
-            t0 = _tic()
-            psi_self = _isolated_convolve_dispatch(use_gpu, residual, pk,
-                                                    boxsize_local, nmesh, 1, dim, 0)
-            _toc!("04_iso_fft_psi1", t0)
             t0 = _tic()
             psi_long = if use_gpu
                 fn = getglobal(_pp_parent(), :interpolate_to_tile_gpu)
-                fn(psi_coarse[dim], it, jt, kt, nsub, nmesh, N, M)
+                fn(psi_coarse[dim], it, jt, kt, nsub, nmesh, N, M; return_device=true)
             else
                 _interpolate_to_tile(psi_coarse[dim], it, jt, kt, nsub, nmesh, N, M)
             end
             _toc!("05_interp_coarse_psi1", t0)
-            psi_tile[dim] = psi_self .+ psi_long
+            psi_tile[dim] = psi_self_arr[dim] .+ psi_long
+            psi_self_arr[dim] = nothing
         end
 
         residual = nothing  # free after all isolated convolutions done
 
-        # 2LPT: compute from combined delta on tile grid (periodic FFT OK here
-        # since 2LPT is a second-order correction dominated by short modes)
+        # 2LPT: compute from combined delta on tile grid. GPU path reuses the
+        # already-resident delta_tile CuArray (no re-upload); CPU path uses
+        # the host FFTW pipeline.
         psi2_tile = nothing
         if ilpt >= 2
             t0 = _tic()
             if use_gpu
                 fn = getglobal(_pp_parent(), :compute_2lpt_gpu)
-                psi2_tile = fn(delta_tile, nmesh, boxsize_local)
+                psi2_tile = fn(delta_tile, nmesh, boxsize_local; return_device=true)
             else
                 delta_tile_k = rfft(delta_tile)
                 src2_local = zeros(Float32, nmesh, nmesh, nmesh)
@@ -808,7 +839,7 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             t0 = _tic()
             if use_gpu
                 fn = getglobal(_pp_parent(), :compute_laplacian_gpu)
-                lapd_tile = fn(delta_tile, nmesh, boxsize_local)
+                lapd_tile = fn(delta_tile, nmesh, boxsize_local; return_device=true)
             else
                 delta_tile_k_tmp = rfft(delta_tile)
                 _apply_kernel_inplace!(delta_tile_k_tmp, nmesh, boxsize_local, _kernel_laplacian())
@@ -878,16 +909,31 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
 
         # ---- Phase 3-4: Shell analysis ----
         # (Closure body: early-return instead of `continue` when no peaks.)
-        isempty(tile_peaks) && return nothing
+        if isempty(tile_peaks)
+            if use_gpu
+                # Free device-resident tile fields before returning so we
+                # don't carry them forward to the next tile iteration.
+                delta_tile = nothing
+                for d in 1:3; psi_tile[d] = nothing; end
+                psi_tile = nothing
+                psi2_tile = nothing
+                lapd_tile = nothing
+            end
+            return nothing
+        end
 
         fill!(tile_masks, 0)
-        pg = PeakGrid(delta_tile,
-                        psi_tile[1], psi_tile[2], psi_tile[3],
-                        psi2_tile !== nothing ? psi2_tile[1] : nothing,
-                        psi2_tile !== nothing ? psi2_tile[2] : nothing,
-                        psi2_tile !== nothing ? psi2_tile[3] : nothing,
-                        tile_masks, (nmesh, nmesh, nmesh),
-                        lapd_tile)
+        # PeakGrid is only used by the CPU analyse_peak fallback. Skip
+        # constructing it on the GPU-shell path — `delta_tile` is a CuArray
+        # there, and PeakGrid does not support device arrays.
+        pg = use_gpu_shell ? nothing :
+             PeakGrid(delta_tile,
+                      psi_tile[1], psi_tile[2], psi_tile[3],
+                      psi2_tile !== nothing ? psi2_tile[1] : nothing,
+                      psi2_tile !== nothing ? psi2_tile[2] : nothing,
+                      psi2_tile !== nothing ? psi2_tile[3] : nothing,
+                      tile_masks, (nmesh, nmesh, nmesh),
+                      lapd_tile)
 
         # If GPU shell analysis is enabled, run the batched kernel once per
         # unique filter Rf up-front; subsequent per-peak work (record packing)
@@ -940,57 +986,127 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                     return nothing
                 end
             end
+            # When ioutshear=0 there is no lapd field; substitute a zero
+            # buffer that lives in the same memory space as delta_tile so we
+            # don't force a spurious host→device upload on the GPU path.
+            lapd_for_shell = if lapd_tile !== nothing
+                lapd_tile
+            else
+                tmp = similar(delta_tile); fill!(tmp, 0); tmp
+            end
             gpu_res = _gpu_analyse_peaks_batch(
                 delta_tile,
                 psi_tile[1], psi_tile[2], psi_tile[3],
                 psi2_tile !== nothing ? psi2_tile[1] : nothing,
                 psi2_tile !== nothing ? psi2_tile[2] : nothing,
                 psi2_tile !== nothing ? psi2_tile[3] : nothing,
-                lapd_tile === nothing ? zeros(Float32, nmesh, nmesh, nmesh) : lapd_tile,
+                lapd_for_shell,
                 tile_masks,
                 tile_peaks, tile_Rf,
                 stab_gpu, ct_table_gpu, ct_params,
                 alatt, ZZon, nbuff, cfg.rmax2rs, growth_tables;
                 ZZon_pp=ZZon_pp_tile, fcrit_pp=fcrit_pp_tile)
             _toc!("09_shell_analysis", t0)
+
+            # Drop references to device-resident tile fields once shell
+            # analysis has read them. For the GPU path these are CuArrays
+            # whose finalisers will release the GPU memory at the next GC
+            # cycle. Setting to `nothing` makes them eligible early so the
+            # next tile iteration doesn't accumulate peak GPU-memory use.
+            delta_tile = nothing
+            for d in 1:3; psi_tile[d] = nothing; end
+            psi_tile = nothing
+            psi2_tile = nothing
+            lapd_tile = nothing
         end
 
         t_loop_start = _tic()
         shell_cpu_time = 0.0
-        for idx in 1:length(tile_peaks)
-            peak = tile_peaks[idx]
-            Rf = tile_Rf[idx]
-            ir2min = min(floor(Int, (1.75 * Rf / alatt)^2),
-                         floor(Int, (40.0 / alatt - 1)^2))
-
-            ZZon_pk = ZZon
-            if ievol == 1
-                z_pk = peak_redshift(obs[1], obs[2], obs[3], peak.x, peak.y, peak.z, chi2z)
-                ZZon_pk = 1.0 + z_pk
-                z_pk > z_max && continue
-            end
-
-            # Shell analysis: CPU per-peak, or batched-GPU slot
-            result = if use_gpu_shell
-                r = gpu_res
-                # Package GPU batch outputs into the same interface the CPU
-                # `analyse_peak` result exposes (fields are name-compatible
-                # with PeakResult).
-                (RTHL       = Float64(r.RTHL[idx]),
-                 Fbarx      = Float64(r.Fbarx[idx]),
-                 e_v        = Float64(r.e_v[idx]),
-                 p_v        = Float64(r.p_v[idx]),
-                 Srb        = Float64(r.Srb[idx]),
-                 d2F        = Float64(r.d2F[idx]),
-                 zvir_half  = Float64(r.zvir_half[idx]),
-                 Sbar       = Float64.(r.Sbar[:, idx]),
-                 Sbar2      = Float64.(r.Sbar2[:, idx]),
-                 gradpk     = Float64.(r.gradpk[:, idx]),
-                 gradpkf    = Float64.(r.gradpkf[:, idx]),
-                 gradpkrf   = Float64.(r.gradpkrf[:, idx]),
-                 strain_mat = Float64.(r.strain_final[:, :, idx]))
+        if use_gpu_shell
+            # GPU path: read directly out of the SoA `gpu_res` arrays —
+            # skipping the per-peak NamedTuple + slice allocations that the
+            # shared-path loop used to build. Pre-size the halo output
+            # vectors to `npks` so `push!` doesn't keep re-growing.
+            r = gpu_res
+            npks = length(tile_peaks)
+            if ioutshear >= 1
+                sizehint!(halos_ext, length(halos_ext) + npks)
             else
-                if profile
+                sizehint!(halos_basic, length(halos_basic) + npks)
+            end
+            coef2_base = -3.0/7.0          # 2LPT: coef = coef2_base * Om_a^(-1/143) * D_pk^2
+            @inbounds for idx in 1:npks
+                r.RTHL[idx] <= 0 && continue
+
+                peak = tile_peaks[idx]
+                ZZon_pk = ZZon
+                if ievol == 1
+                    z_pk = peak_redshift(obs[1], obs[2], obs[3], peak.x, peak.y, peak.z, chi2z)
+                    ZZon_pk = 1.0 + z_pk
+                    # The kernel already skipped peaks with z_pk > z_max via
+                    # host pre-filter above, but keep the guard for safety.
+                    z_pk > z_max && continue
+                end
+
+                a_pk = 1.0 / ZZon_pk
+                _, _, D_pk = Dlinear_ab(a_pk, growth_tables)
+                D_pk_f32 = Float32(D_pk)
+                RTHL_phys = Float32(Float64(r.RTHL[idx]) * alatt)
+
+                Sbar1 = r.Sbar[1, idx] * D_pk_f32
+                Sbar2 = r.Sbar[2, idx] * D_pk_f32
+                Sbar3 = r.Sbar[3, idx] * D_pk_f32
+
+                Sbar2_1 = 0.0f0; Sbar2_2 = 0.0f0; Sbar2_3 = 0.0f0
+                if ilpt >= 2
+                    Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
+                    coef = Float32(-(coef2_base * Om_a^(-1.0/143) * D_pk^2))
+                    Sbar2_1 = r.Sbar2[1, idx] * coef
+                    Sbar2_2 = r.Sbar2[2, idx] * coef
+                    Sbar2_3 = r.Sbar2[3, idx] * coef
+                end
+
+                if ioutshear >= 1
+                    push!(halos_ext, ExtHaloRecord(
+                        Float32(peak.x), Float32(peak.y), Float32(peak.z),
+                        Sbar1, Sbar2, Sbar3,
+                        RTHL_phys,
+                        Sbar2_1, Sbar2_2, Sbar2_3,
+                        r.Fbarx[idx],
+                        r.e_v[idx], r.p_v[idx],
+                        r.strain_final[1,1,idx], r.strain_final[2,2,idx], r.strain_final[3,3,idx],
+                        r.strain_final[2,3,idx], r.strain_final[1,3,idx], r.strain_final[1,2,idx],
+                        r.d2F[idx], r.zvir_half[idx],
+                        r.gradpk[1,idx],  r.gradpk[2,idx],  r.gradpk[3,idx],
+                        r.gradpkf[1,idx], r.gradpkf[2,idx], r.gradpkf[3,idx],
+                        Float32(tile_Rf[idx]), tile_FcRf[idx], tile_d2Rf[idx],
+                        r.gradpkrf[1,idx], r.gradpkrf[2,idx], r.gradpkrf[3,idx],
+                    ))
+                else
+                    push!(halos_basic, HaloRecord(
+                        Float32(peak.x), Float32(peak.y), Float32(peak.z),
+                        Sbar1, Sbar2, Sbar3,
+                        RTHL_phys,
+                        Sbar2_1, Sbar2_2, Sbar2_3,
+                        r.Fbarx[idx],
+                    ))
+                end
+            end
+        else
+            for idx in 1:length(tile_peaks)
+                peak = tile_peaks[idx]
+                Rf = tile_Rf[idx]
+                ir2min = min(floor(Int, (1.75 * Rf / alatt)^2),
+                             floor(Int, (40.0 / alatt - 1)^2))
+
+                ZZon_pk = ZZon
+                if ievol == 1
+                    z_pk = peak_redshift(obs[1], obs[2], obs[3], peak.x, peak.y, peak.z, chi2z)
+                    ZZon_pk = 1.0 + z_pk
+                    z_pk > z_max && continue
+                end
+
+                result = if profile
                     ts = time()
                     r = analyse_peak(pg, peak.ipp, alatt, ir2min, ZZon_pk, Rf, ct, shells;
                                       nbuff=nbuff, growth_tables=growth_tables,
@@ -1002,46 +1118,46 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                                   nbuff=nbuff, growth_tables=growth_tables,
                                   rmax2rs=cfg.rmax2rs)
                 end
-            end
 
-            result.RTHL <= 0 && continue
+                result.RTHL <= 0 && continue
 
-            a_pk = 1.0 / ZZon_pk
-            _, _, D_pk = Dlinear_ab(a_pk, growth_tables)
-            RTHL_phys = Float32(result.RTHL * alatt)
-            Sbar_vel = result.Sbar .* D_pk
+                a_pk = 1.0 / ZZon_pk
+                _, _, D_pk = Dlinear_ab(a_pk, growth_tables)
+                RTHL_phys = Float32(result.RTHL * alatt)
+                Sbar_vel = result.Sbar .* D_pk
 
-            Sbar2_vel = zeros(3)
-            if ilpt >= 2
-                Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
-                Sbar2_vel = -result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)
-            end
+                Sbar2_vel = zeros(3)
+                if ilpt >= 2
+                    Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
+                    Sbar2_vel = -result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)
+                end
 
-            if ioutshear >= 1
-                sm = result.strain_mat
-                push!(halos_ext, ExtHaloRecord(
-                    Float32(peak.x), Float32(peak.y), Float32(peak.z),
-                    Float32(Sbar_vel[1]), Float32(Sbar_vel[2]), Float32(Sbar_vel[3]),
-                    RTHL_phys,
-                    Float32(Sbar2_vel[1]), Float32(Sbar2_vel[2]), Float32(Sbar2_vel[3]),
-                    Float32(result.Fbarx),
-                    Float32(result.e_v), Float32(result.p_v),
-                    Float32(sm[1,1]), Float32(sm[2,2]), Float32(sm[3,3]),
-                    Float32(sm[2,3]), Float32(sm[1,3]), Float32(sm[1,2]),
-                    Float32(result.d2F), Float32(result.zvir_half),
-                    Float32(result.gradpk[1]), Float32(result.gradpk[2]), Float32(result.gradpk[3]),
-                    Float32(result.gradpkf[1]), Float32(result.gradpkf[2]), Float32(result.gradpkf[3]),
-                    Float32(Rf), tile_FcRf[idx], tile_d2Rf[idx],
-                    Float32(result.gradpkrf[1]), Float32(result.gradpkrf[2]), Float32(result.gradpkrf[3])
-                ))
-            else
-                push!(halos_basic, HaloRecord(
-                    Float32(peak.x), Float32(peak.y), Float32(peak.z),
-                    Float32(Sbar_vel[1]), Float32(Sbar_vel[2]), Float32(Sbar_vel[3]),
-                    RTHL_phys,
-                    Float32(Sbar2_vel[1]), Float32(Sbar2_vel[2]), Float32(Sbar2_vel[3]),
-                    Float32(result.Fbarx)
-                ))
+                if ioutshear >= 1
+                    sm = result.strain_mat
+                    push!(halos_ext, ExtHaloRecord(
+                        Float32(peak.x), Float32(peak.y), Float32(peak.z),
+                        Float32(Sbar_vel[1]), Float32(Sbar_vel[2]), Float32(Sbar_vel[3]),
+                        RTHL_phys,
+                        Float32(Sbar2_vel[1]), Float32(Sbar2_vel[2]), Float32(Sbar2_vel[3]),
+                        Float32(result.Fbarx),
+                        Float32(result.e_v), Float32(result.p_v),
+                        Float32(sm[1,1]), Float32(sm[2,2]), Float32(sm[3,3]),
+                        Float32(sm[2,3]), Float32(sm[1,3]), Float32(sm[1,2]),
+                        Float32(result.d2F), Float32(result.zvir_half),
+                        Float32(result.gradpk[1]), Float32(result.gradpk[2]), Float32(result.gradpk[3]),
+                        Float32(result.gradpkf[1]), Float32(result.gradpkf[2]), Float32(result.gradpkf[3]),
+                        Float32(Rf), tile_FcRf[idx], tile_d2Rf[idx],
+                        Float32(result.gradpkrf[1]), Float32(result.gradpkrf[2]), Float32(result.gradpkrf[3])
+                    ))
+                else
+                    push!(halos_basic, HaloRecord(
+                        Float32(peak.x), Float32(peak.y), Float32(peak.z),
+                        Float32(Sbar_vel[1]), Float32(Sbar_vel[2]), Float32(Sbar_vel[3]),
+                        RTHL_phys,
+                        Float32(Sbar2_vel[1]), Float32(Sbar2_vel[2]), Float32(Sbar2_vel[3]),
+                        Float32(result.Fbarx)
+                    ))
+                end
             end
         end
         if profile

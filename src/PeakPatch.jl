@@ -278,6 +278,26 @@ Defined in `ext/CUDAExt.jl` — requires `using CUDA`.
 function isolated_convolve_gpu end
 
 """
+    isolated_convolve_gpu_multi(noise, pk, boxsize_local, n;
+                                 kernels=[(0,0,0), (1,1,0), (1,2,0), (1,3,0)],
+                                 nshell=0)
+        -> Vector{Array{Float32,3}}
+
+Multi-output variant of `isolated_convolve_gpu`. Shares one (upload + zero-pad
++ forward rFFT) of the noise across N transfer kernels, then loops per kernel
+running (transfer + Hermitise + irFFT + extract). Used in the per-tile loop
+of `run_multitile_split` to compute (δ, ψ₁_x, ψ₁_y, ψ₁_z) from the same
+residual noise without redoing the largest cost (zero-padded forward FFT)
+four times.
+
+`kernels` is a vector of `(kernel_fn_id, dim1, dim2)` tuples — IDs match
+`isolated_convolve_gpu`. Returns one host array per kernel in the same order.
+
+Defined in `ext/CUDAExt.jl` — requires `using CUDA`.
+"""
+function isolated_convolve_gpu_multi end
+
+"""
     compute_2lpt_gpu(delta_tile, nmesh, boxsize_local) -> Vector{Array{Float32,3}}
 
 GPU port of the tile-local 2LPT block in `run_multitile_split`
@@ -399,7 +419,7 @@ export
     kernel_strain_gpu,
     analyse_peak_gpu_cuda,
     analyse_peaks_gpu_cuda_multirf,
-    isolated_convolve_gpu,
+    isolated_convolve_gpu, isolated_convolve_gpu_multi,
     compute_2lpt_gpu, compute_laplacian_gpu,
     peak_find_tile_gpu, interpolate_to_tile_gpu,
     ShellTables, build_shell_tables, analyse_peak_gpu

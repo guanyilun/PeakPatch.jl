@@ -11,14 +11,18 @@ dispatcher (`run_multitile_split(...; devices=[0,1,2,3])`) from this branch.
 |---|---|
 | Target queue | Killarney `Standard Compute` |
 | Resources per octant | 1 node × 4 L40S × 8 h wall request |
-| Wall time per octant (fixed-z or lightcone) | **~4.5 h** |
-| Wall time for 8 octants (sequential jobs) | **~36 h** |
-| Wall time for 8 octants (8 parallel 1-node jobs) | **~4.5 h** (same as 1 octant) |
+| Wall time per octant (fixed-z or lightcone) | **~2 h** |
+| Wall time for 8 octants (sequential jobs) | **~16 h** |
+| Wall time for 8 octants (8 parallel 1-node jobs) | **~2 h** (same as 1 octant) |
 | Disk per octant (extended output) | ~15 GB catalog + ~50 GB scratch |
 | Config | `ntile=16, nmesh=399, nbuff=8, coarse_factor=4` |
 | Accuracy | ~1–2% halo count vs reference global-FFT at production scale |
 
-Total for full 8-octant lightcone or full-sky mock: **4.5 h wall × 8 jobs ≈ 36 node-hours**, but only 4.5 h of real time if jobs run in parallel.
+Total for full 8-octant lightcone or full-sky mock: **2 h wall × 8 jobs ≈ 16 node-hours**, but only 2 h of real time if jobs run in parallel.
+
+Wall-time improvement since initial deployment projection is ~2.25×
+(A5000 bench at nmesh=192 went from 20.4 s → 9.0 s per octant-equivalent).
+See **§7 Further performance roadmap** for what changed.
 
 See [Scaling the estimate to 8 octants](#scaling-the-estimate-to-8-octants)
 and [Lightcone vs fixed-z](#lightcone-mode-vs-fixed-redshift) below for how
@@ -237,10 +241,10 @@ and produces an independent halo catalog which is merged afterwards.
 
 Cost model:
 
-- Single octant (1 node, 4 L40S): **~4.5 h wall**
-- 8 octants sequential (1 node, 4 L40S): ~36 h total
-- 8 octants as 8 parallel jobs (8 nodes, 32 GPUs total): **~4.5 h wall** end-to-end
-- 8 octants as 4 parallel jobs × 2 sequential (4 nodes): **~9 h wall**
+- Single octant (1 node, 4 L40S): **~2 h wall**
+- 8 octants sequential (1 node, 4 L40S): ~16 h total
+- 8 octants as 8 parallel jobs (8 nodes, 32 GPUs total): **~2 h wall** end-to-end
+- 8 octants as 4 parallel jobs × 2 sequential (4 nodes): **~4 h wall**
 
 Killarney has 168 Standard Compute nodes; submitting 8 parallel jobs is
 realistic if the queue is not saturated.
@@ -333,10 +337,17 @@ cost is approximately `cells_total × cost_per_cell / n_workers`.
 For L40S we estimate 1.3× speedup vs A5000 (bandwidth-limited on FFT,
 modest kernel gains). For N=6144 (2.32×10¹¹ cells):
 
-- 1× A5000: `2.32e11 × 3.7e-7 s ≈ 24 h`
-- 1× L40S: ~**18 h**
-- 4× L40S (1 standard node): ~**4.5 h**
-- 8× L40S (2 nodes): ~**2.3 h**
+- 1× A5000 (pre-opt): `2.32e11 × 3.7e-7 s ≈ 24 h` (original baseline)
+- 1× A5000 (post-opt): ~**11 h** (after 2.25× wall reduction at nmesh=192)
+- 1× L40S: ~**8 h**
+- 4× L40S (1 standard node): ~**2 h**
+- 8× L40S (2 nodes): ~**1 h**
+
+The "pre-opt" projection was based on the `scaling_sweep` baseline in §6.2;
+the "post-opt" column uses the measured 9.03 s GPU wall at nmesh=192 from
+`docs/multitile_opt_bench_A5000.log` after the roadmap §7-2 … §7-5
+optimisations landed (plan cache, fused ψ₁ FFTs, GPU-resident tile
+fields, vectorised record packing).
 
 ### 6.4 Reproducing the bench locally
 
@@ -360,16 +371,49 @@ return:
 | # | Item | Est. wall reduction | Effort |
 |---|---|---|---|
 | ✓ | ~~Batch GPU shell analysis for `ievol=1` (per-peak ZZon)~~ | **Done — 17× measured lightcone speedup at NMESH=128**; parity at `test/test_multiresolution_gpu_ievol1.jl`, bench at `docs/ievol1_bench_A5000.log`. Kernel now takes per-peak `ZZon_pp, fcrit_pp` device vectors and host pre-filters by `z_max`. | — |
-| 2 | Keep tile fields GPU-resident across stages | 5–10% | ~1 day — refactor 2LPT/peak-find/shell pipeline to share `CuArray`s instead of uploading per stage |
-| 3 | Persistent cuFFT plans across tiles | 5–8% | ~0.5 day — cache plans keyed on `(nmesh, direction)` in a Dict |
-| 4 | Vectorise CPU record-packing (stage 10) | 5–8% | ~0.5 day — switch to SoA, build `HaloRecord` array in one shot |
-| 5 | Fuse ψ₁ isolated FFTs (3 dims → 3-plane batched rFFT) | 3–5% | ~0.5 day |
-| 6 | Fuse 2LPT 9-FFT pipeline into one kernel batch | 2–3% | ~1 day |
+| ✓ | ~~Keep tile fields GPU-resident across stages~~ | **Done** — `isolated_convolve_gpu_multi`, `compute_2lpt_gpu`, `compute_laplacian_gpu`, `peak_find_tile_gpu`, and `analyse_peaks_gpu_cuda_multirf` now accept / return `CuArray{Float32,3}` via a `return_device=true` kwarg (and by detecting `CuArray` inputs). In the tile loop δ, ψ₁, ψ₂, lapd all stay device-resident from construction through shell analysis, eliminating 5× host↔device round-trips of `nmesh³ × Float32` per tile (~1.3 GB of PCIe traffic at `nmesh=399`). | — |
+| ✓ | ~~Persistent cuFFT plans across tiles~~ | **Done** — cuFFT plans are now memoised in `ext/CUDAExt.jl` via a `(size, device_id)` keyed Dict (`_CUFFT_FWD_CACHE` / `_CUFFT_INV_CACHE`) and shared across every `_cufft_rfft` / `_cufft_irfft` call site (isolated FFTs, 2LPT, Laplacian, peak-find). Each tile after the first reuses the plans rather than rebuilding them. | — |
+| ✓ | ~~Vectorise CPU record-packing (stage 10)~~ | **Done** — the GPU-path per-peak loop in `run_multitile_split` now reads directly out of the SoA `gpu_res` arrays (no intermediate NamedTuple-per-peak, no broadcast slice allocations) and pre-sizes the halo output vectors via `sizehint!`. The CPU path (which is dominated by `analyse_peak` itself) is unchanged. | — |
+| ✓ | ~~Fuse ψ₁ isolated FFTs (3 dims → 3-plane batched rFFT)~~ | **Done** — `PeakPatch.isolated_convolve_gpu_multi(noise; kernels=[...])` shares the (upload + zero-pad + forward rFFT) of the residual noise across the four transfer kernels (δ, ψ₁_x, ψ₁_y, ψ₁_z); only the per-kernel multiply + hermitise + inverse rFFT differ. Saves 3× noise upload + 3× padded rFFT per tile. | — |
+| 6 | Fuse 2LPT 9-FFT pipeline into one kernel batch | 2–3% | ~1 day (not yet pursued) |
 
-Aggregate if all of (2)–(5) are done: **~25–30% further wall
-reduction on top of the current numbers**. That drops a 4 L40S
-standard-node octant from ~4.5 h to ~**3–3.5 h** (same for fixed-z
-and lightcone, since lightcone now matches fixed-z throughput).
+All remaining wall-time items from this table (other than the small
+2–3% 2LPT kernel fusion) are merged. Measured aggregate on
+A5000, `nmesh=192, ntile=2, ilpt=2, ioutshear=1, ievol=0`
+(`bench/profile_multitile.jl`, full log at
+`docs/multitile_opt_bench_A5000.log`):
+
+| Metric | Before (scaling_sweep baseline) | After (this commit) |
+|---|---|---|
+| GPU total wall | 20.40 s | **9.03 s** |
+| Speedup over CPU | ~3.3× | **16.66×** |
+| Halo count parity | exact | exact (20 467 / 20 467) |
+
+Stage breakdown shifts as expected — `09_shell_analysis` now
+dominates at 76.8% of the GPU wall (up from ~56% before), because
+every other stage shrank:
+
+```
+01_residual_gen           0.38 s  ( 4.3%)
+02_iso_fft_delta+psi1     0.60 s  ( 6.9%)   # was 9.0% + extra
+03_interp_coarse_delta    0.02 s  ( 0.2%)
+05_interp_coarse_psi1     0.07 s  ( 0.8%)
+06_2lpt_periodic_fft      0.15 s  ( 1.7%)   # was 6.0%
+07_laplacian_periodic_fft 0.02 s  ( 0.2%)
+08_peak_find              0.26 s  ( 3.0%)   # was 4.0%
+09_shell_analysis         6.73 s  (76.8%)
+10_record_packing         0.52 s  ( 6.0%)   # was 11.7%
+```
+
+Expected wall time on a 4× L40S Killarney Standard node at `N=6144`
+drops from the original ~4.5 h/octant projection to **~2 h/octant**
+(same for fixed-z and lightcone, since the lightcone shell kernel
+already runs at fixed-z throughput). The remaining optimisation
+opportunity is inside `09_shell_analysis` itself — the 2LPT
+kernel-fusion item would trim an additional 1–2% but the really
+impactful work is attacking the shell gather/post-process kernels
+(register pressure, shared-memory reuse, persistent per-peak
+reductions); not pursued in this cycle.
 
 Multi-node MPI (multi-node tile dispatch) is not on this list because
 Killarney job scheduling makes it easier to submit 8 parallel 1-node

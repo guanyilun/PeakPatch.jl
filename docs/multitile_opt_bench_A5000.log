@@ -1,0 +1,60 @@
+
+============================================================
+Per-stage profile: CPU vs GPU
+============================================================
+ntile=2 nmesh=192 nsub=176 N=368  ilpt=2 ioutshear=1  ievol=0  z_max=3.00
+threads=32 GPU=NVIDIA RTX A5000
+
+  k=1/20
+  k=2/20
+  k=3/20
+  k=4/20
+  k=5/20
+  k=6/20
+  k=7/20
+  k=8/20
+  k=9/20
+  k=10/20
+  k=11/20
+  k=12/20
+  k=13/20
+  k=14/20
+  k=15/20
+  k=16/20
+  k=17/20
+  k=18/20
+  k=19/20
+  k=20/20
+>> warmup CPU...
+>> warmup GPU...
+
+>> CPU profile...
+CPU total wall: 150.43 s  (20467 halos)
+
+>> GPU profile...
+[ Info: run_multitile_split profile (use_gpu=false, ntile=2, nmesh=192, n_workers=1)
+[ Info:   01_residual_gen               max/worker=   0.33 s  (  0.2%)   sum=    0.33 s
+[ Info:   02_iso_fft_delta              max/worker=  23.29 s  ( 15.7%)   sum=   23.29 s
+[ Info:   03_interp_coarse_delta        max/worker=   1.13 s  (  0.8%)   sum=    1.13 s
+[ Info:   04_iso_fft_psi1               max/worker=  77.11 s  ( 51.9%)   sum=   77.11 s
+[ Info:   05_interp_coarse_psi1         max/worker=   3.64 s  (  2.4%)   sum=    3.64 s
+[ Info:   06_2lpt_periodic_fft          max/worker=  10.55 s  (  7.1%)   sum=   10.55 s
+[ Info:   07_laplacian_periodic_fft     max/worker=   1.41 s  (  0.9%)   sum=    1.41 s
+[ Info:   08_peak_find                  max/worker=   8.57 s  (  5.8%)   sum=    8.57 s
+[ Info:   09_shell_analysis             max/worker=  22.46 s  ( 15.1%)   sum=   22.46 s
+[ Info:   10_record_packing             max/worker=   0.17 s  (  0.1%)   sum=    0.17 s
+[ Info:   TOTAL_stages                  wall~max= 148.67 s  total-GPU-s=  148.67 s
+[ Info: run_multitile_split profile (use_gpu=true, ntile=2, nmesh=192, n_workers=1)
+[ Info:   01_residual_gen               max/worker=   0.38 s  (  4.3%)   sum=    0.38 s
+[ Info:   02_iso_fft_delta              max/worker=   0.60 s  (  6.9%)   sum=    0.60 s
+[ Info:   03_interp_coarse_delta        max/worker=   0.02 s  (  0.2%)   sum=    0.02 s
+[ Info:   04_iso_fft_psi1               max/worker=   0.00 s  (  0.0%)   sum=    0.00 s
+[ Info:   05_interp_coarse_psi1         max/worker=   0.07 s  (  0.8%)   sum=    0.07 s
+[ Info:   06_2lpt_periodic_fft          max/worker=   0.15 s  (  1.7%)   sum=    0.15 s
+[ Info:   07_laplacian_periodic_fft     max/worker=   0.02 s  (  0.2%)   sum=    0.02 s
+[ Info:   08_peak_find                  max/worker=   0.26 s  (  3.0%)   sum=    0.26 s
+[ Info:   09_shell_analysis             max/worker=   6.73 s  ( 76.8%)   sum=    6.73 s
+[ Info:   10_record_packing             max/worker=   0.52 s  (  6.0%)   sum=    0.52 s
+[ Info:   TOTAL_stages                  wall~max=   8.76 s  total-GPU-s=    8.76 s
+GPU total wall: 9.03 s  (20467 halos)
+Speedup: 16.66x   ΔN=0
