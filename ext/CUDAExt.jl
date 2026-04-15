@@ -2051,6 +2051,841 @@ function _post_process_kernel!(
 end
 
 # ============================================================
+# Fused gather + post-process kernel
+# ============================================================
+#
+# Combines `_shell_gather_full_kernel!` and `_post_process_kernel!` into a
+# single launch. Per-shell sums never touch global memory — the gather
+# reductions stream directly into shared memory, and the sequential
+# post-process on thread 0 reads from the same shared arrays.
+#
+# Savings vs the two-kernel path:
+#   - Eliminates ~25 × nshells × npeaks × 4 B of per-tile global writes
+#     (Fshell, nshell, Sshell, S2shell, Gshell, Gfshell, SRshell, lapdshell).
+#   - At nshells=200, npeaks=5k, that's ~100 MB of per-batch global traffic
+#     saved on both the write (gather) and the read (post-process) side.
+#
+# Shared-memory layout per block (one block = one peak), offsets in bytes:
+#
+#    0     shmem_rad     Float32 × 200    (800 B)
+#  800     shmem_Fbar    Float32 × 200    (800 B)
+# 1600     shmem_Gn      Float32 × 3 × 200 (2400 B)
+# 4000     shmem_Gfn     Float32 × 3 × 200 (2400 B)
+# 6400     shmem_SRn     Float32 × 3 × 3 × 200 (7200 B)
+# 13600    shmem_Sshell  Float32 × 3 × 200 (2400 B)
+# 16000    shmem_S2shell Float32 × 3 × 200 (2400 B)
+# 18400    shmem_n       Int32   × 200    (800 B)
+# 19200    shmem_lapd    Float32 × 200    (800 B)
+# 20000    sdata_f       Float32 × 32     (128 B — block-reduce scratch)
+# 20128    sdata_i       Int32   × 32     (128 B — block-reduce scratch)
+# 20256    END (~20 KB)
+#
+# Fits twice in the 48 KB/block shmem budget on Ada / Ampere / Hopper.
+
+# Shared-memory offsets (bytes)
+const _FSA_OFF_RAD     = 0
+const _FSA_OFF_FBAR    = _FSA_OFF_RAD     + sizeof(Float32) * Int(_MAX_SHELLS_GPU)
+const _FSA_OFF_GN      = _FSA_OFF_FBAR    + sizeof(Float32) * Int(_MAX_SHELLS_GPU)
+const _FSA_OFF_GFN     = _FSA_OFF_GN      + sizeof(Float32) * 3 * Int(_MAX_SHELLS_GPU)
+const _FSA_OFF_SRN     = _FSA_OFF_GFN     + sizeof(Float32) * 3 * Int(_MAX_SHELLS_GPU)
+const _FSA_OFF_SSH     = _FSA_OFF_SRN     + sizeof(Float32) * 9 * Int(_MAX_SHELLS_GPU)
+const _FSA_OFF_S2SH    = _FSA_OFF_SSH     + sizeof(Float32) * 3 * Int(_MAX_SHELLS_GPU)
+const _FSA_OFF_N       = _FSA_OFF_S2SH    + sizeof(Float32) * 3 * Int(_MAX_SHELLS_GPU)
+const _FSA_OFF_LAPD    = _FSA_OFF_N       + sizeof(Int32)   * Int(_MAX_SHELLS_GPU)
+const _FSA_OFF_SDATA_F = _FSA_OFF_LAPD    + sizeof(Float32) * Int(_MAX_SHELLS_GPU)
+const _FSA_OFF_SDATA_I = _FSA_OFF_SDATA_F + sizeof(Float32) * 32
+const _FSA_SHMEM_BYTES = _FSA_OFF_SDATA_I + sizeof(Int32)   * 32
+
+function _fused_shell_analysis_kernel!(
+    # Outputs (indexed by peak)
+    RTHL_out, Fbarx_out, e_v_out, p_v_out,
+    strain_final_out, eigs_out,
+    Srb_out, Sbar_out, Sbar2_out,
+    gradpk_out, gradpkf_out, gradpkrf_out, d2F_out,
+    zvir_half_out, mask_out,
+    # Field inputs
+    delta, etax, etay, etaz, eta2x, eta2y, eta2z, lapd,
+    # Peak centers
+    peaks_i, peaks_j, peaks_k,
+    # Shell offset tables
+    off_di, off_dj, off_dk, shell_start, shell_count, shell_r2,
+    # Collapse table
+    ct_table,
+    ct_X1::Float32, ct_Y1::Float32, ct_Z1::Float32,
+    ct_dxi::Float32, ct_dyi::Float32, ct_dzi::Float32,
+    ct_nx::Int32, ct_ny::Int32, ct_nz::Int32, ct_out_val::Float32,
+    # SPH kernel LUT
+    akk_tab,
+    # Per-peak collapse state
+    ZZon_pp, fcrit_pp, Rfclvi_r2::Float32,
+    # Scaling constants
+    wRnor::Float32, aRnor::Float32, hlatt_1::Float32, hlatt_2::Float32,
+    ir2min::Int32,
+    nshells::Int32, nshells_max::Int32,
+    n1::Int32, n2::Int32, n3::Int32, nbuff::Int32, update_mask::Bool,
+)
+    peak_id = blockIdx().x
+    tid     = threadIdx().x
+    bdim    = blockDim().x
+
+    # ---------- Shared-memory views (see layout comment above) ----------
+    shmem_rad     = CuDynamicSharedArray(Float32, _MAX_SHELLS_GPU, _FSA_OFF_RAD)
+    shmem_Fbar    = CuDynamicSharedArray(Float32, _MAX_SHELLS_GPU, _FSA_OFF_FBAR)
+    shmem_Gn      = CuDynamicSharedArray(Float32, (Int32(3), _MAX_SHELLS_GPU), _FSA_OFF_GN)
+    shmem_Gfn     = CuDynamicSharedArray(Float32, (Int32(3), _MAX_SHELLS_GPU), _FSA_OFF_GFN)
+    shmem_SRn     = CuDynamicSharedArray(Float32, (Int32(3), Int32(3), _MAX_SHELLS_GPU), _FSA_OFF_SRN)
+    shmem_Sshell  = CuDynamicSharedArray(Float32, (Int32(3), _MAX_SHELLS_GPU), _FSA_OFF_SSH)
+    shmem_S2shell = CuDynamicSharedArray(Float32, (Int32(3), _MAX_SHELLS_GPU), _FSA_OFF_S2SH)
+    shmem_n       = CuDynamicSharedArray(Int32,   _MAX_SHELLS_GPU, _FSA_OFF_N)
+    shmem_lapd    = CuDynamicSharedArray(Float32, _MAX_SHELLS_GPU, _FSA_OFF_LAPD)
+    sdata_f       = CuDynamicSharedArray(Float32, 32, _FSA_OFF_SDATA_F)
+    sdata_i       = CuDynamicSharedArray(Int32,   32, _FSA_OFF_SDATA_I)
+
+    @inbounds ci = peaks_i[peak_id]
+    @inbounds cj = peaks_j[peak_id]
+    @inbounds ck = peaks_k[peak_id]
+
+    # =====================================================================
+    # Phase A: Gather + inline normalisation.
+    # Per-shell: threads cooperatively accumulate 23 Float32 + 1 Int32 sums,
+    # block-reduce each, thread 0 stages normalised values into shmem.
+    # dFbar_prev is kept in thread 0's registers across the shell loop.
+    # =====================================================================
+    dFbar_prev = 0.0f0
+    s = _I1
+    while s <= nshells
+        @inbounds s0 = shell_start[s]
+        @inbounds nc = shell_count[s]
+
+        local_F   = 0.0f0
+        local_Sx  = 0.0f0; local_Sy  = 0.0f0; local_Sz  = 0.0f0
+        local_S2x = 0.0f0; local_S2y = 0.0f0; local_S2z = 0.0f0
+        local_Gx  = 0.0f0; local_Gy  = 0.0f0; local_Gz  = 0.0f0
+        local_Gfx = 0.0f0; local_Gfy = 0.0f0; local_Gfz = 0.0f0
+        local_SRxx = 0.0f0; local_SRxy = 0.0f0; local_SRxz = 0.0f0
+        local_SRyx = 0.0f0; local_SRyy = 0.0f0; local_SRyz = 0.0f0
+        local_SRzx = 0.0f0; local_SRzy = 0.0f0; local_SRzz = 0.0f0
+        local_lapd = 0.0f0
+        local_n = _I0
+
+        c = tid
+        while c <= nc
+            idx = s0 + c - _I1
+            @inbounds di = off_di[idx]
+            @inbounds dj = off_dj[idx]
+            @inbounds dk = off_dk[idx]
+
+            iv1 = ci + di
+            iv2 = cj + dj
+            iv3 = ck + dk
+
+            if (_I1 <= iv1) & (iv1 <= n1) & (_I1 <= iv2) & (iv2 <= n2) & (_I1 <= iv3) & (iv3 <= n3)
+                @inbounds d_val  = delta[iv1, iv2, iv3]
+                @inbounds df_val = delta[iv3, iv1, iv2]  # transpose for Gf
+                @inbounds ex  = etax[iv1, iv2, iv3]
+                @inbounds ey  = etay[iv1, iv2, iv3]
+                @inbounds ez  = etaz[iv1, iv2, iv3]
+                @inbounds e2x = eta2x[iv1, iv2, iv3]
+                @inbounds e2y = eta2y[iv1, iv2, iv3]
+                @inbounds e2z = eta2z[iv1, iv2, iv3]
+
+                local_F += d_val
+                local_Sx  += ex;  local_Sy  += ey;  local_Sz  += ez
+                local_S2x += e2x; local_S2y += e2y; local_S2z += e2z
+
+                fdi = Float32(di); fdj = Float32(dj); fdk = Float32(dk)
+                local_Gx  += d_val  * fdi; local_Gy  += d_val  * fdj; local_Gz  += d_val  * fdk
+                local_Gfx += df_val * fdi; local_Gfy += df_val * fdj; local_Gfz += df_val * fdk
+
+                local_SRxx += ex * fdi; local_SRxy += ex * fdj; local_SRxz += ex * fdk
+                local_SRyx += ey * fdi; local_SRyy += ey * fdj; local_SRyz += ey * fdk
+                local_SRzx += ez * fdi; local_SRzy += ez * fdj; local_SRzz += ez * fdk
+
+                @inbounds local_lapd += lapd[iv1, iv2, iv3]
+                local_n += _I1
+            end
+            c += bdim
+        end
+
+        # 22 Float32 + 1 Int32 block reductions per shell.
+        F_tot   = block_reduce_sum_f32(local_F,   sdata_f); sync_threads()
+        Sx_tot  = block_reduce_sum_f32(local_Sx,  sdata_f); sync_threads()
+        Sy_tot  = block_reduce_sum_f32(local_Sy,  sdata_f); sync_threads()
+        Sz_tot  = block_reduce_sum_f32(local_Sz,  sdata_f); sync_threads()
+        S2x_tot = block_reduce_sum_f32(local_S2x, sdata_f); sync_threads()
+        S2y_tot = block_reduce_sum_f32(local_S2y, sdata_f); sync_threads()
+        S2z_tot = block_reduce_sum_f32(local_S2z, sdata_f); sync_threads()
+        Gx_tot  = block_reduce_sum_f32(local_Gx,  sdata_f); sync_threads()
+        Gy_tot  = block_reduce_sum_f32(local_Gy,  sdata_f); sync_threads()
+        Gz_tot  = block_reduce_sum_f32(local_Gz,  sdata_f); sync_threads()
+        Gfx_tot = block_reduce_sum_f32(local_Gfx, sdata_f); sync_threads()
+        Gfy_tot = block_reduce_sum_f32(local_Gfy, sdata_f); sync_threads()
+        Gfz_tot = block_reduce_sum_f32(local_Gfz, sdata_f); sync_threads()
+        SRxx_tot = block_reduce_sum_f32(local_SRxx, sdata_f); sync_threads()
+        SRxy_tot = block_reduce_sum_f32(local_SRxy, sdata_f); sync_threads()
+        SRxz_tot = block_reduce_sum_f32(local_SRxz, sdata_f); sync_threads()
+        SRyx_tot = block_reduce_sum_f32(local_SRyx, sdata_f); sync_threads()
+        SRyy_tot = block_reduce_sum_f32(local_SRyy, sdata_f); sync_threads()
+        SRyz_tot = block_reduce_sum_f32(local_SRyz, sdata_f); sync_threads()
+        SRzx_tot = block_reduce_sum_f32(local_SRzx, sdata_f); sync_threads()
+        SRzy_tot = block_reduce_sum_f32(local_SRzy, sdata_f); sync_threads()
+        SRzz_tot = block_reduce_sum_f32(local_SRzz, sdata_f); sync_threads()
+        lapd_tot = block_reduce_sum_f32(local_lapd, sdata_f); sync_threads()
+        n_tot    = block_reduce_sum_i32(local_n,   sdata_i); sync_threads()
+
+        if tid == _I1
+            @inbounds r2_val = shell_r2[s]
+            if s == _I1
+                # Shell 1 (center cell, rad=0): special-case. G/Gf/SR are
+                # zero, Fbar[1] = dFbar_1 = F/n.
+                dFbar_1 = n_tot > _I0 ? F_tot / Float32(n_tot) : 0.0f0
+                @inbounds shmem_rad[1]  = 0.0f0
+                @inbounds shmem_Fbar[1] = dFbar_1
+                @inbounds shmem_n[1]    = n_tot
+                for L in _I1:Int32(3)
+                    @inbounds shmem_Gn[L, 1]  = 0.0f0
+                    @inbounds shmem_Gfn[L, 1] = 0.0f0
+                    for K in _I1:Int32(3)
+                        @inbounds shmem_SRn[L, K, 1] = 0.0f0
+                    end
+                end
+                @inbounds shmem_Sshell[_I1, 1] = Sx_tot
+                @inbounds shmem_Sshell[Int32(2), 1] = Sy_tot
+                @inbounds shmem_Sshell[Int32(3), 1] = Sz_tot
+                @inbounds shmem_S2shell[_I1, 1] = S2x_tot
+                @inbounds shmem_S2shell[Int32(2), 1] = S2y_tot
+                @inbounds shmem_S2shell[Int32(3), 1] = S2z_tot
+                @inbounds shmem_lapd[1] = lapd_tot
+                dFbar_prev = dFbar_1
+            else
+                rad_s = sqrt(Float32(r2_val))
+                rad_s_inv = 1.0f0 / rad_s
+                dFbar_s = n_tot > _I0 ? F_tot / Float32(n_tot) : 0.0f0
+                # Trapezoidal integration for Fbar(r) (matches post-process)
+                @inbounds rad_sp = shmem_rad[s - _I1]
+                rad3p = rad_sp * rad_sp * rad_sp
+                rad3  = rad_s * rad_s * rad_s
+                @inbounds Fbar_prev = shmem_Fbar[s - _I1]
+                Fbar_s = (rad3p * Fbar_prev + 0.5f0 * (dFbar_prev + dFbar_s) * (rad3 - rad3p)) / rad3
+
+                @inbounds shmem_rad[s]  = rad_s
+                @inbounds shmem_Fbar[s] = Fbar_s
+                @inbounds shmem_n[s]    = n_tot
+                # Normalise G/Gf/SR by rad_s inline
+                @inbounds shmem_Gn[_I1, s]       = Gx_tot  * rad_s_inv
+                @inbounds shmem_Gn[Int32(2), s]  = Gy_tot  * rad_s_inv
+                @inbounds shmem_Gn[Int32(3), s]  = Gz_tot  * rad_s_inv
+                @inbounds shmem_Gfn[_I1, s]      = Gfx_tot * rad_s_inv
+                @inbounds shmem_Gfn[Int32(2), s] = Gfy_tot * rad_s_inv
+                @inbounds shmem_Gfn[Int32(3), s] = Gfz_tot * rad_s_inv
+                @inbounds shmem_SRn[_I1, _I1, s]      = SRxx_tot * rad_s_inv
+                @inbounds shmem_SRn[_I1, Int32(2), s] = SRxy_tot * rad_s_inv
+                @inbounds shmem_SRn[_I1, Int32(3), s] = SRxz_tot * rad_s_inv
+                @inbounds shmem_SRn[Int32(2), _I1, s]      = SRyx_tot * rad_s_inv
+                @inbounds shmem_SRn[Int32(2), Int32(2), s] = SRyy_tot * rad_s_inv
+                @inbounds shmem_SRn[Int32(2), Int32(3), s] = SRyz_tot * rad_s_inv
+                @inbounds shmem_SRn[Int32(3), _I1, s]      = SRzx_tot * rad_s_inv
+                @inbounds shmem_SRn[Int32(3), Int32(2), s] = SRzy_tot * rad_s_inv
+                @inbounds shmem_SRn[Int32(3), Int32(3), s] = SRzz_tot * rad_s_inv
+                @inbounds shmem_Sshell[_I1, s]       = Sx_tot
+                @inbounds shmem_Sshell[Int32(2), s]  = Sy_tot
+                @inbounds shmem_Sshell[Int32(3), s]  = Sz_tot
+                @inbounds shmem_S2shell[_I1, s]      = S2x_tot
+                @inbounds shmem_S2shell[Int32(2), s] = S2y_tot
+                @inbounds shmem_S2shell[Int32(3), s] = S2z_tot
+                @inbounds shmem_lapd[s] = lapd_tot
+
+                dFbar_prev = dFbar_s
+            end
+        end
+        sync_threads()
+        s += _I1
+    end
+
+    # =====================================================================
+    # Phase B: sequential post-process on thread 0 (reads from shmem).
+    # Matches `_post_process_kernel!` phases 3–8 verbatim, with global
+    # reads replaced by shmem_* reads. Inlining here avoids the duplicate
+    # shmem-staging loop that kernel would otherwise perform.
+    # =====================================================================
+    if tid != _I1
+        return
+    end
+
+    @inbounds ZZon  = ZZon_pp[peak_id]
+    @inbounds fcrit = fcrit_pp[peak_id]
+    m = nshells_max
+
+    # ----- Phase 3: gradient at filter scale (gradpkrf) -----
+    mrf = _I1
+    rmrf = 10.0f0
+    mrfi = _I1
+    s_mrf = Int32(2)
+    while s_mrf <= nshells_max
+        @inbounds r2_s = shell_r2[s_mrf]
+        dist_mrf = abs(Float32(r2_s) - Rfclvi_r2)
+        if dist_mrf < rmrf
+            mrf = mrfi
+            rmrf = dist_mrf
+        end
+        if s_mrf < nshells_max
+            mrfi += _I1
+        end
+        s_mrf += _I1
+    end
+    @inbounds rlow_rf = max(shmem_rad[mrf] - 2.0f0, 0.0f0)
+    mlow_rf = mrf
+    if mrf > _I1
+        m1_rf = mrf - _I1
+        while m1_rf >= _I1
+            @inbounds if shmem_rad[m1_rf] > rlow_rf
+                mlow_rf = m1_rf
+            end
+            m1_rf -= _I1
+        end
+    end
+    @inbounds rupp_rf = shmem_rad[mrf] + 2.0f0
+    mupp_rf = mrf
+    m1_rf = mrf + _I1
+    while m1_rf <= m
+        @inbounds if shmem_rad[m1_rf] < rupp_rf
+            mupp_rf = m1_rf
+        end
+        m1_rf += _I1
+    end
+    (_, _, _, _, _, _,
+     gradpkrf_x, gradpkrf_y, gradpkrf_z, _, _, _) = _kernel_strain_f32(
+        shmem_rad, shmem_Gn, shmem_Gfn, shmem_SRn, akk_tab,
+        mrf, mlow_rf, mupp_rf, wRnor, aRnor, hlatt_1, hlatt_2)
+
+    # ----- Phase 4a: m0/mupp initialisation -----
+    m0 = _I1
+    ifcrit = _I1
+    rupp_init = sqrt(Float32(ir2min)) + 2.0f0
+    mupp = _I1
+    s = Int32(2)
+    while s <= nshells_max
+        @inbounds r2 = shell_r2[s]
+        if ifcrit == _I1
+            m0 = s
+            if Float32(r2) > Float32(ir2min)
+                @inbounds rupp_init = shmem_rad[m0] + 2.0f0
+                ifcrit = _I0
+                mupp = s
+            end
+        else
+            @inbounds if shmem_rad[s] < rupp_init
+                mupp = s
+            end
+        end
+        s += _I1
+    end
+
+    # ----- Phase 4b: fcrit crossing -----
+    @inbounds Fbar_m0 = shmem_Fbar[m0]
+    found_cross = false
+    if Fbar_m0 >= fcrit
+        mm = m0
+        while mm <= m
+            @inbounds if shmem_Fbar[mm] < fcrit
+                m0 = mm
+                found_cross = true
+                break
+            end
+            mm += _I1
+        end
+        if !found_cross
+            mupp = m
+        end
+        if found_cross
+            @inbounds rupp_m0 = shmem_rad[m0] + 2.0f0
+            mupp = m0
+            mm = m0 + _I1
+            while mm <= m
+                @inbounds if shmem_rad[mm] < rupp_m0
+                    mupp = mm
+                end
+                mm += _I1
+            end
+        end
+    else
+        mstart = m0 > _I1 ? (m0 - _I1) : _I1
+        mp = mstart
+        while mp >= _I1
+            @inbounds if shmem_Fbar[mp] >= fcrit
+                found_cross = true
+                break
+            end
+            m0 = mp
+            mp -= _I1
+        end
+        if !found_cross
+            _write_no_collapse_outputs!(
+                RTHL_out, Fbarx_out, e_v_out, p_v_out,
+                strain_final_out, eigs_out,
+                Srb_out, Sbar_out, Sbar2_out,
+                gradpk_out, gradpkf_out, gradpkrf_out, d2F_out,
+                zvir_half_out, peak_id)
+            return
+        end
+        @inbounds rupp_m0 = shmem_rad[m0] + 2.0f0
+        mupp_new = m0
+        mm = m0 + _I1
+        while mm <= m
+            @inbounds if shmem_rad[mm] < rupp_m0
+                mupp_new = mm
+            end
+            mm += _I1
+        end
+        mupp = mupp_new
+    end
+
+    # ----- Phase 5: strain at m0 + inward walk -----
+    mlow = m0
+    @inbounds rlow = max(shmem_rad[m0] - 2.0f0, 0.0f0)
+    if m0 > _I1
+        m1 = m0 - _I1
+        while m1 >= _I1
+            @inbounds if shmem_rad[m1] > rlow
+                mlow = m1
+            end
+            m1 -= _I1
+        end
+    end
+
+    (E11_m0, E12_m0, E13_m0, E22_m0, E23_m0, E33_m0,
+     gx_m0, gy_m0, gz_m0, gfx_m0, gfy_m0, gfz_m0) = _kernel_strain_f32(
+        shmem_rad, shmem_Gn, shmem_Gfn, shmem_SRn, akk_tab,
+        m0, mlow, mupp, wRnor, aRnor, hlatt_1, hlatt_2)
+    (lam1_m0, lam2_m0, lam3_m0) = _eig3_symmetric_f32(
+        E11_m0, E22_m0, E33_m0, E12_m0, E13_m0, E23_m0)
+    Frho_m0_raw = lam1_m0 + lam2_m0 + lam3_m0
+    e_v_m0 = Frho_m0_raw > 0.0f0 ? 0.5f0 * (lam3_m0 - lam1_m0) / Frho_m0_raw : 0.0f0
+    p_v_m0 = Frho_m0_raw > 0.0f0 ? 0.5f0 * (lam3_m0 + lam1_m0 - 2.0f0 * lam2_m0) / Frho_m0_raw : 0.0f0
+    Frhoh_m0 = Frho_m0_raw
+    @inbounds Frho_m0_fbar = shmem_Fbar[m0]
+    zvir1p_m0 = -1.0f0
+
+    Frhoh = Frhoh_m0
+    Frho_val = Frho_m0_fbar
+    e_v_curr = e_v_m0
+    p_v_curr = p_v_m0
+    E11_last = E11_m0; E12_last = E12_m0; E13_last = E13_m0
+    E22_last = E22_m0; E23_last = E23_m0; E33_last = E33_m0
+    E11_prev = E11_m0; E12_prev = E12_m0; E13_prev = E13_m0
+    E22_prev = E22_m0; E23_prev = E23_m0; E33_prev = E33_m0
+    gx_last = gx_m0;  gy_last = gy_m0;  gz_last = gz_m0
+    gfx_last = gfx_m0; gfy_last = gfy_m0; gfz_last = gfz_m0
+    gx_prev = gx_m0;  gy_prev = gy_m0;  gz_prev = gz_m0
+    gfx_prev = gfx_m0; gfy_prev = gfy_m0; gfz_prev = gfz_m0
+    Frhpk = Frhoh_m0; Fnupk = Frho_m0_fbar; Fevpk = e_v_m0; Fpvpk = p_v_m0
+
+    collapsed = false
+    zvir1 = -1.0f0
+    zvir1p = zvir1p_m0
+
+    if zvir1p_m0 >= ZZon
+        collapsed = true
+    else
+        zvir1 = zvir1p_m0
+        if m0 == _I1
+            _write_no_collapse_outputs!(
+                RTHL_out, Fbarx_out, e_v_out, p_v_out,
+                strain_final_out, eigs_out,
+                Srb_out, Sbar_out, Sbar2_out,
+                gradpk_out, gradpkf_out, gradpkrf_out, d2F_out,
+                zvir_half_out, peak_id)
+            return
+        end
+
+        mp = m0 - _I1
+        while mp >= _I1
+            @inbounds rupp_mp = shmem_rad[mp] + 2.0f0
+            @inbounds rlow_mp = max(shmem_rad[mp] - 2.0f0, 0.0f0)
+
+            @inbounds if shmem_rad[mupp] > rupp_mp
+                mupp_new = mp
+                m1 = mp + _I1
+                while m1 <= mupp
+                    @inbounds if shmem_rad[m1] < rupp_mp
+                        mupp_new = m1
+                    end
+                    m1 += _I1
+                end
+                mupp = mupp_new
+            end
+            @inbounds if mlow > _I1 && shmem_rad[mlow - _I1] > rlow_mp
+                mlownew = mlow
+                m1 = mlow - _I1
+                while m1 >= _I1
+                    @inbounds if shmem_rad[m1] > rlow_mp
+                        mlownew = m1
+                    end
+                    m1 -= _I1
+                end
+                mlow = mlownew
+            end
+
+            (E11_mp, E12_mp, E13_mp, E22_mp, E23_mp, E33_mp,
+             gx_mp, gy_mp, gz_mp, gfx_mp, gfy_mp, gfz_mp) = _kernel_strain_f32(
+                shmem_rad, shmem_Gn, shmem_Gfn, shmem_SRn, akk_tab,
+                mp, mlow, mupp, wRnor, aRnor, hlatt_1, hlatt_2)
+            (lam1_mp, lam2_mp, lam3_mp) = _eig3_symmetric_f32(
+                E11_mp, E22_mp, E33_mp, E12_mp, E13_mp, E23_mp)
+            Frho_mp_raw = lam1_mp + lam2_mp + lam3_mp
+            e_v_mp = Frho_mp_raw > 0.0f0 ? 0.5f0 * (lam3_mp - lam1_mp) / Frho_mp_raw : 0.0f0
+            p_v_mp = Frho_mp_raw > 0.0f0 ? 0.5f0 * (lam3_mp + lam1_mp - 2.0f0 * lam2_mp) / Frho_mp_raw : 0.0f0
+
+            Frhoh_mp = Frho_mp_raw
+            @inbounds Frho_mp_fbar = shmem_Fbar[mp]
+
+            zvir1p_mp = -1.0f0
+            if Frho_mp_fbar > 0.0f0
+                poe_mp = e_v_mp < 1.0f-5 ? 0.0f0 : p_v_mp / e_v_mp
+                zvir1p_mp = _interp3_trilinear_f32(
+                    ct_table, log10(Frho_mp_fbar), e_v_mp, poe_mp,
+                    ct_X1, ct_Y1, ct_Z1, ct_dxi, ct_dyi, ct_dzi,
+                    ct_nx, ct_ny, ct_nz, ct_out_val)
+            end
+
+            if zvir1p_mp >= ZZon
+                m0 = mp + _I1
+                zvir1p = zvir1p_mp
+                E11_last = E11_mp; E12_last = E12_mp; E13_last = E13_mp
+                E22_last = E22_mp; E23_last = E23_mp; E33_last = E33_mp
+                gx_last = gx_mp;   gy_last = gy_mp;   gz_last = gz_mp
+                gfx_last = gfx_mp; gfy_last = gfy_mp; gfz_last = gfz_mp
+                Frhoh = Frhoh_mp
+                Frho_val = Frho_mp_fbar
+                e_v_curr = e_v_mp
+                p_v_curr = p_v_mp
+                collapsed = true
+                break
+            end
+
+            zvir1 = zvir1p_mp
+            Frhpk = Frhoh_mp; Fnupk = Frho_mp_fbar; Fevpk = e_v_mp; Fpvpk = p_v_mp
+            E11_prev = E11_mp; E12_prev = E12_mp; E13_prev = E13_mp
+            E22_prev = E22_mp; E23_prev = E23_mp; E33_prev = E33_mp
+            gx_prev = gx_mp;   gy_prev = gy_mp;   gz_prev = gz_mp
+            gfx_prev = gfx_mp; gfy_prev = gfy_mp; gfz_prev = gfz_mp
+            Frhoh = Frhoh_mp
+            Frho_val = Frho_mp_fbar
+            e_v_curr = e_v_mp
+            p_v_curr = p_v_mp
+            E11_last = E11_mp; E12_last = E12_mp; E13_last = E13_mp
+            E22_last = E22_mp; E23_last = E23_mp; E33_last = E33_mp
+            gx_last = gx_mp;   gy_last = gy_mp;   gz_last = gz_mp
+            gfx_last = gfx_mp; gfy_last = gfy_mp; gfz_last = gfz_mp
+            mp -= _I1
+        end
+    end
+
+    if !collapsed
+        _write_no_collapse_outputs!(
+            RTHL_out, Fbarx_out, e_v_out, p_v_out,
+            strain_final_out, eigs_out,
+            Srb_out, Sbar_out, Sbar2_out,
+            gradpk_out, gradpkf_out, gradpkrf_out, d2F_out,
+            zvir_half_out, peak_id)
+        return
+    end
+
+    # ----- Phase 6: RTHL interpolation -----
+    dZvir = zvir1p - zvir1
+    RTHL = 0.0f0
+    Fbarx = 0.0f0
+    frac = 0.0f0
+    if zvir1 > 0.0f0 && dZvir != 0.0f0
+        @inbounds radmp = shmem_rad[m0 - _I1]
+        @inbounds radm  = shmem_rad[m0]
+        RTHL3 = radmp * radmp * radmp +
+                (radm * radm * radm - radmp * radmp * radmp) * (zvir1p - ZZon) / dZvir
+        RTHL = cbrt(RTHL3)
+    else
+        @inbounds RTHL = shmem_rad[m0 - _I1]
+    end
+
+    if RTHL <= 0.0f0
+        _write_no_collapse_outputs!(
+            RTHL_out, Fbarx_out, e_v_out, p_v_out,
+            strain_final_out, eigs_out,
+            Srb_out, Sbar_out, Sbar2_out,
+            gradpk_out, gradpkf_out, gradpkrf_out, d2F_out,
+            zvir_half_out, peak_id)
+        return
+    end
+
+    @inbounds rad3p = shmem_rad[m0 - _I1] * shmem_rad[m0 - _I1] * shmem_rad[m0 - _I1]
+    @inbounds rad3  = shmem_rad[m0] * shmem_rad[m0] * shmem_rad[m0]
+    drad3 = rad3 - rad3p
+    RTHL3 = RTHL * RTHL * RTHL
+    @inbounds dFbar = shmem_Fbar[m0] - shmem_Fbar[m0 - _I1]
+
+    if zvir1 > 0.0f0 && drad3 != 0.0f0
+        frac = (RTHL3 - rad3p) / drad3
+        @inbounds Fbarx = shmem_Fbar[m0 - _I1] + frac * dFbar
+        Frhpk = Frhoh + frac * (Frhpk - Frhoh)
+        Fnupk = Frho_val + frac * (Fnupk - Frho_val)
+        Fevpk = e_v_curr + frac * (Fevpk - e_v_curr)
+        Fpvpk = p_v_curr + frac * (Fpvpk - p_v_curr)
+        E11_mat = E11_last + frac * (E11_prev - E11_last)
+        E12_mat = E12_last + frac * (E12_prev - E12_last)
+        E13_mat = E13_last + frac * (E13_prev - E13_last)
+        E22_mat = E22_last + frac * (E22_prev - E22_last)
+        E23_mat = E23_last + frac * (E23_prev - E23_last)
+        E33_mat = E33_last + frac * (E33_prev - E33_last)
+        gx_mat  = gx_last  + frac * (gx_prev  - gx_last)
+        gy_mat  = gy_last  + frac * (gy_prev  - gy_last)
+        gz_mat  = gz_last  + frac * (gz_prev  - gz_last)
+        gfx_mat = gfx_last + frac * (gfx_prev - gfx_last)
+        gfy_mat = gfy_last + frac * (gfy_prev - gfy_last)
+        gfz_mat = gfz_last + frac * (gfz_prev - gfz_last)
+    else
+        @inbounds Fbarx = shmem_Fbar[m0 - _I1]
+        Fnupk = Frho_val; Fevpk = e_v_curr; Fpvpk = p_v_curr
+        E11_mat = E11_last; E12_mat = E12_last; E13_mat = E13_last
+        E22_mat = E22_last; E23_mat = E23_last; E33_mat = E33_last
+        gx_mat  = gx_prev;  gy_mat  = gy_prev;  gz_mat  = gz_prev
+        gfx_mat = gfx_prev; gfy_mat = gfy_prev; gfz_mat = gfz_prev
+    end
+
+    tr_E = E11_mat + E22_mat + E33_mat
+    if tr_E != 0.0f0
+        sc = Fbarx / tr_E
+        E11n = E11_mat * sc; E12n = E12_mat * sc; E13n = E13_mat * sc
+        E22n = E22_mat * sc; E23n = E23_mat * sc; E33n = E33_mat * sc
+    else
+        E11n = E11_mat; E12n = E12_mat; E13n = E13_mat
+        E22n = E22_mat; E23n = E23_mat; E33n = E33_mat
+    end
+    (lamf1, lamf2, lamf3) = _eig3_symmetric_f32(E11n, E22n, E33n, E12n, E13n, E23n)
+    Frhoc = lamf1 + lamf2 + lamf3
+    e_v_f = Frhoc > 0.0f0 ? 0.5f0 * (lamf3 - lamf1) / Frhoc : 0.0f0
+    p_v_f = Frhoc > 0.0f0 ? 0.5f0 * (lamf3 + lamf1 - 2.0f0 * lamf2) / Frhoc : 0.0f0
+
+    if Frhoh != 0.0f0
+        sc2 = Fbarx / Frhoh
+        E11f = E11_last * sc2; E12f = E12_last * sc2; E13f = E13_last * sc2
+        E22f = E22_last * sc2; E23f = E23_last * sc2; E33f = E33_last * sc2
+    else
+        E11f = E11_last; E12f = E12_last; E13f = E13_last
+        E22f = E22_last; E23f = E23_last; E33f = E33_last
+    end
+
+    # ----- Phase 7: Sbar, Sbar2, Srb -----
+    Sbar_x  = 0.0f0; Sbar_y  = 0.0f0; Sbar_z  = 0.0f0
+    Sbar2_x = 0.0f0; Sbar2_y = 0.0f0; Sbar2_z = 0.0f0
+    nSbar = _I0
+    m1 = _I1
+    while m1 <= (m0 - _I1)
+        @inbounds n_m1 = shmem_n[m1]
+        if n_m1 > _I0
+            @inbounds Sbar_x += shmem_Sshell[_I1, m1]
+            @inbounds Sbar_y += shmem_Sshell[Int32(2), m1]
+            @inbounds Sbar_z += shmem_Sshell[Int32(3), m1]
+            @inbounds Sbar2_x += shmem_S2shell[_I1, m1]
+            @inbounds Sbar2_y += shmem_S2shell[Int32(2), m1]
+            @inbounds Sbar2_z += shmem_S2shell[Int32(3), m1]
+            nSbar += n_m1
+        end
+        m1 += _I1
+    end
+    if nSbar > _I0
+        invN = 1.0f0 / Float32(nSbar)
+        Sbar_x *= invN; Sbar_y *= invN; Sbar_z *= invN
+        Sbar2_x *= invN; Sbar2_y *= invN; Sbar2_z *= invN
+    end
+
+    Srb = 0.0f0
+    rad5p = 0.0f0
+    if m0 > Int32(2)
+        mp = Int32(2)
+        while mp <= (m0 - _I1)
+            @inbounds rad_mp = shmem_rad[mp]
+            rad5 = rad_mp * rad_mp * rad_mp * rad_mp * rad_mp
+            @inbounds Srb += 0.5f0 * (shmem_Fbar[mp - _I1] + shmem_Fbar[mp]) * (rad5 - rad5p)
+            rad5p = rad5
+            mp += _I1
+        end
+    end
+    RTHL5 = RTHL3 * RTHL * RTHL
+    if zvir1 > 0.0f0 && dZvir != 0.0f0
+        @inbounds Srb += 0.5f0 * (shmem_Fbar[m0 - _I1] + Fbarx) * (RTHL5 - rad5p)
+    end
+    denom_Srb = Fbarx * RTHL5
+    if denom_Srb > 0.0f0
+        Srb /= denom_Srb
+    end
+
+    # ----- Phase 7b: d2F Laplacian average within RTHL -----
+    d2F = 0.0f0
+    nd2 = _I0
+    s_lap = _I1
+    while s_lap <= nshells
+        @inbounds r2_s = shell_r2[s_lap]
+        sqrt_r2 = sqrt(Float32(r2_s))
+        if sqrt_r2 > RTHL
+            break
+        end
+        @inbounds d2F += shmem_lapd[s_lap]
+        @inbounds nd2 += shmem_n[s_lap]
+        s_lap += _I1
+    end
+    if nd2 > _I0
+        d2F /= Float32(nd2)
+    end
+
+    # ----- Phase 8: zvir_half -----
+    zvir_half = -1.0f0
+    if RTHL >= 3.0f0
+        jj_int = Int32(1)
+        while jj_int <= Int32(10)
+            tfrac = (Float32(jj_int - _I1)) * (1.0f0 / 9.0f0) * 0.5f0 + 0.5f0
+            rcur = RTHL * cbrt(tfrac)
+
+            rupp_rc = rcur + 2.0f0
+            mupp_rc = _I1
+            m1_u = Int32(2)
+            while m1_u <= nshells_max - _I1
+                @inbounds r_u = shmem_rad[m1_u]
+                if r_u > rupp_rc
+                    mupp_rc = m1_u
+                    break
+                elseif r_u == 0.0f0
+                    mupp_rc = m1_u - _I1
+                    break
+                end
+                mupp_rc = m1_u
+                m1_u += _I1
+            end
+
+            rlow_rc = rcur - 2.0f0
+            if rlow_rc < 0.0f0
+                rlow_rc = 0.0f0
+            end
+            mlow_rc = _I1
+            m1_l = _I1
+            while m1_l <= nshells_max - _I1
+                @inbounds if shmem_rad[m1_l] > rlow_rc
+                    mlow_rc = m1_l
+                    break
+                end
+                m1_l += _I1
+            end
+
+            m0_rc = _I1
+            m1_0 = _I1
+            while m1_0 <= nshells_max - _I1
+                @inbounds if shmem_rad[m1_0] > rcur
+                    m0_rc = m1_0
+                    break
+                end
+                m0_rc = m1_0
+                m1_0 += _I1
+            end
+
+            (E11_rc, E12_rc, E13_rc, E22_rc, E23_rc, E33_rc,
+             _, _, _, _, _, _) = _kernel_strain_f32(
+                shmem_rad, shmem_Gn, shmem_Gfn, shmem_SRn, akk_tab,
+                m0_rc, mlow_rc, mupp_rc, wRnor, aRnor, 1.0f0, 1.0f0)
+
+            (lam1_rc, lam2_rc, lam3_rc) = _eig3_symmetric_f32(
+                E11_rc, E22_rc, E33_rc, E12_rc, E13_rc, E23_rc)
+            Frho_rc = lam1_rc + lam2_rc + lam3_rc
+            e_v_rc = 0.0f0; p_v_rc = 0.0f0
+            if Frho_rc > 0.0f0
+                e_v_rc = 0.5f0 * (lam3_rc - lam1_rc) / Frho_rc
+                p_v_rc = 0.5f0 * (lam3_rc + lam1_rc - 2.0f0 * lam2_rc) / Frho_rc
+            end
+
+            @inbounds Frhoc_rc = shmem_Fbar[m0_rc]
+            poe_rc = e_v_rc < 1.0f-5 ? 0.0f0 : p_v_rc / e_v_rc
+            zvir_rc = -1.0f0
+            if Frhoc_rc > 0.0f0
+                zvir_rc = _interp3_trilinear_f32(
+                    ct_table, log10(Frhoc_rc), e_v_rc, poe_rc,
+                    ct_X1, ct_Y1, ct_Z1, ct_dxi, ct_dyi, ct_dzi,
+                    ct_nx, ct_ny, ct_nz, ct_out_val)
+            end
+            zrc_shifted = zvir_rc - 1.0f0
+            if zrc_shifted > zvir_half
+                zvir_half = zrc_shifted
+            end
+
+            jj_int += _I1
+        end
+    end
+
+    # ----- Write outputs -----
+    @inbounds RTHL_out[peak_id]  = RTHL
+    @inbounds Fbarx_out[peak_id] = Fbarx
+    @inbounds e_v_out[peak_id]   = e_v_f
+    @inbounds p_v_out[peak_id]   = p_v_f
+    @inbounds Srb_out[peak_id]   = Srb
+    @inbounds d2F_out[peak_id]   = d2F
+    @inbounds zvir_half_out[peak_id] = zvir_half
+    @inbounds Sbar_out[_I1, peak_id]  = Sbar_x
+    @inbounds Sbar_out[Int32(2), peak_id] = Sbar_y
+    @inbounds Sbar_out[Int32(3), peak_id] = Sbar_z
+    @inbounds Sbar2_out[_I1, peak_id] = Sbar2_x
+    @inbounds Sbar2_out[Int32(2), peak_id] = Sbar2_y
+    @inbounds Sbar2_out[Int32(3), peak_id] = Sbar2_z
+    @inbounds gradpk_out[_I1, peak_id]  = gx_mat
+    @inbounds gradpk_out[Int32(2), peak_id] = gy_mat
+    @inbounds gradpk_out[Int32(3), peak_id] = gz_mat
+    @inbounds gradpkf_out[_I1, peak_id]  = gfx_mat
+    @inbounds gradpkf_out[Int32(2), peak_id] = gfy_mat
+    @inbounds gradpkf_out[Int32(3), peak_id] = gfz_mat
+    @inbounds gradpkrf_out[_I1, peak_id]  = gradpkrf_x
+    @inbounds gradpkrf_out[Int32(2), peak_id] = gradpkrf_y
+    @inbounds gradpkrf_out[Int32(3), peak_id] = gradpkrf_z
+    @inbounds strain_final_out[1, 1, peak_id] = E11f
+    @inbounds strain_final_out[1, 2, peak_id] = E12f
+    @inbounds strain_final_out[1, 3, peak_id] = E13f
+    @inbounds strain_final_out[2, 1, peak_id] = E12f
+    @inbounds strain_final_out[2, 2, peak_id] = E22f
+    @inbounds strain_final_out[2, 3, peak_id] = E23f
+    @inbounds strain_final_out[3, 1, peak_id] = E13f
+    @inbounds strain_final_out[3, 2, peak_id] = E23f
+    @inbounds strain_final_out[3, 3, peak_id] = E33f
+    @inbounds eigs_out[1, peak_id] = lamf1
+    @inbounds eigs_out[2, peak_id] = lamf2
+    @inbounds eigs_out[3, peak_id] = lamf3
+
+    # ----- Mask side-effect -----
+    if update_mask
+        s_mask = _I1
+        while s_mask <= nshells
+            @inbounds r2_s = shell_r2[s_mask]
+            if sqrt(Float32(r2_s)) > RTHL
+                break
+            end
+            @inbounds s0 = shell_start[s_mask]
+            @inbounds nc = shell_count[s_mask]
+            c_mask = _I1
+            while c_mask <= nc
+                idx = s0 + c_mask - _I1
+                @inbounds di = off_di[idx]
+                @inbounds dj = off_dj[idx]
+                @inbounds dk = off_dk[idx]
+                iv1 = ci + di; iv2 = cj + dj; iv3 = ck + dk
+                if (_I1 <= iv1) & (iv1 <= n1) & (_I1 <= iv2) & (iv2 <= n2) & (_I1 <= iv3) & (iv3 <= n3)
+                    if (iv1 > nbuff) & (iv1 <= n1 - nbuff) &
+                       (iv2 > nbuff) & (iv2 <= n2 - nbuff) &
+                       (iv3 > nbuff) & (iv3 <= n3 - nbuff)
+                        @inbounds mask_out[iv1, iv2, iv3] = Int8(1)
+                    end
+                end
+                c_mask += _I1
+            end
+            s_mask += _I1
+        end
+    end
+    return
+end
+
+# ============================================================
 # Host entry point: analyse_peak_gpu_cuda
 # ============================================================
 
@@ -2318,9 +3153,59 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
     hlatt_1 = 1.0
     hlatt_2 = 1.0
 
+    # Post-process kernel shmem budget (rad, Fbar, Gn, Gfn, SRn staging).
     shmem_bytes = 17 * Int(_MAX_SHELLS_GPU) * sizeof(Float32)
 
     results = Vector{NamedTuple}(undef, length(batches))
+
+    # Persistent per-call scratch pool — sized to the largest batch so we
+    # can reuse every buffer across every Rf without per-batch
+    # CUDA.zeros + unsafe_free! churn. npeaks varies per batch (one batch
+    # per unique Rf) but all batches in a single multirf call share the
+    # same nshells / field geometry.
+    #
+    # Empirically the fused single-kernel variant (see
+    # `_fused_shell_analysis_kernel!`, kept in the file for future reuse)
+    # costs more than it saves on SM_86: combining gather + post-process
+    # raises per-block shmem from 256 B to ~20 KB, which drops occupancy
+    # from 12 blocks/SM to 2 blocks/SM during the memory-bound gather
+    # phase. The lost latency-hiding outweighs the ~100 MB/batch of
+    # global traffic saved. We keep the two-kernel pipeline here but
+    # reuse the persistent scratch below to cut per-batch allocation
+    # overhead, which is pure win.
+    max_np = 0
+    for b in batches
+        max_np = max(max_np, length(b[1]))
+    end
+    pi_scratch       = CUDA.zeros(Int32,   max_np)
+    pj_scratch       = CUDA.zeros(Int32,   max_np)
+    pk_scratch       = CUDA.zeros(Int32,   max_np)
+    ZZon_pp_scratch  = CUDA.zeros(Float32, max_np)
+    fcrit_pp_scratch = CUDA.zeros(Float32, max_np)
+    # Per-shell intermediates between gather and post-process (sized to max_np).
+    Fshell_scratch    = CUDA.zeros(Float32, nshells, max_np)
+    nshell_scratch    = CUDA.zeros(Int32,   nshells, max_np)
+    Sshell_scratch    = CUDA.zeros(Float32, 3, nshells, max_np)
+    S2shell_scratch   = CUDA.zeros(Float32, 3, nshells, max_np)
+    Gshell_scratch    = CUDA.zeros(Float32, 3, nshells, max_np)
+    Gfshell_scratch   = CUDA.zeros(Float32, 3, nshells, max_np)
+    SRshell_scratch   = CUDA.zeros(Float32, 3, 3, nshells, max_np)
+    lapdshell_scratch = CUDA.zeros(Float32, nshells, max_np)
+    # Per-peak outputs.
+    RTHL_scratch         = CUDA.zeros(Float32, max_np)
+    Fbarx_scratch        = CUDA.zeros(Float32, max_np)
+    e_v_scratch          = CUDA.zeros(Float32, max_np)
+    p_v_scratch          = CUDA.zeros(Float32, max_np)
+    strain_final_scratch = CUDA.zeros(Float32, 3, 3, max_np)
+    eigs_scratch         = CUDA.zeros(Float32, 3, max_np)
+    Srb_scratch          = CUDA.zeros(Float32, max_np)
+    Sbar_scratch         = CUDA.zeros(Float32, 3, max_np)
+    Sbar2_scratch        = CUDA.zeros(Float32, 3, max_np)
+    gradpk_scratch       = CUDA.zeros(Float32, 3, max_np)
+    gradpkf_scratch      = CUDA.zeros(Float32, 3, max_np)
+    gradpkrf_scratch     = CUDA.zeros(Float32, 3, max_np)
+    d2F_scratch          = CUDA.zeros(Float32, max_np)
+    zvir_half_scratch    = CUDA.zeros(Float32, max_np)
 
     # ---------------- Per-Rf batch work ----------------
     for (bi, batch) in enumerate(batches)
@@ -2334,18 +3219,23 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
         fcrit_pp_b_h = has_pp_b ? batch[7] : nothing
         npeaks = length(peaks_i)
 
-        pi_d = CuArray{Int32}(peaks_i)
-        pj_d = CuArray{Int32}(peaks_j)
-        pk_d = CuArray{Int32}(peaks_k)
+        # Slice views into persistent scratch (npeaks ≤ max_np).
+        pi_d = view(pi_scratch, 1:npeaks)
+        pj_d = view(pj_scratch, 1:npeaks)
+        pk_d = view(pk_scratch, 1:npeaks)
+        copyto!(pi_d, Int32.(peaks_i))
+        copyto!(pj_d, Int32.(peaks_j))
+        copyto!(pk_d, Int32.(peaks_k))
 
-        Fshell_d    = CUDA.zeros(Float32, nshells, npeaks)
-        nshell_d    = CUDA.zeros(Int32,   nshells, npeaks)
-        Sshell_d    = CUDA.zeros(Float32, 3, nshells, npeaks)
-        S2shell_d   = CUDA.zeros(Float32, 3, nshells, npeaks)
-        Gshell_d    = CUDA.zeros(Float32, 3, nshells, npeaks)
-        Gfshell_d   = CUDA.zeros(Float32, 3, nshells, npeaks)
-        SRshell_d   = CUDA.zeros(Float32, 3, 3, nshells, npeaks)
-        lapdshell_d = CUDA.zeros(Float32, nshells, npeaks)
+        # Per-shell intermediate views.
+        Fshell_d    = view(Fshell_scratch,    :, 1:npeaks)
+        nshell_d    = view(nshell_scratch,    :, 1:npeaks)
+        Sshell_d    = view(Sshell_scratch,    :, :, 1:npeaks)
+        S2shell_d   = view(S2shell_scratch,   :, :, 1:npeaks)
+        Gshell_d    = view(Gshell_scratch,    :, :, 1:npeaks)
+        Gfshell_d   = view(Gfshell_scratch,   :, :, 1:npeaks)
+        SRshell_d   = view(SRshell_scratch,   :, :, :, 1:npeaks)
+        lapdshell_d = view(lapdshell_scratch, :, 1:npeaks)
 
         _launch_shell_gather_full!(
             Fshell_d, nshell_d, Sshell_d, S2shell_d, Gshell_d, Gfshell_d, SRshell_d,
@@ -2365,30 +3255,33 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
             nshells_max = count
         end
 
-        RTHL_d          = CUDA.zeros(Float32, npeaks)
-        Fbarx_d         = CUDA.zeros(Float32, npeaks)
-        e_v_d           = CUDA.zeros(Float32, npeaks)
-        p_v_d           = CUDA.zeros(Float32, npeaks)
-        strain_final_d  = CUDA.zeros(Float32, 3, 3, npeaks)
-        eigs_d          = CUDA.zeros(Float32, 3, npeaks)
-        Srb_d           = CUDA.zeros(Float32, npeaks)
-        Sbar_d          = CUDA.zeros(Float32, 3, npeaks)
-        Sbar2_d         = CUDA.zeros(Float32, 3, npeaks)
-        gradpk_d        = CUDA.zeros(Float32, 3, npeaks)
-        gradpkf_d       = CUDA.zeros(Float32, 3, npeaks)
-        gradpkrf_d      = CUDA.zeros(Float32, 3, npeaks)
-        d2F_d           = CUDA.zeros(Float32, npeaks)
-        zvir_half_d     = CUDA.zeros(Float32, npeaks)
+        RTHL_d         = view(RTHL_scratch,         1:npeaks)
+        Fbarx_d        = view(Fbarx_scratch,        1:npeaks)
+        e_v_d          = view(e_v_scratch,          1:npeaks)
+        p_v_d          = view(p_v_scratch,          1:npeaks)
+        strain_final_d = view(strain_final_scratch, :, :, 1:npeaks)
+        eigs_d         = view(eigs_scratch,         :, 1:npeaks)
+        Srb_d          = view(Srb_scratch,          1:npeaks)
+        Sbar_d         = view(Sbar_scratch,         :, 1:npeaks)
+        Sbar2_d        = view(Sbar2_scratch,        :, 1:npeaks)
+        gradpk_d       = view(gradpk_scratch,       :, 1:npeaks)
+        gradpkf_d      = view(gradpkf_scratch,      :, 1:npeaks)
+        gradpkrf_d     = view(gradpkrf_scratch,     :, 1:npeaks)
+        d2F_d          = view(d2F_scratch,          1:npeaks)
+        zvir_half_d    = view(zvir_half_scratch,    1:npeaks)
 
         Rfclvi_r2 = Float32((Rf / alatt)^2)
 
-        # Per-peak ZZon / fcrit vectors. If the batch carries per-peak host
-        # arrays (ievol==1 caller), upload those; otherwise broadcast the
-        # scalar ZZon / derived fcrit across npeaks (ievol==0 path).
-        ZZon_pp_d  = has_pp_b ? CuArray{Float32}(ZZon_pp_b_h)  :
-                                CUDA.fill(Float32(ZZon),  npeaks)
-        fcrit_pp_d = has_pp_b ? CuArray{Float32}(fcrit_pp_b_h) :
-                                CUDA.fill(Float32(fcrit), npeaks)
+        # Per-peak ZZon / fcrit vectors (sliced views into persistent scratch).
+        ZZon_pp_d  = view(ZZon_pp_scratch,  1:npeaks)
+        fcrit_pp_d = view(fcrit_pp_scratch, 1:npeaks)
+        if has_pp_b
+            copyto!(ZZon_pp_d,  Float32.(ZZon_pp_b_h))
+            copyto!(fcrit_pp_d, Float32.(fcrit_pp_b_h))
+        else
+            fill!(ZZon_pp_d,  Float32(ZZon))
+            fill!(fcrit_pp_d, Float32(fcrit))
+        end
 
         @cuda threads=threads blocks=npeaks shmem=shmem_bytes _post_process_kernel!(
             RTHL_d, Fbarx_d, e_v_d, p_v_d, strain_final_d, eigs_d,
@@ -2428,21 +3321,22 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
             d2F          = Array(d2F_d),
             zvir_half    = Array(zvir_half_d),
         )
-
-        # Release per-batch buffers immediately to keep memory pressure down
-        # across many Rfs / many tiles.
-        CUDA.unsafe_free!(Fshell_d); CUDA.unsafe_free!(nshell_d)
-        CUDA.unsafe_free!(Sshell_d); CUDA.unsafe_free!(S2shell_d)
-        CUDA.unsafe_free!(Gshell_d); CUDA.unsafe_free!(Gfshell_d)
-        CUDA.unsafe_free!(SRshell_d); CUDA.unsafe_free!(lapdshell_d)
-        CUDA.unsafe_free!(pi_d); CUDA.unsafe_free!(pj_d); CUDA.unsafe_free!(pk_d)
-        CUDA.unsafe_free!(RTHL_d); CUDA.unsafe_free!(Fbarx_d)
-        CUDA.unsafe_free!(e_v_d); CUDA.unsafe_free!(p_v_d)
-        CUDA.unsafe_free!(strain_final_d); CUDA.unsafe_free!(eigs_d)
-        CUDA.unsafe_free!(Srb_d); CUDA.unsafe_free!(Sbar_d); CUDA.unsafe_free!(Sbar2_d)
-        CUDA.unsafe_free!(gradpk_d); CUDA.unsafe_free!(gradpkf_d); CUDA.unsafe_free!(gradpkrf_d)
-        CUDA.unsafe_free!(d2F_d); CUDA.unsafe_free!(zvir_half_d)
+        # Nothing to free per-batch — all buffers are persistent scratch.
     end
+
+    # Release the per-call persistent scratch pool.
+    CUDA.unsafe_free!(pi_scratch); CUDA.unsafe_free!(pj_scratch); CUDA.unsafe_free!(pk_scratch)
+    CUDA.unsafe_free!(ZZon_pp_scratch); CUDA.unsafe_free!(fcrit_pp_scratch)
+    CUDA.unsafe_free!(Fshell_scratch); CUDA.unsafe_free!(nshell_scratch)
+    CUDA.unsafe_free!(Sshell_scratch); CUDA.unsafe_free!(S2shell_scratch)
+    CUDA.unsafe_free!(Gshell_scratch); CUDA.unsafe_free!(Gfshell_scratch)
+    CUDA.unsafe_free!(SRshell_scratch); CUDA.unsafe_free!(lapdshell_scratch)
+    CUDA.unsafe_free!(RTHL_scratch); CUDA.unsafe_free!(Fbarx_scratch)
+    CUDA.unsafe_free!(e_v_scratch); CUDA.unsafe_free!(p_v_scratch)
+    CUDA.unsafe_free!(strain_final_scratch); CUDA.unsafe_free!(eigs_scratch)
+    CUDA.unsafe_free!(Srb_scratch); CUDA.unsafe_free!(Sbar_scratch); CUDA.unsafe_free!(Sbar2_scratch)
+    CUDA.unsafe_free!(gradpk_scratch); CUDA.unsafe_free!(gradpkf_scratch); CUDA.unsafe_free!(gradpkrf_scratch)
+    CUDA.unsafe_free!(d2F_scratch); CUDA.unsafe_free!(zvir_half_scratch)
 
     # Free the one-time uploads (only the buffers we allocated — caller-owned
     # CuArrays that were passed in are left alone).
