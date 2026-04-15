@@ -1,0 +1,417 @@
+#+TITLE: PeakPatch GPU Port — Session Log
+#+AUTHOR: Yilun Guan + assistant
+#+DATE: 2026-04-14
+#+STARTUP: overview
+
+This document captures the design decisions, debugging journey, and
+empirical findings from implementing the GPU port of PeakPatch.jl's
+shell analysis (Phase 2) and isolated FFT (Phase 1). Companion to
+=docs/gpu_implementation_plan.org= (which holds the "current state" view).
+
+* Sessions overview
+
+| Date       | Phase    | Outcome |
+|------------+----------+---------|
+| 2026-04-14 | Phase 2  | Drop-in =analyse_peak_gpu_cuda= complete (504 tests) |
+| 2026-04-14 | Phase 2  | End-to-end CPU↔GPU validation on 64³ field, 15 peaks |
+| 2026-04-14 | Phase 2  | N=512 benchmark sweep — found upload bottleneck, kernel crossover at ~2k peaks |
+| 2026-04-14 | Phase 1  | =isolated_convolve_gpu= drop-in complete (521 tests) |
+| 2026-04-14 | Phase 1  | Hermitian-plane bug isolated and fixed |
+| 2026-04-14 | Phase 1  | Bench: 19.7× speedup at N=192 over 64-core FFTW |
+| 2026-04-14 | Phase 5  | End-to-end wiring: =use_gpu=true= kwarg on =run_multitile_split= |
+| 2026-04-14 | Phase 5  | N=368 (ntile=2, nmesh=192) CPU 213.05s → GPU 113.60s, 1.88× end-to-end, 0 halo-count Δ, top halos bit-identical |
+| 2026-04-14 | Phase 8  | =zvir_half= (formation-redshift sweep) ported to GPU post-process; 14/14 peaks match =RadialShell.analyse_peak= |
+| 2026-04-14 | Parity   | Found + fixed "outermost shell" bug: CPU's per-cell loop never finalises the last shell; prototype + GPU now cap at =nshells - 1= to match |
+| 2026-04-14 | Phase 5  | GPU shell analysis wired into =run_multitile_split(use_gpu=true)= (ievol=0 only), routed via new =analyse_peaks_gpu_cuda_multirf= entry that uploads tile fields once and batches per Rf |
+| 2026-04-14 | Phase 5  | N=176 (ntile=2, nmesh=96) CPU 36.68s → GPU 15.63s, 2.35× end-to-end, bit-identical top-5 halos |
+| 2026-04-14 | Profile  | Per-stage timings added; discovered =_interpolate_to_tile= was single-threaded — was 78% of GPU wall |
+| 2026-04-14 | Perf-fix | Threaded =_interpolate_to_tile= + =_spread_coarse_to_tile= (1-line =Threads.@threads=). N=240 GPU: 28.21s → 10.99s; speedup 2.53× → 5.84× |
+| 2026-04-15 | Phase 3  | =compute_2lpt_gpu= (9 periodic FFTs + 6 φ_ij + 3 ψ₂ on GPU). 2LPT stage 5.31s → 0.34s; N=240 GPU total 11.0s → 9.3s; speedup 5.84× → 8.94× |
+| 2026-04-15 | Phase 3  | =compute_laplacian_gpu= (rfft + k² + irfft on GPU) added alongside 2LPT; same =_periodic_kernel!= serves kernel_fn_id ∈ {2,3,4} |
+| 2026-04-15 | Phase 4  | =peak_find_tile_gpu= (rfft(δ) + window + irfft + maxima scan on GPU, all filters + mask on device). Peak-find 1.71s → 0.08s; N=240 GPU 9.3s → 4.9s; speedup 8.94× → 10.89× |
+| 2026-04-15 | Phase 4  | =interpolate_to_tile_gpu= (tri-cubic Catmull-Rom + periodic wrap on GPU). Interp 1.47s → 0.23s. Skip =GC.gc()= on GPU path. N=240 GPU 4.9s → 6.3s (variance); speedup 10.89× → 12.95× |
+| 2026-04-15 | Prod-bench | N=368 (ntile=2 nmesh=192, ilpt=2, 32 threads, RTX A5000): CPU 205.6s → GPU 15.35s, *13.40× end-to-end*, 20467 halos, top-5 bit-identical. Was 1.88× at start of session → 7.1× further improvement |
+
+* Architectural decisions
+
+** Two-kernel pipeline (gather + post-process) instead of fusion
+
+Decision: =analyse_peak_gpu_cuda= launches two kernels — gather, then
+post-process — rather than one fused kernel.
+
+Rationale (recorded after exploring the trade-off with the user):
+- Fused kernel fits more of the work into one launch (saves ~10µs
+  launch overhead). Negligible compared to the few-ms kernel runtime.
+- Fused kernel makes intermediate values (rad, Fbar, m0, RTHL) impossible
+  to inspect when debugging. Two-kernel preserves the gather output as a
+  global-memory snapshot.
+- Phases 4–7 of analyse_peak run sequentially on thread 0; fusing only
+  helps if other threads can do useful work concurrently. They can't (the
+  algorithm is inherently sequential per peak in those phases).
+
+The 2026-04-14 session validated this choice empirically: post-process
+kernel takes ~2 ms / 100 peaks at N=512, dwarfed by the gather (~400 ms).
+Fusion would save <1% wall clock.
+
+** Float64 transfer arithmetic in =isolated_convolve_gpu=
+
+Inside =_transfer_kernel!=, frequencies (kx, ky, kz) and the transfer
+function multiplications use Float64 even though the rfft buffer is
+ComplexF32. This matches the CPU =_isolated_convolve= which casts
+=Float64(kx_arr[ix])= and computes =amp * kernel_fn(kx, ky, kz, k2)=
+in Float64 before truncating back to ComplexF32 on store.
+
+Without Float64 in the kernel, n=64+ shows ~1e-5 relerr on 1LPT/2LPT and
+~1e-2 on phi_ij off-diagonal terms. With Float64, all variants reach
+~7e-7 (Float32 round-off floor).
+
+Cost: Float64 ops are 1/32 throughput of Float32 on consumer Ampere, but
+the transfer kernel is memory-bound (one rfft cell read, one write per
+thread), not compute-bound. Float64 ops here add no measurable latency.
+
+** Hermitian-plane symmetrisation (cuFFT vs FFTW workaround)
+
+cuFFT's =CUFFT_C2R= handles non-Hermitian-symmetric inputs at the DC
+(ix=1) and Nyquist (ix=n2/2+1) planes differently from FFTW. When a
+transfer function violates the Hermitian-conjugate-pair constraint at
+these planes (e.g., =-kx*ky/k²= for phi_xy where ky changes sign in
+the conjugate pair while kx stays the same), the GPU output diverges
+from CPU by 5% at n=64.
+
+Fix: =_hermitize_planes_kernel!= averages each conjugate pair on the
+DC and Nyquist planes after the transfer, before irfft. Implementation
+detail: the lower-indexed cell of each pair does the work and writes to
+both slots, avoiding read/write races within the kernel.
+
+This was the trickiest debug of the session. Discovery path:
+1. Initial test at n=32 passed with all 5 transfer variants.
+2. n=64 failed for phi_xy with relerr 5%, 1LPT_y with 1e-5.
+3. First hypothesis: Float32 log() precision in P(k) lookup. Wrong —
+   moving to Float64 didn't help phi_xy.
+4. Second hypothesis: kernel arithmetic precision. Promoting to Float64
+   throughout fixed 1LPT/2LPT (down to 7e-7) but phi_xy stayed at 5%.
+5. Decisive test: bypass GPU kernel entirely and apply CPU transfer to
+   cuFFT-rfft output, then irfft on GPU. STILL 5% relerr. So the issue
+   is not in the kernel — it's in cuFFT.irfft's handling of the data.
+6. Next test: cuFFT.rfft + apply CPU transfer + FFTW.irfft. relerr 3e-7
+   ✓. Confirmed cuFFT.irfft is responsible.
+7. Symmetrise the DC + Nyquist planes (averaging conjugate pairs) →
+   matches CPU at all sizes.
+
+* Bug log
+
+** Race condition in Hermitian symmetrisation kernel
+
+First implementation had each thread read its conjugate-pair neighbour
+and write its own slot. With concurrent reads and writes within the
+same kernel, threads were getting inconsistent (sometimes already-modified)
+values from their pairs.
+
+Symptom: averaging didn't fully fix phi_xy (left ~1e-3 relerr).
+Fix: only the lower-indexed thread of each pair does the work,
+writing to both slots. Race eliminated.
+
+** Off-by-one in =_isolated_convolve_gpu= P(k) table indexing — n/a
+
+Nothing to record here; the lookup correctly clamps below table bounds.
+
+* Empirical findings
+
+** GPU memory bandwidth (PCIe upload)
+
+Measured 5–13 GB/s for host→GPU transfer of Float32 fields with
+non-pinned host memory. PCIe 4.0 x16 theoretical peak is ~32 GB/s.
+Half the theoretical performance is consistent with non-pinned (page-
+faulted) transfers.
+
+Workaround if it matters later: =CUDA.pin(host_array)= + async copies.
+Not pursued because the bottleneck moves once Phase 1 (cuFFT) keeps
+fields on the GPU between FFT and shell analysis.
+
+** Shell-analysis crossover (N=512 grid, varying peak density)
+
+| npeaks | CPU-1T | CPU-64T | GPU total | GPU kernel |
+|--------+--------+---------+-----------+------------|
+|    522 |  3.17s |   0.30s |     0.87s |      0.41s |
+|   2084 |  4.39s |   0.49s |     0.82s |      0.41s |
+|   5090 |  7.47s |   0.83s |     0.95s |      0.62s |
+|   9861 | 12.80s |   1.39s |     1.57s |      0.74s |
+|  18494 | 22.70s |   1.36s |     0.79s |      0.38s |
+
+- GPU kernel beats CPU-64T at ~2k peaks (1.2× → 3.6× by 18k).
+- GPU end-to-end (incl. ~500 ms field upload) beats CPU-64T at ~15-20k
+  peaks (1.7× at 18k).
+- CPU 64-thread scales sub-linearly (8-9× over 1T), Amdahl/bandwidth
+  limited.
+- GPU kernel scaling is sub-linear: 36× more peaks (522→18494) takes
+  *less* wall time (~0.4s constant) because per-peak overhead dominates
+  at small batches and amortises beautifully at large batches.
+
+** Isolated FFT (8-FFT tile load = δ + 3·ψ1 + 3·ψ2 + Laplacian)
+
+| N    | Padded FFT | CPU FFTW (64T) | GPU cuFFT | Speedup |
+|------+------------+----------------+-----------+---------|
+| 192³ |       384³ |        11.53 s |   0.59 s  |  19.7×  |
+| 384³ |       768³ |        72.84 s |   4.28 s  |  17.0×  |
+
+Per-FFT detail (N=192 padded to 384³):
+| Variant | CPU FFTW (64T) | GPU cuFFT | Speedup |
+|---------+----------------+-----------+---------|
+| δ       |        1.51 s  |  0.084 s  |   18×   |
+| ψ1_x    |        1.53 s  |  0.048 s  |   32×   |
+| ψ2_x    |        1.55 s  |  0.058 s  |   27×   |
+
+Per-FFT detail (N=384 padded to 768³):
+| Variant | CPU FFTW (64T) | GPU cuFFT | Speedup |
+|---------+----------------+-----------+---------|
+| δ       |       11.40 s  |  0.459 s  |   25×   |
+| ψ1_x    |       12.29 s  |  0.477 s  |   26×   |
+| ψ2_x    |        9.62 s  |  0.446 s  |   22×   |
+
+The N=384 numbers are at the production tile size: this is what
+=run_multitile_split= calls per tile. The GPU saves >1 minute of
+wall-clock per tile here.
+
+** Per-stage profile (N=240, ntile=2, nmesh=128, ilpt=2, 32 threads)
+
+Added =profile::Bool= kwarg to =run_multitile_split= so each stage of the
+per-tile loop accumulates its own wall-time. First run revealed that
+=_interpolate_to_tile= was *single-threaded* and became the dominant cost
+once the isolated FFTs moved to the GPU.
+
+Before threading fix:
+| Stage                    | CPU path | GPU path |
+|--------------------------+----------+----------|
+| iso FFT δ                | 10.29 s  |  0.11 s  |
+| iso FFT ψ₁ (×3)          | 31.68 s  |  0.38 s  |
+| interp δ (coarse→tile)   |  5.49 s  |  5.52 s  |
+| interp ψ₁ (coarse→tile)  | 16.63 s  | 16.57 s  |
+| 2LPT periodic FFT        |  2.56 s  |  2.69 s  |
+| peak find                |  1.11 s  |  1.04 s  |
+| shell analysis           |  5.08 s  |  1.66 s  |
+| *Total*                  | *73.0 s* | *28.2 s* |
+
+After adding =Threads.@threads= to =_interpolate_to_tile= and
+=_spread_coarse_to_tile= (1-line change each):
+| Stage                    | CPU path | GPU path |
+|--------------------------+----------+----------|
+| interp δ                 |  0.40 s  |  0.36 s  |
+| interp ψ₁                |  1.41 s  |  0.85 s  |
+| 2LPT periodic FFT        |  4.61 s  |  5.31 s  |
+| shell analysis           |  8.39 s  |  2.00 s  |
+| *Total*                  | *72.8 s* | *11.0 s* |
+| *End-to-end speedup*     |          |  5.84×   |
+
+Lesson: CPU parallelism gaps get exposed as the rest of the pipeline
+speeds up. Worth a profile pass each time an obvious bottleneck is removed.
+
+Remaining GPU wall share (after threading fix):
+- 2LPT periodic FFT block: 48% (next port target)
+- shell analysis: 18% (already on GPU)
+- peak find: 14% (smooth_field + find_peaks)
+
+After =compute_2lpt_gpu= port (N=240, GPU total 9.26 s, 8.94× end-to-end):
+| Stage                    | GPU path |
+|--------------------------+----------|
+| 2LPT (was 5.31 s)        |  0.34 s  |
+| shell analysis           |  2.18 s  |  <- next target (already GPU)
+| peak find                |  1.71 s  |  <- next port target
+| interp ψ₁ (threaded CPU) |  0.92 s  |
+| iso FFT ψ₁ (GPU)         |  0.44 s  |
+| interp δ (threaded CPU)  |  0.40 s  |
+| *Total stages*           |  6.59 s  |
+| overhead (GC, tile id)   |  ~2.7 s  |
+
+After =peak_find_tile_gpu= port (N=240, GPU total 4.94 s, 10.89×):
+| Stage                    | GPU path |
+|--------------------------+----------|
+| shell analysis           |  1.45 s  |  <- already GPU, now 37%
+| interp ψ₁ (threaded CPU) |  1.09 s  |  <- next target
+| iso FFT ψ₁ (GPU)         |  0.37 s  |
+| interp δ (threaded CPU)  |  0.38 s  |
+| 2LPT (GPU)               |  0.15 s  |
+| peak find (was 1.71 s)   |  0.08 s  |
+| record packing           |  0.15 s  |
+| *Total stages*           |  3.85 s  |
+
+After =interpolate_to_tile_gpu= + skip CPU-only GC on GPU path
+(N=240, GPU total 6.31 s run variance, 12.95× end-to-end):
+| Stage                    | GPU path |
+|--------------------------+----------|
+| shell analysis           |  1.95 s  |  <- 53%, next target is deep surgery
+| iso FFT ψ₁ (GPU)         |  0.47 s  |
+| 2LPT (GPU)               |  0.36 s  |
+| record packing           |  0.28 s  |
+| peak find                |  0.21 s  |
+| interp ψ₁ (GPU)          |  0.19 s  |  <- was 1.09 s
+| iso FFT δ (GPU)          |  0.13 s  |
+| residual gen (CPU-thread)|  0.08 s  |
+| interp δ (GPU)           |  0.04 s  |  <- was 0.38 s
+| *Total stages*           |  3.70 s  |
+
+** End-to-end =run_multitile_split= (post-session, full GPU pipeline)
+
+Production bench: ntile=2, nmesh=192 (padded isolated FFT 384³), ilpt=2,
+ioutshear=0, 32 CPU threads, RTX A5000. Same seed on both paths.
+
+| Metric      | CPU     | GPU      | Speedup |
+|-------------+---------+----------+---------|
+| Wall        | 205.6 s |  15.4 s  | *13.4×* |
+| Halo count  |   20467 |   20467  | ΔN = 0  |
+| Top-5 pos   |  --     | bit-exact|         |
+
+Per-tile GPU stages ported this session:
+- Isolated FFTs (δ + 3·ψ₁) — from earlier Phase 1
+- Shell analysis — from earlier Phase 2 (incl. zvir_half)
+- Tile-local 2LPT (9 periodic FFTs) — new this session
+- Tile-local Laplacian — new this session
+- Peak find (smooth_field + find_peaks, all filters) — new this session
+- Coarse→tile tri-cubic interpolation (δ + 3·ψ₁) — new this session
+
+Per-tile CPU stages remaining (small share each):
+- Residual noise Threefry generation
+- HaloRecord packing
+
+What the remaining wall time looks like (GPU path, per full run at N=240):
+- Shell analysis:     ~30% (already GPU; dominant)
+- Overhead:           ~40% (per-tile setup, cuFFT plan build, memory)
+- GPU compute (rest): ~30%
+
+Further optimisation would be deep surgery: keeping tile fields CuArray-
+resident across stages, persistent cuFFT plans, batching shell analysis
+across tiles. These are refactors in the 100s-of-LOC range for diminishing
+gain. Stopping point at 13.4× end-to-end was judged a good return on the
+session's effort.
+
+** End-to-end =run_multitile_split= (GPU FFT, CPU shell analysis)
+
+Wired =isolated_convolve_gpu= into =run_multitile_split= via a new
+=use_gpu::Bool=false= keyword. On =use_gpu=true= the per-tile isolated
+FFTs (1× δ + 3× ψ1 + 3× ψ2 + 1× Laplacian = 8 per tile) go through
+cuFFT; shell analysis stays on the CPU.
+
+Validation (=test/test_multiresolution_gpu.jl=):
+- =ntile=2=, =n=68=, 1LPT: CPU=2127 halos / GPU=2127 halos; top-10
+  halos Δpos = (0,0,0), same RTHL → bit-identical.
+- Same for 2LPT.
+
+Benchmark (=bench/bench_multitile_gpu.jl=, ntile=2, nmesh=192, 32
+threads, RTX A5000, ilpt=2):
+| Variant | Wall | Halos |
+|---------+------+-------|
+| CPU     | 213.05 s | 20467 |
+| GPU     | 113.60 s | 20467 |
+| Speedup | 1.88×    | 0 Δ   |
+
+Why only 1.88× when the isolated FFT itself is 17-20× faster:
+- 8 tiles × 8 isolated FFTs = 64 FFTs, but these are interleaved with
+  shell analysis (CPU), tile-local 2LPT FFTs (CPU), peak finding (CPU),
+  coarse-grid setup (CPU). Only the isolated FFTs were ported.
+- Amdahl bound given shell-analysis + tile-local work is still on CPU.
+
+Follow-up upside available if needed: swap shell analysis to the
+already-validated =analyse_peak_gpu_cuda= (currently on the CPU here so
+=zvir_half= and the formation-redshift sweep are preserved). Requires
+adding =zvir_half= to the GPU post-process output first.
+
+* Test coverage notes
+
+Test count progression through the session:
+| After                     | Pass / Total |
+|---------------------------+---------------|
+| Initial (CPU baseline)    |     538 / 538 |
+| Phase 2 gather kernels    |     572 / 572 |
+| Phase 2 post-process      |     725 / 725 |
+| Phase 2 d2F + mask        |    1042 / 1042 |
+| Phase 2 end-to-end        |    1042 / 1042 (504 GPU tests) |
+| Phase 1 isolated FFT      |    1059 / 1059 (+17 isolated_convolve_gpu tests) |
+| *Final (current)*         |   *1059 / 1059* |
+
+What's tested (Phase 1 + Phase 2 GPU surface):
+- Gather kernels validated against hand-coded CPU references at small
+  scales.
+- Device primitives (eig3, trilinear, kernel_strain) validated against
+  production CPU code (LAPACK, Interpolations.jl, RadialShell).
+- =analyse_peak_gpu_cuda= end-to-end validated against
+  =RadialShell.analyse_peak_gpu= for 15 real peaks from =find_peaks= on a
+  64³ field.
+- =isolated_convolve_gpu= validated against CPU =_isolated_convolve= for
+  all 5 transfer-function variants (delta, 1LPT×3, 2LPT×3, φ_ij×6,
+  Laplacian) at n ∈ {32, 64, 128} with and without nshell.
+
+What's not tested:
+- Full =run_multitile_split= replaced with =isolated_convolve_gpu= +
+  =analyse_peak_gpu_cuda= (Phase 5 wiring).
+- Production-scale 768³ tile end-to-end.
+- Performance under multi-tile concurrent execution.
+- Multi-GPU.
+
+* File map
+
+Implementation:
+- =ext/CUDAExt.jl= — all GPU code (gather, post-process, isolated FFT,
+  device primitives, helper kernels). ~2000 lines.
+
+API surface (stubs in =src/PeakPatch.jl=, methods in CUDAExt):
+- =shell_fbar_gather_gpu=             — delta-only gather (regression test)
+- =shell_gather_psi_gpu=              — δ + η gather (regression test)
+- =shell_gather_strain_gpu=           — δ + η + SR gather (regression test)
+- =shell_gather_full_gpu=             — full-field gather (used by =analyse_peak_gpu_cuda=)
+- =eig3_symmetric_batch_gpu=          — test harness for =_eig3_symmetric_f32=
+- =interp3_trilinear_gpu=             — test harness for =_interp3_trilinear_f32=
+- =kernel_strain_gpu=                 — test harness for =_kernel_strain_f32=
+- =analyse_peak_gpu_cuda=             — full halo analysis drop-in
+- =isolated_convolve_gpu=             — isolated FFT drop-in
+- =compute_2lpt_gpu=                  — tile-local 2LPT block (9 FFTs)
+- =compute_laplacian_gpu=             — tile-local k² convolution
+- =peak_find_tile_gpu=                — smooth_field + find_peaks for all filters
+- =interpolate_to_tile_gpu=           — coarse→fine tri-cubic interp
+
+Pipeline wiring:
+- =run_multitile_split(cfg; use_gpu=true, ...)= — swaps the 4 per-tile
+  =_isolated_convolve= calls with =isolated_convolve_gpu=. Shell analysis
+  stays on the CPU so full =PeakResult= fields (incl. =zvir_half=) remain
+  available.
+
+Tests:
+- =test/test_shell_gpu.jl=          — all GPU unit tests (gated on =CUDA.functional()=)
+- =test/test_multiresolution_gpu.jl= — end-to-end parity: =use_gpu=true= vs CPU, 1LPT + 2LPT
+
+Benchmarks:
+- =bench/bench_shell_gpu.jl=      — shell analysis CPU vs GPU sweep
+- =bench/bench_isolated_fft.jl=   — isolated FFT CPU vs GPU sweep
+- =bench/bench_multitile_gpu.jl=  — end-to-end =run_multitile_split= CPU vs GPU
+
+* Lessons learned
+
+** Validate against production code where possible
+The strongest tests are device primitives (eig3, trilinear,
+kernel_strain) compared against the production CPU implementations
+(LAPACK, Interpolations.jl, =RadialShell.kernel_strain=). These caught
+no bugs but provide the confidence that the math is right.
+
+For gather kernels, hand-coded CPU references in test_shell_gpu.jl
+were used because the production code's interface (per-peak loop with
+shared mask) doesn't expose the per-peak per-shell sums in the form
+the gather kernel produces. This is a slightly weaker check but still
+useful: if my GPU kernel had a bug AND my CPU reference reproduced the
+same bug AND the production code was different from both, only the
+end-to-end =analyse_peak_gpu_cuda= test would catch it. That test does
+exist and uses the production CPU code directly.
+
+** GPU library quirks aren't documented
+The cuFFT vs FFTW Nyquist-plane divergence is mentioned nowhere in
+either library's docs. Discovery required isolating the irfft step
+specifically. Recommend keeping a "library quirks" subsection in any
+porting effort like this.
+
+** Memory upload often dominates GPU wall-clock for batch workloads
+At the shell-analysis scale we tested, ~60-80% of GPU wall time was
+in PCIe upload of input fields (4 GB at N=512). This is invisible if
+fields are generated on the GPU upstream (which is the goal once
+Phase 1 cuFFT replaces CPU FFTW in =run_multitile_split=).
+
+** "Just measure it" beats theoretical analysis
+Round-trip elimination (predicted to save tens of ms) was within
+benchmark noise (a few % of total wall time). Upload bandwidth was the
+real bottleneck. Expensive optimisations should be measured first.

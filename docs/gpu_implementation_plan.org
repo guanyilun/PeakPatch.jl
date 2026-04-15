@@ -3,6 +3,190 @@
 #+DATE: 2026-04-14
 #+STARTUP: overview
 
+* Progress Status (updated 2026-04-14)
+
+** Phase 1 (GPU isolated FFT): DROP-IN COMPLETE
+
+=isolated_convolve_gpu= in =ext/CUDAExt.jl= is a functional drop-in for
+=MultiResolution._isolated_convolve=. Validated bit-for-bit (Float32
+precision, ~7e-7 relerr) against CPU at n ∈ {32, 64, 128} for all five
+transfer-function variants used by =run_multitile_split=:
+
+| kernel_fn_id | Transfer                | CPU equivalent             |
+|--------------+-------------------------+----------------------------|
+|            0 | √P(k)                   | δ (no kernel_fn)           |
+|            1 | i·k_i/k² · √P(k)        | =_kernel_1lpt(dim)=        |
+|            2 | -i·k_i/k² · √P(k)       | =_kernel_2lpt(dim)=        |
+|            3 | -k_i·k_j/k² · √P(k)     | =_kernel_phi_ij(di,dj)=    |
+|            4 | k² · √P(k)              | =_kernel_laplacian()=      |
+
+*** Architecture
+
+Three-step GPU pipeline (host entry =isolated_convolve_gpu=):
+1. Build √(P(k)·dk³·n²³) lookup table on host (8192-entry log-k Float32),
+   upload to GPU once per call.
+2. Upload noise → zero-pad to (2n)³ → cuFFT rfft.
+3. CUDA =_transfer_kernel!= applies √P(k) lookup × selected transfer
+   variant (Float64 frequency arithmetic + Float64 transfer multiplication
+   to match CPU FFTW precision).
+4. =_hermitize_planes_kernel!= enforces Hermitian symmetry on DC and
+   Nyquist planes (see "Gotcha" below).
+5. cuFFT irfft → extract central tile region → return to host.
+
+*** Gotcha: cuFFT vs FFTW Nyquist-plane handling
+
+cuFFT's =CUFFT_C2R= (used by irfft) handles non-Hermitian inputs at the
+DC and Nyquist planes differently from FFTW. The =φ_ij= transfer for
+off-diagonal (i≠j) breaks Hermitian symmetry at the Nyquist plane —
+without intervention, GPU diverges from CPU by ~5% (n=64) to 0.3% (n=128).
+
+Fix: run =_hermitize_planes_kernel!= between transfer and irfft to
+average each conjugate pair (=lower (iy,iz)= writes both slots to avoid
+read-write race). After the fix, all transfer variants match CPU to
+~7e-7 (Float32 round-off) at all sizes.
+
+Without this, the kernels that "just happened to work" (δ, φ_xx,
+Laplacian) had Hermitian-respecting coefficients; off-diagonal φ_ij and
+LPT psi did not.
+
+*** Benchmark (RTX A5000 vs 64-core FFTW, 2026-04-14)
+
+Benchmark: =bench/bench_isolated_fft.jl=. Each "tile-load" = 8 isolated
+FFTs (δ + 3·ψ1 + 3·ψ2 + Laplacian), as in =run_multitile_split=.
+
+| Output N³ | Padded FFT | CPU FFTW (64T) | GPU cuFFT | GPU speedup |
+|-----------+------------+----------------+-----------+-------------|
+|      192³ |       384³ |        11.53 s |   0.59 s  |    *19.7×*  |
+|      384³ |       768³ |        72.84 s |   4.28 s  |    *17.0×*  |
+
+Per-FFT timing:
+- N=192: GPU ~50–80 ms vs CPU ~1.5 s per call
+- N=384: GPU ~450 ms vs CPU ~9–12 s per call
+
+cuFFT plan construction is amortised across the 8 calls within a tile.
+At N=384 (production tile size), the GPU saves over a minute per tile.
+
+** Phase 2 (GPU shell analysis): DROP-IN COMPLETE
+
+=analyse_peak_gpu_cuda= in =ext/CUDAExt.jl= is a functional drop-in
+replacement for CPU =analyse_peak_gpu=. Every =PeakResult= field
+is produced and validated against CPU on a 64³ field with 15 real peaks
+(14 collapsing). Mask side-effect is bit-identical.
+
+*** Completed deliverables
+
+| Component                         | Host entry point              | Validation                  |
+|-----------------------------------+-------------------------------+-----------------------------|
+| Delta-only gather                 | =shell_fbar_gather_gpu=       | vs hand CPU ref             |
+| Multi-field gather (+ψ×3)         | =shell_gather_psi_gpu=        | vs hand CPU ref             |
+| Strain gather (+SR[3,3])          | =shell_gather_strain_gpu=     | vs hand CPU ref             |
+| Full-field gather (+η²+Gf)        | =shell_gather_full_gpu=       | vs hand CPU ref             |
+| 3×3 symmetric eigenvalues         | =eig3_symmetric_batch_gpu=    | vs LAPACK (58 matrices)     |
+| Trilinear interp (collapse table) | =interp3_trilinear_gpu=       | vs =Interpolations.jl=      |
+| =kernel_strain= + =hRinteg= + akk | =kernel_strain_gpu=           | vs CPU =RadialShell=        |
+| *Full halo analysis (phases 1-7)* | *=analyse_peak_gpu_cuda=*     | *vs CPU =analyse_peak_gpu=* |
+
+1042/1042 tests pass (538 CPU baseline + 504 GPU), including end-to-end
+CPU↔GPU assertions on:
+- 3 hand-placed Gaussian-bump peaks (14 scalar + vector fields each)
+- 15 real peaks from =find_peaks= on a 64³ field with realistic collapse
+  table (300+ assertions across all collapsing peaks)
+- Bit-identical mask side-effect on shared grid
+
+*** Benchmark results (RTX A5000, 64-core host, 2026-04-14)
+
+Benchmark script: =bench/bench_shell_gpu.jl=. N=512³, rmax=12, varying
+peak counts via Gaussian bump density.
+
+| npeaks | CPU-1T | CPU-64T | GPU total | GPU kernel | GPU vs 64T (total) | GPU vs 64T (kernel) |
+|--------+--------+---------+-----------+------------+--------------------+---------------------|
+|    522 |  3.17s |   0.30s |     0.87s |      0.41s |              0.3x  |                0.7x |
+|   2084 |  4.39s |   0.49s |     0.82s |      0.41s |              0.6x  |            *1.2x*   |
+|   5090 |  7.47s |   0.83s |     0.95s |      0.62s |              0.9x  |                1.3x |
+|   9861 | 12.80s |   1.39s |     1.57s |      0.74s |              0.9x  |                1.9x |
+|  18494 | 22.70s |   1.36s |     0.79s |      0.38s |          *1.7x*    |                3.6x |
+
+Crossover behaviour:
+- Kernel-only GPU beats CPU-64T at ~2k peaks.
+- End-to-end GPU (incl. 4 GB field upload) beats CPU-64T at ~15-20k peaks.
+- Upload bandwidth: ~5-13 GB/s effective (non-pinned host memory).
+- At production scale (100k+ peaks/tile, 6144³), GPU kernel extrapolates
+  to ~1s/tile vs CPU-64T ~10s/tile = ~10x speedup.
+- Upload cost disappears once Phase 1 (cuFFT) is ported and fields stay on GPU.
+
+*** Architecture
+
+Two-kernel pipeline (host entry =analyse_peak_gpu_cuda=):
+1. =_shell_gather_full_kernel!= — one block per peak, 128 threads per block,
+   warp-shuffle reductions, 7 per-shell field profiles to global memory.
+2. =_post_process_kernel!= — one block per peak, thread 0 runs phases 3-7
+   sequentially from shared-memory-staged profile data.
+
+Device-side primitives: =_eig3_symmetric_f32= (Cardano trig form),
+=_interp3_trilinear_f32= (manual with OOB sentinel), =_kernel_strain_f32=
+(handles both =mp>1= hRinteg and =mp=1= akk branches), =_hRinteg_f32=,
+=_write_no_collapse_outputs!= helper.
+
+Shared memory: ~14 KB/block (rad, Fbar, normalised G/Gf/SR profiles for
+up to =_MAX_SHELLS_GPU=200= shells).
+
+*** PeakResult field coverage
+
+| Field             | Implemented | Note                                      |
+|-------------------+-------------+-------------------------------------------|
+| RTHL              | yes         | Phase 6 RTHL interpolation                |
+| Fbarx             | yes         | Phase 6                                   |
+| Sbar[3]           | yes         | Phase 7                                   |
+| Sbar2[3]          | yes         | Phase 7 (2LPT)                            |
+| strain_mat[3,3]   | yes         | Phase 6, symmetric                        |
+| gradpk[3]         | yes         | Phase 5-6 tracking through _last/_prev    |
+| gradpkrf[3]       | yes         | Phase 3 (mrf kernel_strain)               |
+| gradpkf[3]        | yes         | Phase 5-6 tracking                        |
+| e_v, p_v          | yes         | Phase 6 normalised-strain eigenvalues     |
+| d2F               | yes         | Added via lapd input to gather + phase 7b |
+| mask update       | yes         | Writes Int8(1) for cells within RTHL, nbuff-aware |
+| growth_tables     | yes         | fcrit resolved on host before kernel launch |
+| zvir_half         | not needed  | CPU prototype also skips ("simplified")   |
+
+*** What the tests validate
+
+- *Gather kernels*: numerical equivalence vs hand-coded CPU references
+  (not the production CPU code), at Float32 precision. These catch bugs
+  in the gather pattern itself.
+- *Device primitives* (eig3, trilinear, kernel_strain): numerical
+  equivalence vs *production* CPU code (LAPACK, Interpolations.jl,
+  =RadialShell.kernel_strain=). These catch bugs in the math.
+- *End-to-end =analyse_peak_gpu_cuda=*: vs CPU =analyse_peak_gpu= across
+  3 Gaussian-bump peaks; all 13 =PeakResult= fields agree to 5+ decimals.
+
+Not yet tested:
+- Realistic 768³ fields with ~100k peaks (performance/precision at scale)
+- Non-trivial collapse tables that produce a mix of collapsed/non-collapsed
+  peaks across test cases (currently all 3 test peaks collapse)
+- =d2F=, mask update, fcrit from growth tables
+
+** Drop-in work: DONE
+
+| Step                                          | Status        |
+|-----------------------------------------------+---------------|
+| Shell analysis: phases 1-7 core correctness   | DONE          |
+| Shell analysis: =d2F= Laplacian output        | DONE          |
+| Shell analysis: mask update (side-effect)     | DONE          |
+| Shell analysis: fcrit from growth tables      | DONE          |
+| End-to-end CPU↔GPU diff on a 64³ tile         | DONE          |
+
+** Future
+
+| Step                                                | Note |
+|-----------------------------------------------------+------|
+| Fuse gather + post-process into one kernel          | perf only; two-kernel works correctly, defer until measured |
+| Wire =isolated_convolve_gpu= into =run_multitile_split= | end-to-end GPU pipeline replacing CPU FFT path |
+| Benchmark vs CPU at production (768³) scale         | next perf milestone |
+| Pre-mask check (race-safe with exclusion pipeline)  | currently mask is write-only; reading for pre-filtering requires serialisation |
+| Phase 3 (peak finding + multi-scale smoothing)      | =find_peaks= + =gaussian_window= on GPU |
+| Phase 4 (Threefry2x noise gen on GPU)               | port =_generate_extended_residual= for noise gen on device |
+| Phase 5 (full multi-tile pipeline + multi-GPU)      | end-to-end =run_multitile_split_gpu= |
+
 * Motivation
 
 The multi-resolution approach reduces PeakPatch's memory requirement from

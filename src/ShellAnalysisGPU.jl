@@ -110,13 +110,20 @@ function analyse_peak_gpu(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
                            nbuff::Int=0, growth_tables=nothing,
                            rmax2rs::Float64=0.0, fcrit_override=nothing,
                            fortran_compat::Bool=false)
-    # Determine max shells to process
-    nshells_max = stab.nshells
+    # Determine max shells to process.
+    #
+    # IMPORTANT: `RadialShell.analyse_peak` iterates the sorted-cell list and
+    # only finalises a shell when the next cell has a different r²; the LAST
+    # shell's cells accumulate but are never finalised, so the effective shell
+    # count is `nshells - 1`. Match that here (otherwise the prototype is more
+    # permissive than the production CPU path — see run_multitile_split parity
+    # investigation, 2026-04-14).
+    nshells_max = stab.nshells - 1
     if rmax2rs > 0.0
         f3p = fortran_compat ? Float32(4.0f0/3.0f0 * Float32(pi)) : 4.0/3.0 * pi
         r2_limit = (rmax2rs * Rfclvi / alatt)^2
         nshells_max = 0
-        for s in 1:stab.nshells
+        for s in 1:stab.nshells - 1
             stab.shell_r2[s] <= r2_limit || break
             nshells_max = s
         end

@@ -10,6 +10,7 @@ module MultiResolution
 # the Hoffman-Ribak constrained realization.  No taper function needed.
 
 using FFTW
+using Printf: @sprintf
 
 using ..Cosmology: CosmologyParams, Dlinear_tables, Dlinear_ab, chi,
     build_chi_to_z, peak_redshift
@@ -20,6 +21,7 @@ using ..LPT: displacements_1lpt
 using ..Filters: smooth_field, gaussian_window_fortran, tophat_window, read_filterbank
 using ..PeakFind: PeakCandidate, find_peaks
 using ..RadialShell: PeakGrid, precompute_shells, analyse_peak, fsc_of_z
+using ..ShellAnalysisGPU: build_shell_tables
 using ..Parameters: PipelineConfig
 using ..Catalog: HaloRecord, ExtHaloRecord
 using ..CollapseTable: CollapseTableInterp, read_homeltab
@@ -101,18 +103,20 @@ function _interpolate_to_tile(coarse::Array{Float32,3},
     j0 = (jt - 1) * nsub + 1 - nbuff
     k0 = (kt - 1) * nsub + 1 - nbuff
 
-    for lk in 1:nmesh, lj in 1:nmesh, li in 1:nmesh
-        # Global fine-grid index → fractional coarse-grid coordinate
-        gi = mod1(i0 + li - 1, N)
-        gj = mod1(j0 + lj - 1, N)
-        gk = mod1(k0 + lk - 1, N)
+    Threads.@threads for lk in 1:nmesh
+        @inbounds for lj in 1:nmesh, li in 1:nmesh
+            # Global fine-grid index → fractional coarse-grid coordinate
+            gi = mod1(i0 + li - 1, N)
+            gj = mod1(j0 + lj - 1, N)
+            gk = mod1(k0 + lk - 1, N)
 
-        # Fractional position in coarse grid (1-based, cell-centered)
-        fx = (gi - 0.5) / block + 0.5
-        fy = (gj - 0.5) / block + 0.5
-        fz = (gk - 0.5) / block + 0.5
+            # Fractional position in coarse grid (1-based, cell-centered)
+            fx = (gi - 0.5) / block + 0.5
+            fy = (gj - 0.5) / block + 0.5
+            fz = (gk - 0.5) / block + 0.5
 
-        tile[li, lj, lk] = _tricubic(coarse, fx, fy, fz, M)
+            tile[li, lj, lk] = _tricubic(coarse, fx, fy, fz, M)
+        end
     end
     return tile
 end
@@ -134,15 +138,17 @@ function _spread_coarse_to_tile(coarse::Array{Float32,3},
     j0 = (jt - 1) * nsub + 1 - nbuff
     k0 = (kt - 1) * nsub + 1 - nbuff
 
-    for lk in 1:nmesh, lj in 1:nmesh, li in 1:nmesh
-        gi = mod1(i0 + li - 1, N)
-        gj = mod1(j0 + lj - 1, N)
-        gk = mod1(k0 + lk - 1, N)
-        # Which coarse cell does this fine cell belong to?
-        ci = (gi - 1) ÷ block + 1
-        cj = (gj - 1) ÷ block + 1
-        ck = (gk - 1) ÷ block + 1
-        @inbounds tile[li, lj, lk] = coarse[ci, cj, ck]
+    Threads.@threads for lk in 1:nmesh
+        @inbounds for lj in 1:nmesh, li in 1:nmesh
+            gi = mod1(i0 + li - 1, N)
+            gj = mod1(j0 + lj - 1, N)
+            gk = mod1(k0 + lk - 1, N)
+            # Which coarse cell does this fine cell belong to?
+            ci = (gi - 1) ÷ block + 1
+            cj = (gj - 1) ÷ block + 1
+            ck = (gk - 1) ÷ block + 1
+            tile[li, lj, lk] = coarse[ci, cj, ck]
+        end
     end
     return tile
 end
@@ -321,6 +327,154 @@ end
 _kernel_laplacian() = (kx, ky, kz, k2) -> k2
 
 # ============================================================
+# GPU dispatch helper
+# ============================================================
+# `isolated_convolve_gpu` is declared as a stub at the PeakPatch top level
+# and filled in by `ext/CUDAExt.jl` when CUDA.jl is loaded. We access it
+# lazily (by name) so this file does not require a forward reference.
+@inline _pp_parent() = parentmodule(@__MODULE__)
+
+"""
+    _isolated_convolve_dispatch(use_gpu, noise, pk, boxsize, n, kernel_id, dim1, dim2; nshell)
+
+Shared entry point used by `run_multitile_split`. Calls the CPU
+`_isolated_convolve` or the GPU `isolated_convolve_gpu` based on `use_gpu`.
+`kernel_id` matches the CUDA kernel IDs:
+  0=δ, 1=1LPT (uses `dim1`), 2=2LPT (uses `dim1`),
+  3=φ_ij (uses `dim1`, `dim2`), 4=Laplacian.
+"""
+function _isolated_convolve_dispatch(use_gpu::Bool, noise::Array{Float32,3}, pk,
+                                      boxsize::Float64, n::Int,
+                                      kernel_id::Int, dim1::Int, dim2::Int;
+                                      nshell::Int=0)
+    if use_gpu
+        fn = getglobal(_pp_parent(), :isolated_convolve_gpu)
+        return fn(noise, pk, boxsize, n;
+                  kernel_fn_id=kernel_id, dim1=dim1, dim2=dim2, nshell=nshell)
+    end
+    kf = kernel_id == 0 ? nothing :
+         kernel_id == 1 ? _kernel_1lpt(dim1) :
+         kernel_id == 2 ? _kernel_2lpt(dim1) :
+         kernel_id == 3 ? _kernel_phi_ij(dim1, dim2) :
+         kernel_id == 4 ? _kernel_laplacian() :
+         error("bad kernel_id $kernel_id")
+    return _isolated_convolve(noise, pk, boxsize, n; kernel_fn=kf, nshell=nshell)
+end
+
+"""
+    _gpu_analyse_peaks_batch(delta_tile, psi_tile, psi2_tile, lapd_tile, mask,
+                             peaks, Rf_per_peak, stab_gpu, ct_table_gpu,
+                             ct_params, alatt, ZZon, nbuff, rmax2rs, growth_tables)
+
+Batched GPU shell analysis: groups peaks by filter scale Rf (so `ir2min`,
+`Rfclvi` are uniform per batch) and invokes `analyse_peak_gpu_cuda` once per
+group. Returns a Vector of NamedTuple-like results indexed the same as `peaks`.
+Slots for peaks that no-collapse-on-GPU retain `RTHL = -1.0f0`.
+"""
+function _gpu_analyse_peaks_batch(delta_tile::Array{Float32,3},
+                                    psi_x, psi_y, psi_z,
+                                    psi2_x, psi2_y, psi2_z,
+                                    lapd_tile, mask::Array{Int8,3},
+                                    peaks::Vector{PeakCandidate},
+                                    Rf_per_peak::Vector{Float64},
+                                    stab_gpu, ct_table_gpu,
+                                    ct_params, alatt::Float64,
+                                    ZZon::Float64, nbuff::Int,
+                                    rmax2rs::Float64, growth_tables)
+    npeaks = length(peaks)
+    # Per-peak outputs, pre-filled with sentinel RTHL = -1
+    RTHL      = fill(-1.0f0, npeaks)
+    Fbarx     = zeros(Float32, npeaks)
+    e_v       = zeros(Float32, npeaks)
+    p_v       = zeros(Float32, npeaks)
+    Srb       = zeros(Float32, npeaks)
+    d2F       = zeros(Float32, npeaks)
+    zvir_half = fill(-1.0f0, npeaks)
+    Sbar      = zeros(Float32, 3, npeaks)
+    Sbar2     = zeros(Float32, 3, npeaks)
+    gradpk    = zeros(Float32, 3, npeaks)
+    gradpkf   = zeros(Float32, 3, npeaks)
+    gradpkrf  = zeros(Float32, 3, npeaks)
+    strain_f  = zeros(Float32, 3, 3, npeaks)
+
+    fn_gpu_multi = getglobal(_pp_parent(), :analyse_peaks_gpu_cuda_multirf)
+    # Group peaks by Rf. Filters are already processed in descending-Rf order
+    # in the caller, so visiting unique Rfs in any order preserves correctness
+    # here (the mask side-effect accumulates idempotently).
+    unique_Rfs = unique(Rf_per_peak)
+    batch_idxs = Vector{Vector{Int}}()
+    batches = Any[]
+    for Rf in unique_Rfs
+        idxs = findall(==(Rf), Rf_per_peak)
+        isempty(idxs) && continue
+        ir2min = min(floor(Int, (1.75 * Rf / alatt)^2),
+                     floor(Int, (40.0 / alatt - 1)^2))
+        pi_b = Int32[peaks[i].i for i in idxs]
+        pj_b = Int32[peaks[i].j for i in idxs]
+        pk_b = Int32[peaks[i].k for i in idxs]
+        push!(batches, (pi_b, pj_b, pk_b, Rf, ir2min))
+        push!(batch_idxs, idxs)
+    end
+
+    if isempty(batches)
+        return (RTHL=RTHL, Fbarx=Fbarx, e_v=e_v, p_v=p_v, Srb=Srb, d2F=d2F,
+                 zvir_half=zvir_half, Sbar=Sbar, Sbar2=Sbar2,
+                 gradpk=gradpk, gradpkf=gradpkf, gradpkrf=gradpkrf,
+                 strain_final=strain_f)
+    end
+
+    # psi2_* may be nothing (ilpt=1). Substitute zero arrays so the GPU
+    # kernel sees the expected input shapes.
+    z_arr  = psi2_x === nothing ? zeros(Float32, size(delta_tile)) : psi2_x
+    z_arr2 = psi2_y === nothing ? zeros(Float32, size(delta_tile)) : psi2_y
+    z_arr3 = psi2_z === nothing ? zeros(Float32, size(delta_tile)) : psi2_z
+
+    # One GPU call, fields uploaded once, kernels launched per-batch.
+    batch_res = fn_gpu_multi(
+        delta_tile, psi_x, psi_y, psi_z, z_arr, z_arr2, z_arr3,
+        batches, stab_gpu, ct_table_gpu,
+        ct_params.X1, ct_params.X2,
+        ct_params.Y1, ct_params.Y2,
+        ct_params.Z1, ct_params.Z2,
+        alatt, ZZon;
+        growth_tables=growth_tables, rmax2rs=rmax2rs,
+        lapd=lapd_tile, mask=mask, nbuff=nbuff)
+
+    # Scatter results back to per-peak slots
+    for (bi, idxs) in enumerate(batch_idxs)
+        res = batch_res.results[bi]
+        for (b, idx) in enumerate(idxs)
+            RTHL[idx]      = res.RTHL[b]
+            Fbarx[idx]     = res.Fbarx[b]
+            e_v[idx]       = res.e_v[b]
+            p_v[idx]       = res.p_v[b]
+            Srb[idx]       = res.Srb[b]
+            d2F[idx]       = res.d2F[b]
+            zvir_half[idx] = res.zvir_half[b]
+            for L in 1:3
+                Sbar[L, idx]     = res.Sbar[L, b]
+                Sbar2[L, idx]    = res.Sbar2[L, b]
+                gradpk[L, idx]   = res.gradpk[L, b]
+                gradpkf[L, idx]  = res.gradpkf[L, b]
+                gradpkrf[L, idx] = res.gradpkrf[L, b]
+                for K in 1:3
+                    strain_f[L, K, idx] = res.strain_final[L, K, b]
+                end
+            end
+        end
+    end
+    # Copy the mask back into the in-place mask array provided by caller
+    if batch_res.mask !== nothing
+        copyto!(mask, batch_res.mask)
+    end
+
+    return (RTHL=RTHL, Fbarx=Fbarx, e_v=e_v, p_v=p_v, Srb=Srb, d2F=d2F,
+             zvir_half=zvir_half, Sbar=Sbar, Sbar2=Sbar2,
+             gradpk=gradpk, gradpkf=gradpkf, gradpkrf=gradpkrf,
+             strain_final=strain_f)
+end
+
+# ============================================================
 # Main pipeline
 # ============================================================
 
@@ -347,7 +501,27 @@ Memory per tile: O(nmesh³) instead of O(N³). No MPI or distributed FFT.
 """
 function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                               verbose::Bool=false, coarse_factor::Int=0,
-                              coarse_grid::Int=0)
+                              coarse_grid::Int=0, use_gpu::Bool=false,
+                              devices::Union{Nothing,AbstractVector{Int}}=nothing,
+                              profile::Bool=false)
+    # When `use_gpu=true`, the isolated-FFT convolutions in the per-tile loop
+    # are routed through `isolated_convolve_gpu` (cuFFT). Shell analysis
+    # remains on the CPU so the full PeakResult (incl. zvir_half) is available.
+    # When `devices=[d0, d1, ...]` is provided with >=2 entries, the per-tile
+    # loop is distributed across those CUDA devices via `Threads.@spawn`, one
+    # worker task per device. Requires Julia launched with
+    # `--threads >= length(devices)` and no `CUDA_VISIBLE_DEVICES` masking.
+    if use_gpu
+        haskey(ENV, "CUDA_VISIBLE_DEVICES") ||
+            @info "run_multitile_split(use_gpu=true): CUDA_VISIBLE_DEVICES not set; using default GPU"
+        isdefined(_pp_parent(), :isolated_convolve_gpu) || error("use_gpu=true requires CUDA.jl to be loaded (ext/CUDAExt.jl)")
+    end
+    if devices !== nothing && !isempty(devices)
+        use_gpu || error("devices=$devices requires use_gpu=true")
+        length(devices) > Threads.nthreads() &&
+            @warn "devices=$devices length > Threads.nthreads()=$(Threads.nthreads()); workers will share threads and may not run concurrently"
+    end
+    n_workers = (use_gpu && devices !== nothing && length(devices) >= 1) ? length(devices) : 1
     # ---- Geometry ----
     nmesh = cfg.n
     nbuff = cfg.nbuff
@@ -383,6 +557,13 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     obs = (cfg.cenx, cfg.ceny, cfg.cenz)
     z_max = cfg.z_max
     chi2z = ievol == 1 ? build_chi_to_z(cosmo; z_max=z_max + 1.0) : nothing
+
+    # GPU shell-analysis tables — built once, uploaded per-call inside the
+    # CUDAExt method. Only meaningful when `use_gpu` and `ievol == 0` (per-peak
+    # ZZon in ievol=1 is not batched on GPU yet; those tiles fall back to CPU).
+    use_gpu_shell = use_gpu && ievol == 0
+    stab_gpu = use_gpu_shell ? build_shell_tables(nhunt) : nothing
+    ct_table_gpu = use_gpu_shell ? Float32.(ct_array) : nothing
 
     # ---- Multi-resolution setup ----
     # Determine coarse grid size M. Priority: coarse_grid > coarse_factor > auto.
@@ -485,27 +666,64 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
         end
     end
 
-    halos_basic = HaloRecord[]
-    halos_ext   = ExtHaloRecord[]
+    # Per-worker accumulators: when n_workers > 1 each dispatched task pushes
+    # into its own halo vector to avoid cross-thread contention. For the
+    # single-worker path these are length-1 vectors of the originals.
+    local_halos_basic = [HaloRecord[] for _ in 1:n_workers]
+    local_halos_ext   = [ExtHaloRecord[] for _ in 1:n_workers]
+
+    # Per-worker timing dicts (only populated when profile=true).
+    _new_timing_dict() = Dict{String,Float64}(
+        "01_residual_gen" => 0.0,
+        "02_iso_fft_delta" => 0.0,
+        "03_interp_coarse_delta" => 0.0,
+        "04_iso_fft_psi1" => 0.0,
+        "05_interp_coarse_psi1" => 0.0,
+        "06_2lpt_periodic_fft" => 0.0,
+        "07_laplacian_periodic_fft" => 0.0,
+        "08_peak_find" => 0.0,
+        "09_shell_analysis" => 0.0,
+        "10_record_packing" => 0.0,
+    )
+    local_timings = [_new_timing_dict() for _ in 1:n_workers]
 
     boxsize_local = nmesh * alatt
 
-    for (ti, tid) in enumerate(tile_ids)
+    # Per-tile work wrapped in a closure. Captures all enclosing read-only
+    # state; writes go into `local_halos_basic[wid]` / `local_halos_ext[wid]`
+    # / `local_timings[wid]`. Safe for concurrent invocation across workers
+    # as long as each worker uses its own `wid`.
+    process_tile! = function (wid::Int, ti::Int, tid::NTuple{3,Int})
         it, jt, kt = tid
+        halos_basic = local_halos_basic[wid]
+        halos_ext   = local_halos_ext[wid]
+        timings     = local_timings[wid]
+        _tic()  = profile ? time() : 0.0
+        _toc!(key::String, t0::Float64) = profile ? (timings[key] += time() - t0) : nothing
 
         # ---- Phase 1b: Tile-local fields (MUSIC decomposition) ----
 
         # 1. Generate residual noise for this tile.
-        #    The Hoffman-Ribak residual ξ₁ = ξ - block_mean(ξ) has zero mean
-        #    per coarse cell, ensuring T*ξ₁ is short-range.
+        t0 = _tic()
         residual = _generate_extended_residual(it, jt, kt, nsub, nmesh, N, seed,
                                                 coarse_noise, M, 0)
+        _toc!("01_residual_gen", t0)
 
         # 2. δ_self via isolated FFT of residual noise
-        delta_self = _isolated_convolve(residual, pk, boxsize_local, nmesh)
+        t0 = _tic()
+        delta_self = _isolated_convolve_dispatch(use_gpu, residual, pk,
+                                                  boxsize_local, nmesh, 0, 0, 0)
+        _toc!("02_iso_fft_delta", t0)
 
         # 3. δ_coarse interpolated from global coarse field
-        delta_long = _interpolate_to_tile(delta_coarse, it, jt, kt, nsub, nmesh, N, M)
+        t0 = _tic()
+        delta_long = if use_gpu
+            fn = getglobal(_pp_parent(), :interpolate_to_tile_gpu)
+            fn(delta_coarse, it, jt, kt, nsub, nmesh, N, M)
+        else
+            _interpolate_to_tile(delta_coarse, it, jt, kt, nsub, nmesh, N, M)
+        end
+        _toc!("03_interp_coarse_delta", t0)
 
         # 4. Combined tile field
         delta_tile = delta_self .+ delta_long
@@ -514,9 +732,18 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
         # 1LPT displacements (same residual + coarse split)
         psi_tile = Vector{Array{Float32,3}}(undef, 3)
         for dim in 1:3
-            psi_self = _isolated_convolve(residual, pk, boxsize_local, nmesh;
-                                           kernel_fn=_kernel_1lpt(dim))
-            psi_long = _interpolate_to_tile(psi_coarse[dim], it, jt, kt, nsub, nmesh, N, M)
+            t0 = _tic()
+            psi_self = _isolated_convolve_dispatch(use_gpu, residual, pk,
+                                                    boxsize_local, nmesh, 1, dim, 0)
+            _toc!("04_iso_fft_psi1", t0)
+            t0 = _tic()
+            psi_long = if use_gpu
+                fn = getglobal(_pp_parent(), :interpolate_to_tile_gpu)
+                fn(psi_coarse[dim], it, jt, kt, nsub, nmesh, N, M)
+            else
+                _interpolate_to_tile(psi_coarse[dim], it, jt, kt, nsub, nmesh, N, M)
+            end
+            _toc!("05_interp_coarse_psi1", t0)
             psi_tile[dim] = psi_self .+ psi_long
         end
 
@@ -526,79 +753,113 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
         # since 2LPT is a second-order correction dominated by short modes)
         psi2_tile = nothing
         if ilpt >= 2
-            delta_tile_k = rfft(delta_tile)
-            src2_local = zeros(Float32, nmesh, nmesh, nmesh)
-            src2_local .+= delta_tile .^ 2 .* 0.5f0
-            for d in 1:3
-                phi_k = copy(delta_tile_k)
-                _apply_kernel_inplace!(phi_k, nmesh, boxsize_local, _kernel_phi_ij(d, d))
-                src2_local .-= irfft(phi_k, nmesh) .^ 2 .* 0.5f0
+            t0 = _tic()
+            if use_gpu
+                fn = getglobal(_pp_parent(), :compute_2lpt_gpu)
+                psi2_tile = fn(delta_tile, nmesh, boxsize_local)
+            else
+                delta_tile_k = rfft(delta_tile)
+                src2_local = zeros(Float32, nmesh, nmesh, nmesh)
+                src2_local .+= delta_tile .^ 2 .* 0.5f0
+                for d in 1:3
+                    phi_k = copy(delta_tile_k)
+                    _apply_kernel_inplace!(phi_k, nmesh, boxsize_local, _kernel_phi_ij(d, d))
+                    src2_local .-= irfft(phi_k, nmesh) .^ 2 .* 0.5f0
+                end
+                for (di, dj) in ((1,2), (1,3), (2,3))
+                    phi_k = copy(delta_tile_k)
+                    _apply_kernel_inplace!(phi_k, nmesh, boxsize_local, _kernel_phi_ij(di, dj))
+                    src2_local .-= irfft(phi_k, nmesh) .^ 2
+                end
+                src2_local_k = rfft(src2_local)
+                psi2_tile = Vector{Array{Float32,3}}(undef, 3)
+                for dim in 1:3
+                    psi2_k = copy(src2_local_k)
+                    _apply_kernel_inplace!(psi2_k, nmesh, boxsize_local, _kernel_2lpt(dim))
+                    psi2_tile[dim] = irfft(psi2_k, nmesh)
+                end
+                delta_tile_k = nothing; src2_local_k = nothing
             end
-            for (di, dj) in ((1,2), (1,3), (2,3))
-                phi_k = copy(delta_tile_k)
-                _apply_kernel_inplace!(phi_k, nmesh, boxsize_local, _kernel_phi_ij(di, dj))
-                src2_local .-= irfft(phi_k, nmesh) .^ 2
-            end
-            src2_local_k = rfft(src2_local)
-            psi2_tile = Vector{Array{Float32,3}}(undef, 3)
-            for dim in 1:3
-                psi2_k = copy(src2_local_k)
-                _apply_kernel_inplace!(psi2_k, nmesh, boxsize_local, _kernel_2lpt(dim))
-                psi2_tile[dim] = irfft(psi2_k, nmesh)
-            end
-            delta_tile_k = nothing; src2_local_k = nothing
+            _toc!("06_2lpt_periodic_fft", t0)
         end
 
         # Laplacian (compute from combined delta on tile grid, simpler than split)
         lapd_tile = nothing
         if ioutshear >= 1
-            delta_tile_k_tmp = rfft(delta_tile)
-            _apply_kernel_inplace!(delta_tile_k_tmp, nmesh, boxsize_local, _kernel_laplacian())
-            lapd_tile = irfft(delta_tile_k_tmp, nmesh)
-            delta_tile_k_tmp = nothing
+            t0 = _tic()
+            if use_gpu
+                fn = getglobal(_pp_parent(), :compute_laplacian_gpu)
+                lapd_tile = fn(delta_tile, nmesh, boxsize_local)
+            else
+                delta_tile_k_tmp = rfft(delta_tile)
+                _apply_kernel_inplace!(delta_tile_k_tmp, nmesh, boxsize_local, _kernel_laplacian())
+                lapd_tile = irfft(delta_tile_k_tmp, nmesh)
+                delta_tile_k_tmp = nothing
+            end
+            _toc!("07_laplacian_periodic_fft", t0)
         end
 
-        GC.gc()
+        # Force GC on the CPU path where intermediate FFT buffers pile up;
+        # skip on the GPU path where `unsafe_free!` has already released the
+        # large device allocations.
+        use_gpu || GC.gc()
 
         # ---- Phase 2: Peak finding ----
+        t0 = _tic()
         tile_masks  = zeros(Int8, nmesh, nmesh, nmesh)
         tile_peaks  = PeakCandidate[]
         tile_Rf     = Float64[]
         tile_FcRf   = Float32[]
         tile_d2Rf   = Float32[]
 
-        delta_tile_k = rfft(delta_tile)
+        xbx, ybx, zbx = tile_center(it, jt, kt, ntile, dcore_box)
+        # Per-filter fcrit (ievol=1 depends on tile position; ievol=0 constant)
+        fcrits_per_filter = Vector{Float32}(undef, length(filters))
+        if ievol == 1
+            z_tile = peak_redshift(obs[1], obs[2], obs[3], xbx, ybx, zbx, chi2z)
+            fcrit_tile = Float32(fsc_of_z(z_tile, growth_tables))
+            fill!(fcrits_per_filter, fcrit_tile)
+        else
+            fill!(fcrits_per_filter, fcrit)
+        end
 
-        for ic in 1:length(filters)
-            Rf = filters[ic][3]
-            delta_s = smooth_field(delta_tile_k, nmesh, boxsize_local, Rf, wsmooth)
+        if use_gpu
+            fn = getglobal(_pp_parent(), :peak_find_tile_gpu)
+            pf = fn(delta_tile, filters, fcrits_per_filter, tile_masks,
+                    xbx, ybx, zbx, alatt, nbuff, wsmooth, ioutshear)
+            tile_peaks = pf.peaks
+            tile_Rf    = pf.Rf
+            tile_FcRf  = pf.FcRf
+            tile_d2Rf  = pf.d2Rf
+            copyto!(tile_masks, pf.mask)
+        else
+            delta_tile_k = rfft(delta_tile)
+            for ic in 1:length(filters)
+                Rf = filters[ic][3]
+                delta_s = smooth_field(delta_tile_k, nmesh, boxsize_local, Rf, wsmooth)
 
-            xbx, ybx, zbx = tile_center(it, jt, kt, ntile, dcore_box)
-            fcrit_tile = fcrit
-            if ievol == 1
-                z_tile = peak_redshift(obs[1], obs[2], obs[3], xbx, ybx, zbx, chi2z)
-                fcrit_tile = Float32(fsc_of_z(z_tile, growth_tables))
-            end
+                new_peaks = find_peaks(delta_s, tile_masks, xbx, ybx, zbx,
+                                        alatt, nbuff, fcrits_per_filter[ic], Rf)
+                append!(tile_peaks, new_peaks)
+                append!(tile_Rf, fill(Rf, length(new_peaks)))
 
-            new_peaks = find_peaks(delta_s, tile_masks, xbx, ybx, zbx,
-                                    alatt, nbuff, fcrit_tile, Rf)
-            append!(tile_peaks, new_peaks)
-            append!(tile_Rf, fill(Rf, length(new_peaks)))
-
-            if !isempty(new_peaks)
-                lapd_s = ioutshear >= 1 ?
-                    smooth_field(delta_tile_k, nmesh, boxsize_local, Rf, 3) : nothing
-                for pk_cand in new_peaks
-                    i, j, k = pk_cand.i, pk_cand.j, pk_cand.k
-                    push!(tile_FcRf, delta_s[i, j, k])
-                    push!(tile_d2Rf, lapd_s !== nothing ? lapd_s[i, j, k] : 0.0f0)
+                if !isempty(new_peaks)
+                    lapd_s = ioutshear >= 1 ?
+                        smooth_field(delta_tile_k, nmesh, boxsize_local, Rf, 3) : nothing
+                    for pk_cand in new_peaks
+                        i, j, k = pk_cand.i, pk_cand.j, pk_cand.k
+                        push!(tile_FcRf, delta_s[i, j, k])
+                        push!(tile_d2Rf, lapd_s !== nothing ? lapd_s[i, j, k] : 0.0f0)
+                    end
                 end
             end
+            delta_tile_k = nothing
         end
-        delta_tile_k = nothing
+        _toc!("08_peak_find", t0)
 
         # ---- Phase 3-4: Shell analysis ----
-        isempty(tile_peaks) && continue
+        # (Closure body: early-return instead of `continue` when no peaks.)
+        isempty(tile_peaks) && return nothing
 
         fill!(tile_masks, 0)
         pg = PeakGrid(delta_tile,
@@ -609,6 +870,29 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                         tile_masks, (nmesh, nmesh, nmesh),
                         lapd_tile)
 
+        # If GPU shell analysis is enabled, run the batched kernel once per
+        # unique filter Rf up-front; subsequent per-peak work (record packing)
+        # reads from the precomputed `gpu_res` slots instead of calling CPU
+        # analyse_peak.
+        gpu_res = nothing
+        if use_gpu_shell
+            t0 = _tic()
+            gpu_res = _gpu_analyse_peaks_batch(
+                delta_tile,
+                psi_tile[1], psi_tile[2], psi_tile[3],
+                psi2_tile !== nothing ? psi2_tile[1] : nothing,
+                psi2_tile !== nothing ? psi2_tile[2] : nothing,
+                psi2_tile !== nothing ? psi2_tile[3] : nothing,
+                lapd_tile === nothing ? zeros(Float32, nmesh, nmesh, nmesh) : lapd_tile,
+                tile_masks,
+                tile_peaks, tile_Rf,
+                stab_gpu, ct_table_gpu, ct_params,
+                alatt, ZZon, nbuff, cfg.rmax2rs, growth_tables)
+            _toc!("09_shell_analysis", t0)
+        end
+
+        t_loop_start = _tic()
+        shell_cpu_time = 0.0
         for idx in 1:length(tile_peaks)
             peak = tile_peaks[idx]
             Rf = tile_Rf[idx]
@@ -622,9 +906,39 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                 z_pk > z_max && continue
             end
 
-            result = analyse_peak(pg, peak.ipp, alatt, ir2min, ZZon_pk, Rf, ct, shells;
-                                   nbuff=nbuff, growth_tables=growth_tables,
-                                   rmax2rs=cfg.rmax2rs)
+            # Shell analysis: CPU per-peak, or batched-GPU slot
+            result = if use_gpu_shell
+                r = gpu_res
+                # Package GPU batch outputs into the same interface the CPU
+                # `analyse_peak` result exposes (fields are name-compatible
+                # with PeakResult).
+                (RTHL       = Float64(r.RTHL[idx]),
+                 Fbarx      = Float64(r.Fbarx[idx]),
+                 e_v        = Float64(r.e_v[idx]),
+                 p_v        = Float64(r.p_v[idx]),
+                 Srb        = Float64(r.Srb[idx]),
+                 d2F        = Float64(r.d2F[idx]),
+                 zvir_half  = Float64(r.zvir_half[idx]),
+                 Sbar       = Float64.(r.Sbar[:, idx]),
+                 Sbar2      = Float64.(r.Sbar2[:, idx]),
+                 gradpk     = Float64.(r.gradpk[:, idx]),
+                 gradpkf    = Float64.(r.gradpkf[:, idx]),
+                 gradpkrf   = Float64.(r.gradpkrf[:, idx]),
+                 strain_mat = Float64.(r.strain_final[:, :, idx]))
+            else
+                if profile
+                    ts = time()
+                    r = analyse_peak(pg, peak.ipp, alatt, ir2min, ZZon_pk, Rf, ct, shells;
+                                      nbuff=nbuff, growth_tables=growth_tables,
+                                      rmax2rs=cfg.rmax2rs)
+                    shell_cpu_time += time() - ts
+                    r
+                else
+                    analyse_peak(pg, peak.ipp, alatt, ir2min, ZZon_pk, Rf, ct, shells;
+                                  nbuff=nbuff, growth_tables=growth_tables,
+                                  rmax2rs=cfg.rmax2rs)
+                end
+            end
 
             result.RTHL <= 0 && continue
 
@@ -666,9 +980,74 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                 ))
             end
         end
+        if profile
+            t_loop_total = time() - t_loop_start
+            # CPU path: the shell_cpu_time sum is the analyse_peak share;
+            #           remainder is record packing.
+            # GPU path: shell time is already in "09_shell_analysis" (the batch
+            #           call), so the full loop is post-shell work (packing).
+            if use_gpu_shell
+                timings["10_record_packing"] += t_loop_total
+            else
+                timings["09_shell_analysis"] += shell_cpu_time
+                timings["10_record_packing"] += t_loop_total - shell_cpu_time
+            end
+        end
 
         n_halos = ioutshear >= 1 ? length(halos_ext) : length(halos_basic)
-        verbose && @info "  Tile $ti/$(length(tile_ids)) ($it,$jt,$kt): $(length(tile_peaks)) peaks, $n_halos total halos"
+        verbose && @info "  Tile $ti/$(length(tile_ids)) ($it,$jt,$kt) [w=$wid]: $(length(tile_peaks)) peaks, $n_halos worker-local halos"
+        return nothing
+    end  # end of process_tile!
+
+    # ---- Dispatch: sequential (1 worker) or multi-GPU parallel (n_workers > 1) ----
+    if n_workers > 1
+        # Round-robin partition of tile_ids across workers (load-balance by
+        # interleaving; small tiles won't cluster on one worker).
+        wid_of = Int[mod1(i, n_workers) for i in 1:length(tile_ids)]
+        tasks = Task[]
+        for wid in 1:n_workers
+            my_indices = [i for i in 1:length(tile_ids) if wid_of[i] == wid]
+            my_device  = devices[wid]
+            t = Threads.@spawn begin
+                # Bind this task to its assigned CUDA device via the
+                # CUDAExt-provided stub (avoids importing CUDA into
+                # PeakPatch.jl core).
+                set_dev = getglobal(_pp_parent(), :set_cuda_device!)
+                set_dev(my_device)
+                for idx in my_indices
+                    process_tile!(wid, idx, tile_ids[idx])
+                end
+            end
+            push!(tasks, t)
+        end
+        foreach(wait, tasks)
+    else
+        for (ti, tid) in enumerate(tile_ids)
+            process_tile!(1, ti, tid)
+        end
+    end
+
+    # Merge per-worker halo vectors. Ordering is not halo-canonical (pksc has
+    # no ordering requirement); tests sort by coordinates before comparing.
+    halos_basic = reduce(vcat, local_halos_basic; init=HaloRecord[])
+    halos_ext   = reduce(vcat, local_halos_ext;   init=ExtHaloRecord[])
+
+    if profile
+        # Per-stage aggregation: max across workers approximates wall time for
+        # that stage (tiles processed in parallel); sum is total GPU-seconds.
+        keys_sorted = sort!(collect(keys(local_timings[1])))
+        agg_max = Dict(k => maximum(td[k] for td in local_timings) for k in keys_sorted)
+        agg_sum = Dict(k => sum(td[k] for td in local_timings)     for k in keys_sorted)
+        wall_proxy = sum(values(agg_max))
+        total_gpu_s = sum(values(agg_sum))
+        @info "run_multitile_split profile (use_gpu=$use_gpu, ntile=$ntile, nmesh=$(cfg.n), n_workers=$n_workers)"
+        for key in keys_sorted
+            tmax = agg_max[key]; tsum = agg_sum[key]
+            pct = 100 * tmax / max(wall_proxy, 1e-9)
+            @info @sprintf("  %-28s  max/worker=%7.2f s  (%5.1f%%)   sum=%8.2f s",
+                           key, tmax, pct, tsum)
+        end
+        @info @sprintf("  %-28s  wall~max=%7.2f s  total-GPU-s=%8.2f s", "TOTAL_stages", wall_proxy, total_gpu_s)
     end
 
     halos = ioutshear >= 1 ? halos_ext : halos_basic

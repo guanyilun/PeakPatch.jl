@@ -9,6 +9,7 @@ Interpolations = "a98d9a8b-a2ab-59e6-89dd-64a1c18fca59"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 MPIPreferences = "3da0fdf6-3ccc-4f1b-acd9-58baa6c99267"
 OrdinaryDiffEq = "1dea7af3-3e70-54e6-95c3-0bf5283fa5ed"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 QuadGK = "1fd47b50-473d-5c70-9696-f719f8f3bcdc"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 Random123 = "74087812-796a-5b5d-8853-05524746bad3"
@@ -17,16 +18,19 @@ Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 
 [weakdeps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 HDF5 = "f67ccb44-e63f-5c2f-98bd-6dc0ccc4ba2f"
 MPI = "da04e1cc-30fd-572f-bb4f-1f8673147195"
 PencilArrays = "0e08944d-e94e-41b1-9406-dcf66b6a9d2e"
 PencilFFTs = "4a48f351-57a6-4416-9ec4-c37015456aae"
 
 [extensions]
+CUDAExt = "CUDA"
 HDF5Ext = "HDF5"
 MPIExt = ["MPI", "PencilFFTs", "PencilArrays"]
 
 [compat]
+CUDA = "5"
 FFTW = "1"
 HDF5 = "0.17"
 Interpolations = "0.15"
@@ -42,8 +46,9 @@ Statistics = "1.11.1"
 julia = "1.11"
 
 [extras]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 MPIPreferences = "3da0fdf6-3ccc-4f1b-acd9-58baa6c99267"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test", "MPIPreferences"]
+test = ["Test", "MPIPreferences", "CUDA"]
