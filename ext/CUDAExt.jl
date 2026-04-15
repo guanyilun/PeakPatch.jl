@@ -1282,13 +1282,18 @@ function _post_process_kernel!(
     ct_nx::Int32, ct_ny::Int32, ct_nz::Int32, ct_out_val::Float32,
     # Kernel tables & scaling
     akk_tab,
-    ZZon::Float32, fcrit::Float32, Rfclvi_r2::Float32,
+    # Per-peak collapse state: ZZon_pp[i] = 1+z_collapse, fcrit_pp[i] the
+    # corresponding Fbar threshold. For ievol==0 both are broadcast scalars;
+    # for ievol==1 each peak carries its own lightcone redshift.
+    ZZon_pp, fcrit_pp, Rfclvi_r2::Float32,
     wRnor::Float32, aRnor::Float32, hlatt_1::Float32, hlatt_2::Float32,
     ir2min::Int32,
     nshells::Int32, nshells_max::Int32,
     n1::Int32, n2::Int32, n3::Int32, nbuff::Int32, update_mask::Bool)
 
     peak_id = blockIdx().x
+    @inbounds ZZon  = ZZon_pp[peak_id]
+    @inbounds fcrit = fcrit_pp[peak_id]
 
     # Shared-memory per-peak profile arrays. Sized to compile-time upper
     # bound, though we only use the first `nshells_max` slots.
@@ -2136,6 +2141,12 @@ function PeakPatch.analyse_peak_gpu_cuda(
 
     Rfclvi_r2 = Float32((Rfclvi / alatt)^2)
 
+    # Per-peak ZZon / fcrit arrays. For ievol==0 we broadcast the scalar
+    # values; for ievol==1 the caller provides per-peak arrays in the
+    # multirf entry point. This single-call entry always broadcasts.
+    ZZon_pp_d  = CUDA.fill(Float32(ZZon),  npeaks)
+    fcrit_pp_d = CUDA.fill(Float32(fcrit), npeaks)
+
     @cuda threads=threads blocks=npeaks shmem=shmem_bytes _post_process_kernel!(
         RTHL_d, Fbarx_d, e_v_d, p_v_d, strain_final_d, eigs_d,
         Srb_d, Sbar_d, Sbar2_d, gradpk_d, gradpkf_d, gradpkrf_d, d2F_d,
@@ -2151,7 +2162,7 @@ function PeakPatch.analyse_peak_gpu_cuda(
         dxi, dyi, dzi,
         Int32(nx), Int32(ny), Int32(nz), Float32(ct_out_val),
         _AKK_GPU[],
-        Float32(ZZon), Float32(fcrit), Rfclvi_r2,
+        ZZon_pp_d, fcrit_pp_d, Rfclvi_r2,
         Float32(wRnor), Float32(aRnor), Float32(hlatt_1), Float32(hlatt_2),
         Int32(ir2min),
         Int32(nshells), Int32(nshells_max),
@@ -2255,7 +2266,14 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
 
     # ---------------- Per-Rf batch work ----------------
     for (bi, batch) in enumerate(batches)
-        peaks_i, peaks_j, peaks_k, Rf, ir2min = batch
+        # Batch tuple is either (peaks_i, peaks_j, peaks_k, Rf, ir2min) for
+        # the ievol==0 scalar-broadcast path, or extended to length 7 with
+        # trailing (ZZon_pp_b, fcrit_pp_b) per-peak arrays for ievol==1.
+        peaks_i = batch[1]; peaks_j = batch[2]; peaks_k = batch[3]
+        Rf      = batch[4]; ir2min  = batch[5]
+        has_pp_b = length(batch) >= 7
+        ZZon_pp_b_h  = has_pp_b ? batch[6] : nothing
+        fcrit_pp_b_h = has_pp_b ? batch[7] : nothing
         npeaks = length(peaks_i)
 
         pi_d = CuArray{Int32}(peaks_i)
@@ -2306,6 +2324,14 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
 
         Rfclvi_r2 = Float32((Rf / alatt)^2)
 
+        # Per-peak ZZon / fcrit vectors. If the batch carries per-peak host
+        # arrays (ievol==1 caller), upload those; otherwise broadcast the
+        # scalar ZZon / derived fcrit across npeaks (ievol==0 path).
+        ZZon_pp_d  = has_pp_b ? CuArray{Float32}(ZZon_pp_b_h)  :
+                                CUDA.fill(Float32(ZZon),  npeaks)
+        fcrit_pp_d = has_pp_b ? CuArray{Float32}(fcrit_pp_b_h) :
+                                CUDA.fill(Float32(fcrit), npeaks)
+
         @cuda threads=threads blocks=npeaks shmem=shmem_bytes _post_process_kernel!(
             RTHL_d, Fbarx_d, e_v_d, p_v_d, strain_final_d, eigs_d,
             Srb_d, Sbar_d, Sbar2_d, gradpk_d, gradpkf_d, gradpkrf_d, d2F_d,
@@ -2321,7 +2347,7 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
             dxi, dyi, dzi,
             Int32(nx), Int32(ny), Int32(nz), Float32(ct_out_val),
             _AKK_GPU[],
-            Float32(ZZon), Float32(fcrit), Rfclvi_r2,
+            ZZon_pp_d, fcrit_pp_d, Rfclvi_r2,
             Float32(wRnor), Float32(aRnor), Float32(hlatt_1), Float32(hlatt_2),
             Int32(ir2min),
             Int32(nshells), Int32(nshells_max),

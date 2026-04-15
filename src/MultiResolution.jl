@@ -380,7 +380,9 @@ function _gpu_analyse_peaks_batch(delta_tile::Array{Float32,3},
                                     stab_gpu, ct_table_gpu,
                                     ct_params, alatt::Float64,
                                     ZZon::Float64, nbuff::Int,
-                                    rmax2rs::Float64, growth_tables)
+                                    rmax2rs::Float64, growth_tables;
+                                    ZZon_pp::Union{Nothing,AbstractVector}=nothing,
+                                    fcrit_pp::Union{Nothing,AbstractVector}=nothing)
     npeaks = length(peaks)
     # Per-peak outputs, pre-filled with sentinel RTHL = -1
     RTHL      = fill(-1.0f0, npeaks)
@@ -404,6 +406,15 @@ function _gpu_analyse_peaks_batch(delta_tile::Array{Float32,3},
     unique_Rfs = unique(Rf_per_peak)
     batch_idxs = Vector{Vector{Int}}()
     batches = Any[]
+    # Per-peak ZZon / fcrit arrays: when the caller passed full-tile arrays,
+    # we slice them per-batch so each batch carries only its own peaks'
+    # collapse state (ievol==1). When `nothing`, the multirf entry point
+    # broadcasts the scalar ZZon / derived fcrit.
+    have_pp = ZZon_pp !== nothing && fcrit_pp !== nothing
+    if have_pp
+        @assert length(ZZon_pp)  == npeaks "ZZon_pp  length $(length(ZZon_pp)) != npeaks $npeaks"
+        @assert length(fcrit_pp) == npeaks "fcrit_pp length $(length(fcrit_pp)) != npeaks $npeaks"
+    end
     for Rf in unique_Rfs
         idxs = findall(==(Rf), Rf_per_peak)
         isempty(idxs) && continue
@@ -412,7 +423,13 @@ function _gpu_analyse_peaks_batch(delta_tile::Array{Float32,3},
         pi_b = Int32[peaks[i].i for i in idxs]
         pj_b = Int32[peaks[i].j for i in idxs]
         pk_b = Int32[peaks[i].k for i in idxs]
-        push!(batches, (pi_b, pj_b, pk_b, Rf, ir2min))
+        if have_pp
+            zz_b = Float32[ZZon_pp[i]  for i in idxs]
+            fc_b = Float32[fcrit_pp[i] for i in idxs]
+            push!(batches, (pi_b, pj_b, pk_b, Rf, ir2min, zz_b, fc_b))
+        else
+            push!(batches, (pi_b, pj_b, pk_b, Rf, ir2min))
+        end
         push!(batch_idxs, idxs)
     end
 
@@ -561,7 +578,9 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     # GPU shell-analysis tables — built once, uploaded per-call inside the
     # CUDAExt method. Only meaningful when `use_gpu` and `ievol == 0` (per-peak
     # ZZon in ievol=1 is not batched on GPU yet; those tiles fall back to CPU).
-    use_gpu_shell = use_gpu && ievol == 0
+    # GPU shell analysis now supports ievol==1 via per-peak ZZon/fcrit
+    # arrays (see phases 1–3 in docs/ievol_gpu_plan.md).
+    use_gpu_shell = use_gpu
     stab_gpu = use_gpu_shell ? build_shell_tables(nhunt) : nothing
     ct_table_gpu = use_gpu_shell ? Float32.(ct_array) : nothing
 
@@ -877,6 +896,50 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
         gpu_res = nothing
         if use_gpu_shell
             t0 = _tic()
+            # For ievol==1 lightcone mode, each peak collapses at the
+            # redshift implied by its observer-distance. Precompute ZZon
+            # and fcrit per peak on the host in Float64, downcast to
+            # Float32 for the device. ievol==0 passes nothing → multirf
+            # entry broadcasts the scalar.
+            #
+            # Also drop peaks with z_pk > z_max up-front so the kernel
+            # doesn't waste work on them (the CPU path skips such peaks
+            # via `continue` inside the record-packing loop; pre-filter
+            # preserves that behaviour including the mask side-effect,
+            # since filtered peaks never reach analyse_peak on either
+            # path).
+            ZZon_pp_tile  = nothing
+            fcrit_pp_tile = nothing
+            if ievol == 1
+                npk0 = length(tile_peaks)
+                z_pk_tile      = Vector{Float64}(undef, npk0)
+                ZZon_pp_full   = Vector{Float32}(undef, npk0)
+                fcrit_pp_full  = Vector{Float32}(undef, npk0)
+                @inbounds for idx in 1:npk0
+                    p = tile_peaks[idx]
+                    z_pk = peak_redshift(obs[1], obs[2], obs[3], p.x, p.y, p.z, chi2z)
+                    z_pk_tile[idx]     = z_pk
+                    ZZon_pp_full[idx]  = Float32(1.0 + z_pk)
+                    fcrit_pp_full[idx] = Float32(fsc_of_z(z_pk, growth_tables))
+                end
+                keep = findall(z -> z <= z_max, z_pk_tile)
+                if length(keep) < npk0
+                    tile_peaks    = tile_peaks[keep]
+                    tile_Rf       = tile_Rf[keep]
+                    tile_FcRf     = tile_FcRf[keep]
+                    tile_d2Rf     = tile_d2Rf[keep]
+                    ZZon_pp_tile  = ZZon_pp_full[keep]
+                    fcrit_pp_tile = fcrit_pp_full[keep]
+                else
+                    ZZon_pp_tile  = ZZon_pp_full
+                    fcrit_pp_tile = fcrit_pp_full
+                end
+                # If every peak was filtered there's nothing to analyse.
+                if isempty(tile_peaks)
+                    _toc!("09_shell_analysis", t0)
+                    return nothing
+                end
+            end
             gpu_res = _gpu_analyse_peaks_batch(
                 delta_tile,
                 psi_tile[1], psi_tile[2], psi_tile[3],
@@ -887,7 +950,8 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                 tile_masks,
                 tile_peaks, tile_Rf,
                 stab_gpu, ct_table_gpu, ct_params,
-                alatt, ZZon, nbuff, cfg.rmax2rs, growth_tables)
+                alatt, ZZon, nbuff, cfg.rmax2rs, growth_tables;
+                ZZon_pp=ZZon_pp_tile, fcrit_pp=fcrit_pp_tile)
             _toc!("09_shell_analysis", t0)
         end
 

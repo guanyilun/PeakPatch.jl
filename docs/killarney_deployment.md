@@ -11,7 +11,7 @@ dispatcher (`run_multitile_split(...; devices=[0,1,2,3])`) from this branch.
 |---|---|
 | Target queue | Killarney `Standard Compute` |
 | Resources per octant | 1 node × 4 L40S × 8 h wall request |
-| Wall time per octant (projection) | **~4.5 h** |
+| Wall time per octant (fixed-z or lightcone) | **~4.5 h** |
 | Wall time for 8 octants (sequential jobs) | **~36 h** |
 | Wall time for 8 octants (8 parallel 1-node jobs) | **~4.5 h** (same as 1 octant) |
 | Disk per octant (extended output) | ~15 GB catalog + ~50 GB scratch |
@@ -275,13 +275,20 @@ So the runtime picture is:
 | Fixed-z snapshots at N redshifts | N separate runs |
 | Full-sky lightcone | 8 octants × 1 run each = 8 runs |
 
-Note that GPU shell analysis currently falls back to CPU when `ievol=1`
-(`src/MultiResolution.jl:553`: `use_gpu_shell = use_gpu && ievol == 0`).
-Until that code path is batched for per-peak ZZon, the lightcone mode
-will be **slower than fixed-z** by roughly the shell-analysis share —
-the profile shows shell analysis is ~55% of wall. **Expect lightcone
-runs to be ~2× slower per octant, i.e. ~9 h/octant instead of 4.5 h**,
-unless we extend the GPU batch kernel to handle per-peak ZZon.
+**GPU shell analysis now supports lightcone mode** (`ievol=1`). The
+post-process kernel in `ext/CUDAExt.jl` takes per-peak `ZZon`/`fcrit`
+device vectors rather than scalars; the host computes
+`peak_redshift → ZZon_pk, fcrit_pk` for each candidate peak in
+Float64 on the CPU and the downcast arrays are uploaded to the GPU
+per batch. Peaks with `z_pk > z_max` are filtered on the host before
+the batch so the kernel doesn't run on out-of-light-cone work.
+
+Measured payoff on a small test grid (A5000, NMESH=128, ntile=2,
+ilpt=2, `ievol=1`, `z_max=3.0`, 4551 halos): **CPU wall 55.41 s →
+GPU wall 3.25 s (17.03×)**, halo counts identical
+(`docs/ievol1_bench_A5000.log`). Lightcone wall-time is now
+comparable to fixed-z at the same config; the ~2× lightcone penalty
+that existed before this change is gone.
 
 ---
 
@@ -352,20 +359,17 @@ return:
 
 | # | Item | Est. wall reduction | Effort |
 |---|---|---|---|
-| 1 | Batch GPU shell analysis for `ievol=1` (per-peak ZZon) | **~1.5–2× on lightcone** (9 h → 5 h/octant) | ~1 day — extend `_gpu_analyse_peaks_batch` to read per-peak ZZon rather than scalar |
+| ✓ | ~~Batch GPU shell analysis for `ievol=1` (per-peak ZZon)~~ | **Done — 17× measured lightcone speedup at NMESH=128**; parity at `test/test_multiresolution_gpu_ievol1.jl`, bench at `docs/ievol1_bench_A5000.log`. Kernel now takes per-peak `ZZon_pp, fcrit_pp` device vectors and host pre-filters by `z_max`. | — |
 | 2 | Keep tile fields GPU-resident across stages | 5–10% | ~1 day — refactor 2LPT/peak-find/shell pipeline to share `CuArray`s instead of uploading per stage |
 | 3 | Persistent cuFFT plans across tiles | 5–8% | ~0.5 day — cache plans keyed on `(nmesh, direction)` in a Dict |
 | 4 | Vectorise CPU record-packing (stage 10) | 5–8% | ~0.5 day — switch to SoA, build `HaloRecord` array in one shot |
 | 5 | Fuse ψ₁ isolated FFTs (3 dims → 3-plane batched rFFT) | 3–5% | ~0.5 day |
 | 6 | Fuse 2LPT 9-FFT pipeline into one kernel batch | 2–3% | ~1 day |
 
-Aggregate if all of (1)–(5) are done: **~30–40% further wall reduction
-on fixed-z, ~2× on lightcone**. That drops a 4 L40S standard-node
-octant to ~**3 h fixed-z / ~4.5 h lightcone**.
-
-The single biggest item, by far, is **(1) lightcone shell-analysis GPU
-batch**. If the production plan is lightcone mocks on Killarney, this
-should be done before the first production run.
+Aggregate if all of (2)–(5) are done: **~25–30% further wall
+reduction on top of the current numbers**. That drops a 4 L40S
+standard-node octant from ~4.5 h to ~**3–3.5 h** (same for fixed-z
+and lightcone, since lightcone now matches fixed-z throughput).
 
 Multi-node MPI (multi-node tile dispatch) is not on this list because
 Killarney job scheduling makes it easier to submit 8 parallel 1-node
@@ -395,5 +399,8 @@ embarrassingly parallel across SLURM submissions.
 - `docs/gpu_session_log.org` — per-session port notes, per-stage profile evolution, production bench numbers.
 - `bench/scaling_sweep.jl` — benchmark used for all projections in §6.
 - `bench/profile_multitile.jl` — single-config profile (used earlier to guide per-stage ports).
-- `test/test_multiresolution_gpu.jl` — single-GPU parity vs CPU.
+- `test/test_multiresolution_gpu.jl` — single-GPU parity vs CPU (fixed-z, `ievol=0`).
+- `test/test_multiresolution_gpu_ievol1.jl` — single-GPU parity vs CPU in lightcone mode (`ievol=1`), including `z_max` filter exercise.
 - `test/test_multigpu_dispatch.jl` — multi-GPU dispatcher parity vs single-GPU.
+- `docs/ievol1_bench_A5000.log` — profile bench showing the 17× lightcone speedup (NMESH=128, ntile=2, ilpt=2).
+- `docs/ievol_gpu_plan.md` — the implementation plan that drove the lightcone GPU port.

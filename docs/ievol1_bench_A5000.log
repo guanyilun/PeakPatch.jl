@@ -1,0 +1,36 @@
+
+============================================================
+Per-stage profile: CPU vs GPU
+============================================================
+ntile=2 nmesh=128 nsub=112 N=240  ilpt=2 ioutshear=0  ievol=1  z_max=3.00
+threads=32 GPU=NVIDIA RTX A5000
+
+  k=1/20
+  k=2/20
+  k=3/20
+  k=4/20
+  k=5/20
+  k=6/20
+  k=7/20
+  k=8/20
+  k=9/20
+  k=10/20
+  k=11/20
+  k=12/20
+  k=13/20
+  k=14/20
+  k=15/20
+  k=16/20
+  k=17/20
+  k=18/20
+  k=19/20
+  k=20/20
+>> warmup CPU...
+>> warmup GPU...
+
+>> CPU profile...
+CPU total wall: 55.41 s  (4551 halos)
+
+>> GPU profile...
+GPU total wall: 3.25 s  (4551 halos)
+Speedup: 17.03x   ΔN=0
