@@ -413,12 +413,52 @@ opportunity is inside `09_shell_analysis` itself — the 2LPT
 kernel-fusion item would trim an additional 1–2% but the really
 impactful work is attacking the shell gather/post-process kernels
 (register pressure, shared-memory reuse, persistent per-peak
-reductions); not pursued in this cycle.
+reductions); see §7.1 for the first exploration round.
 
 Multi-node MPI (multi-node tile dispatch) is not on this list because
 Killarney job scheduling makes it easier to submit 8 parallel 1-node
 jobs than one 8-node MPI job — the 8-octant structure is already
 embarrassingly parallel across SLURM submissions.
+
+### 7.1 Shell-analysis exploration (branch `gpu-shell-opt-explore`)
+
+`09_shell_analysis` is 76.8 % of GPU wall after the main-branch
+optimisations, so it is the clear next target. A first round of
+attempts lives on the `gpu-shell-opt-explore` branch so `main`
+retains the known-good measured state.
+
+| Change | Parity | SM_86 (A5000) result | Status |
+|---|---|---|---|
+| Persistent per-tile scratch pool (peak-indexed CuArrays reused across batches) | ✓ halos exact | Small positive, below A5000 noise floor on shared box | Active on branch, not merged |
+| Fused gather + post-process kernel (`_fused_shell_analysis_kernel!`) | ✓ halos exact | ~30 % **slower** on shell analysis | Dormant in branch (dead code kept) |
+
+**Why the fusion backfired on SM_86.** Combining gather + post-process
+raises per-block shmem from 256 B (gather) to ~20 KB (staging Fshell,
+Gshell, Gfshell, SRshell, Sshell, S2shell, nshell, lapd, rad, Fbar),
+which drops the gather-phase occupancy from **12 blocks/SM → 2
+blocks/SM** (48 → 8 warps/SM). The gather is memory-bandwidth bound
+and needs many warps in flight to hide DRAM latency; losing ~4× warp
+parallelism outweighs the ~100 MB/batch of global-memory traffic
+saved. On SM_86 the two-phase kernel layout is actually optimal:
+
+- Gather: 256 B shmem → max occupancy → DRAM BW fully used.
+- Post-process: 13.6 KB shmem, but only thread 0 works per block →
+  occupancy doesn't matter, just need shmem for this peak's profile.
+
+**Where the fused kernel could still win.** H100 has 228 KB shmem/SM
+(vs 100 KB on A5000) so 20 KB/block would allow 4+ blocks/SM — the
+occupancy hit is much smaller there. Also worth re-measuring at
+production `npeaks` (thousands per tile rather than hundreds) where
+the global-memory savings scale linearly but the occupancy hit doesn't.
+
+**What we kept and where it lives.** The `_fused_shell_analysis_kernel!`
+source is kept in `ext/CUDAExt.jl` on the branch with a block comment
+describing the shmem layout and the occupancy tradeoff, ready to be
+wired back into `analyse_peaks_gpu_cuda_multirf` if future-us wants
+to re-test on a different architecture. See
+`docs/shell_analysis_opt_notes.md` for a detailed writeup of what
+was tried, the numbers that led to the decision, and what remains
+on the table.
 
 ---
 
@@ -448,3 +488,4 @@ embarrassingly parallel across SLURM submissions.
 - `test/test_multigpu_dispatch.jl` — multi-GPU dispatcher parity vs single-GPU.
 - `docs/ievol1_bench_A5000.log` — profile bench showing the 17× lightcone speedup (NMESH=128, ntile=2, ilpt=2).
 - `docs/ievol_gpu_plan.md` — the implementation plan that drove the lightcone GPU port.
+- `docs/shell_analysis_opt_notes.md` — shell-analysis exploration round (branch `gpu-shell-opt-explore`): persistent scratch pool + dormant fused kernel, with shmem-occupancy analysis.
