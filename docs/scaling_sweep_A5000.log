@@ -1,0 +1,235 @@
+
+========================================================================
+GPU scaling sweep — run_multitile_split
+========================================================================
+GPU: NVIDIA RTX A5000  (23.7 GB)   threads=32
+ntile=2  ilpt=2  ioutshear=0  nbuff=8   target N=6144
+nmesh sweep: 128, 192, 256, 320, 384
+
+  k=1/20
+  k=2/20
+  k=3/20
+  k=4/20
+  k=5/20
+  k=6/20
+  k=7/20
+  k=8/20
+  k=9/20
+  k=10/20
+  k=11/20
+  k=12/20
+  k=13/20
+  k=14/20
+  k=15/20
+  k=16/20
+  k=17/20
+  k=18/20
+  k=19/20
+  k=20/20
+>> GPU warmup (nmesh=128)...
+
+---- nmesh=128  nsub=112  N=240  ntiles=8  box=800.0 Mpc/h ----
+  k=1/20
+  k=2/20
+  k=3/20
+  k=4/20
+  k=5/20
+  k=6/20
+  k=7/20
+  k=8/20
+  k=9/20
+  k=10/20
+  k=11/20
+  k=12/20
+  k=13/20
+  k=14/20
+  k=15/20
+  k=16/20
+  k=17/20
+  k=18/20
+  k=19/20
+  k=20/20
+[ Info: run_multitile_split profile (use_gpu=true, ntile=2, nmesh=128)
+[ Info:   01_residual_gen                 0.35 s  (  6.8%)
+[ Info:   02_iso_fft_delta                0.13 s  (  2.6%)
+[ Info:   03_interp_coarse_delta          0.06 s  (  1.1%)
+[ Info:   04_iso_fft_psi1                 0.92 s  ( 17.8%)
+[ Info:   05_interp_coarse_psi1           0.21 s  (  4.0%)
+[ Info:   06_2lpt_periodic_fft            0.44 s  (  8.5%)
+[ Info:   07_laplacian_periodic_fft       0.00 s  (  0.0%)
+[ Info:   08_peak_find                    0.20 s  (  3.9%)
+[ Info:   09_shell_analysis               2.50 s  ( 48.4%)
+[ Info:   10_record_packing               0.36 s  (  7.0%)
+[ Info:   TOTAL_stages                    5.17 s  (sum of stages)
+   wall=6.54s  per_tile=0.818s  halos=4982  mem_used~689 MB (baseline 261 MB)
+
+---- nmesh=192  nsub=176  N=368  ntiles=8  box=1226.7 Mpc/h ----
+  k=1/20
+  k=2/20
+  k=3/20
+  k=4/20
+  k=5/20
+  k=6/20
+  k=7/20
+  k=8/20
+  k=9/20
+  k=10/20
+  k=11/20
+  k=12/20
+  k=13/20
+  k=14/20
+  k=15/20
+  k=16/20
+  k=17/20
+  k=18/20
+  k=19/20
+  k=20/20
+[ Info: run_multitile_split profile (use_gpu=true, ntile=2, nmesh=192)
+[ Info:   01_residual_gen                 0.46 s  (  2.5%)
+[ Info:   02_iso_fft_delta                0.72 s  (  3.8%)
+[ Info:   03_interp_coarse_delta          0.31 s  (  1.6%)
+[ Info:   04_iso_fft_psi1                 2.11 s  ( 11.2%)
+[ Info:   05_interp_coarse_psi1           0.86 s  (  4.6%)
+[ Info:   06_2lpt_periodic_fft            1.75 s  (  9.3%)
+[ Info:   07_laplacian_periodic_fft       0.00 s  (  0.0%)
+[ Info:   08_peak_find                    0.57 s  (  3.0%)
+[ Info:   09_shell_analysis               9.81 s  ( 52.2%)
+[ Info:   10_record_packing               2.22 s  ( 11.8%)
+[ Info:   TOTAL_stages                   18.81 s  (sum of stages)
+   wall=20.40s  per_tile=2.550s  halos=20467  mem_used~971 MB (baseline 261 MB)
+
+---- nmesh=256  nsub=240  N=496  ntiles=8  box=1653.4 Mpc/h ----
+  k=1/20
+  k=2/20
+  k=3/20
+  k=4/20
+  k=5/20
+  k=6/20
+  k=7/20
+  k=8/20
+  k=9/20
+  k=10/20
+  k=11/20
+  k=12/20
+  k=13/20
+  k=14/20
+  k=15/20
+  k=16/20
+  k=17/20
+  k=18/20
+  k=19/20
+  k=20/20
+[ Info: run_multitile_split profile (use_gpu=true, ntile=2, nmesh=256)
+[ Info:   01_residual_gen                 0.57 s  (  1.2%)
+[ Info:   02_iso_fft_delta                1.32 s  (  2.7%)
+[ Info:   03_interp_coarse_delta          0.79 s  (  1.6%)
+[ Info:   04_iso_fft_psi1                 5.38 s  ( 11.1%)
+[ Info:   05_interp_coarse_psi1           3.36 s  (  6.9%)
+[ Info:   06_2lpt_periodic_fft            3.78 s  (  7.8%)
+[ Info:   07_laplacian_periodic_fft       0.00 s  (  0.0%)
+[ Info:   08_peak_find                    1.71 s  (  3.5%)
+[ Info:   09_shell_analysis              26.10 s  ( 53.6%)
+[ Info:   10_record_packing               5.70 s  ( 11.7%)
+[ Info:   TOTAL_stages                   48.70 s  (sum of stages)
+   wall=53.34s  per_tile=6.667s  halos=54057  mem_used~1417 MB (baseline 261 MB)
+
+---- nmesh=320  nsub=304  N=624  ntiles=8  box=2080.0 Mpc/h ----
+  k=1/20
+  k=2/20
+  k=3/20
+  k=4/20
+  k=5/20
+  k=6/20
+  k=7/20
+  k=8/20
+  k=9/20
+  k=10/20
+  k=11/20
+  k=12/20
+  k=13/20
+  k=14/20
+  k=15/20
+  k=16/20
+  k=17/20
+  k=18/20
+  k=19/20
+  k=20/20
+[ Info: run_multitile_split profile (use_gpu=true, ntile=2, nmesh=320)
+[ Info:   01_residual_gen                 1.13 s  (  1.3%)
+[ Info:   02_iso_fft_delta                2.63 s  (  2.9%)
+[ Info:   03_interp_coarse_delta          2.12 s  (  2.4%)
+[ Info:   04_iso_fft_psi1                 8.89 s  (  9.9%)
+[ Info:   05_interp_coarse_psi1           6.98 s  (  7.8%)
+[ Info:   06_2lpt_periodic_fft            5.82 s  (  6.5%)
+[ Info:   07_laplacian_periodic_fft       0.00 s  (  0.0%)
+[ Info:   08_peak_find                    2.75 s  (  3.1%)
+[ Info:   09_shell_analysis              49.43 s  ( 55.1%)
+[ Info:   10_record_packing              10.02 s  ( 11.2%)
+[ Info:   TOTAL_stages                   89.78 s  (sum of stages)
+   wall=98.49s  per_tile=12.312s  halos=112271  mem_used~2521 MB (baseline 261 MB)
+
+---- nmesh=384  nsub=368  N=752  ntiles=8  box=2506.7 Mpc/h ----
+  k=1/20
+  k=2/20
+  k=3/20
+  k=4/20
+  k=5/20
+  k=6/20
+  k=7/20
+  k=8/20
+  k=9/20
+  k=10/20
+  k=11/20
+  k=12/20
+  k=13/20
+  k=14/20
+  k=15/20
+  k=16/20
+  k=17/20
+  k=18/20
+  k=19/20
+  k=20/20
+[ Info: run_multitile_split profile (use_gpu=true, ntile=2, nmesh=384)
+[ Info:   01_residual_gen                 1.67 s  (  1.1%)
+[ Info:   02_iso_fft_delta                4.13 s  (  2.7%)
+[ Info:   03_interp_coarse_delta          2.42 s  (  1.6%)
+[ Info:   04_iso_fft_psi1                13.61 s  (  9.0%)
+[ Info:   05_interp_coarse_psi1          10.85 s  (  7.2%)
+[ Info:   06_2lpt_periodic_fft            9.08 s  (  6.0%)
+[ Info:   07_laplacian_periodic_fft       0.00 s  (  0.0%)
+[ Info:   08_peak_find                    5.98 s  (  4.0%)
+[ Info:   09_shell_analysis              85.34 s  ( 56.6%)
+[ Info:   10_record_packing              17.58 s  ( 11.7%)
+[ Info:   TOTAL_stages                  150.66 s  (sum of stages)
+   wall=164.84s  per_tile=20.605s  halos=198049  mem_used~2539 MB (baseline 261 MB)
+
+========================================================================
+Summary table
+========================================================================
+nmesh  nsub   N      wall(s)    per-tile   halos     mem(MB)  cell/μs/GPU
+128    112    240    6.54       0.818      4982      689      2.11      
+192    176    368    20.40      2.550      20467     971      2.44      
+256    240    496    53.34      6.667      54057     1417     2.29      
+320    304    624    98.49      12.312     112271    2521     2.47      
+384    368    752    164.84     20.605     198049    2539     2.58      
+
+========================================================================
+Extrapolation to N=6144
+========================================================================
+Reference point: nmesh=384, per-tile=20.605s, mem=2539 MB
+
+Projected full-run cost on a SINGLE GPU using this nmesh:
+nmesh_t    ntile_t    tiles_tot    wall_1GPU(h)   wall_8GPU(h)  
+384        17         4913         28.12          3.52          
+256        26         17576        32.55          4.07          
+192        35         42875        30.36          3.80          
+
+Notes:
+ - Wall-times assume tile-level work dominates. Coarse-grid setup (phase 1a) is
+   shared across all tiles; at target scales it is negligible relative to tile loop.
+ - Multi-GPU numbers assume embarrassingly parallel tile dispatch (not yet
+   implemented in the pipeline — requires minor refactor to distribute the
+   outer `for tid in tile_ids` loop across CUDA devices / MPI ranks).
+ - Memory figure is post-run CUDA usage; peak during execution is somewhat
+   higher (cuFFT plans + intermediate buffers). Keep ~2× headroom.
+
