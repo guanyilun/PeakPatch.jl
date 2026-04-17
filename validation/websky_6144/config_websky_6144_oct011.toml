@@ -5,11 +5,11 @@
 # (= box corner in physical coords)
 #
 # Geometry:
-#   ntile=16, nmesh=399, nbuff=8
-#   nsub = 399 - 16 = 383
-#   N = 383*16 + 16 = 6144
+#   ntile=16, nmesh=414, nbuff=16
+#   nsub = 414 - 32 = 382
+#   N = 382*16 + 32 = 6144
 #   cellsize = 7700/6144 = 1.25326 Mpc/h
-#   per-tile boxsize = 399 * 1.25326 = 500.05 Mpc/h
+#   per-tile boxsize = 414 * 1.25326 = 518.8477 Mpc/h
 #   total box = 6144 * 1.25326 = 7700 Mpc/h
 
 [cosmology]
@@ -19,9 +19,9 @@ OL   = 0.69
 h    = 0.68
 
 [grid]
-n       = 399
-boxsize = 500.05
-nbuff   = 8
+n       = 414
+boxsize = 518.8477
+nbuff   = 16
 cenx    = 3850.0
 ceny    = 3850.0
 cenz    = -3850.0
@@ -33,7 +33,7 @@ ievol     = 1
 ilpt      = 2
 ioutshear = 1
 wsmooth   = 1
-rmax2rs   = 1.0
+rmax2rs   = 0.0
 NonGauss  = 0
 fNL       = 0.0
 seed      = 12345

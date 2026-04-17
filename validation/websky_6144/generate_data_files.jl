@@ -22,13 +22,14 @@ mkpath(datadir)
 # ---- 1. Filter bank ----
 filter_path = joinpath(datadir, "filters_websky.dat")
 
-# 21 Websky-style top-hat filters
-# Rf,min = 2 * a_latt = 2 * 1.25326 = 2.507 Mpc/h (per Stein+ 2020)
-# Rf,max ~ 36 Mpc/h with spacing factor 1.15 → 20 filters
+# 21 Websky-style top-hat filters matching Fortran filter_gen.py
+# Rf,min = 1.65 * a_latt = 1.65 * 1.25326 = 2.068 Mpc/h (Fortran rmincell=1.65)
+# Rf,max ~ 34 Mpc/h with spacing factor 1.15 → 21 filters
 delta_c = 1.686
-Rf_min = 2.507   # = 2 * a_latt (Websky paper: Rf,min = 2 × cell size)
+a_latt = 7700.0 / 6144.0   # = 1.25326 Mpc/h
+Rf_min = 1.65 * a_latt      # = 2.0679 Mpc/h (matches Fortran rmincell=1.65)
 spacing = 1.15
-nfilters = 20    # gives Rf_max = 2.507 * 1.15^19 ≈ 35.7 Mpc/h ≈ 36
+nfilters = 21    # gives Rf_max = 2.068 * 1.15^20 ≈ 33.8 Mpc/h
 
 open(filter_path, "w") do f
     println(f, nfilters)
@@ -39,7 +40,7 @@ open(filter_path, "w") do f
 end
 
 println("Wrote filter bank: $filter_path")
-println("  Filters: $nfilters, Rf range: $(round(Rf_min; digits=2)) to $(round(Rf_min * spacing^(nfilters-1); digits=2)) Mpc/h")
+println("  Filters: $nfilters, Rf range: $(round(Rf_min; digits=4)) to $(round(Rf_min * spacing^(nfilters-1); digits=4)) Mpc/h")
 
 # ---- 2. Collapse table ----
 tab_path = joinpath(datadir, "HomelTab_websky.dat")

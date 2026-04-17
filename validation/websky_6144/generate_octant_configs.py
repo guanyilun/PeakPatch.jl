@@ -11,6 +11,13 @@ IMPORTANT: run_multitile_split uses centered tile coordinates
 position must be expressed in the same centered coordinate system.
 The box extends from -boxsize_full/2 to +boxsize_full/2 in centered coords.
 
+Geometry (nbuff=16):
+  ntile=16, nmesh=414, nbuff=16
+  nsub = 414 - 32 = 382
+  N = 382*16 + 32 = 6144
+  cellsize = 7700/6144 = 1.25326 Mpc/h
+  per-tile boxsize = 414 * 1.25326 = 518.85 Mpc/h
+
 Usage:
     python generate_octant_configs.py
 """
@@ -19,6 +26,13 @@ import os
 BOX_FULL = 7700.0
 HALF_BOX = BOX_FULL / 2.0  # = 3850.0
 OUTPUT_PATH = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"
+
+# Tile geometry with nbuff=16
+NTILE = 16
+NBUFF = 16
+CELLSIZE = BOX_FULL / 6144.0  # 1.25326 Mpc/h
+NMESH = (6144 - 2 * NBUFF) // NTILE + 2 * NBUFF  # = 414
+BOXSIZE = round(NMESH * CELLSIZE, 4)  # = 518.8496
 
 # Octant names: binary flags (bit0=x, bit1=y, bit2=z)
 # 000 = origin corner, 111 = far corner, etc.
@@ -38,11 +52,11 @@ for oct_name in OCTANT_NAMES:
 # (= box corner in physical coords)
 #
 # Geometry:
-#   ntile=16, nmesh=399, nbuff=8
-#   nsub = 399 - 16 = 383
-#   N = 383*16 + 16 = 6144
+#   ntile={NTILE}, nmesh={NMESH}, nbuff={NBUFF}
+#   nsub = {NMESH} - {2*NBUFF} = {NMESH - 2*NBUFF}
+#   N = {NMESH - 2*NBUFF}*{NTILE} + {2*NBUFF} = 6144
 #   cellsize = 7700/6144 = 1.25326 Mpc/h
-#   per-tile boxsize = 399 * 1.25326 = 500.05 Mpc/h
+#   per-tile boxsize = {NMESH} * 1.25326 = {BOXSIZE} Mpc/h
 #   total box = 6144 * 1.25326 = 7700 Mpc/h
 
 [cosmology]
@@ -52,9 +66,9 @@ OL   = 0.69
 h    = 0.68
 
 [grid]
-n       = 399
-boxsize = 500.05
-nbuff   = 8
+n       = {NMESH}
+boxsize = {BOXSIZE}
+nbuff   = {NBUFF}
 cenx    = {cenx}
 ceny    = {ceny}
 cenz    = {cenz}
@@ -66,11 +80,11 @@ ievol     = 1
 ilpt      = 2
 ioutshear = 1
 wsmooth   = 1
-rmax2rs   = 1.0
+rmax2rs   = 0.0
 NonGauss  = 0
 fNL       = 0.0
 seed      = 12345
-ntile     = 16
+ntile     = {NTILE}
 coarse_factor = 4
 generate_table = true
 

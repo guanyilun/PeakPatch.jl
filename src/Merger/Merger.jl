@@ -59,10 +59,9 @@ function _merge_impl(halos::Vector{T}, verbose::Bool) where T <: Union{HaloRecor
     n_after_exc = count(survived)
     verbose && @info "Exclusion: $nhalo → $n_after_exc halos (removed $(nhalo - n_after_exc))"
 
-    # Pass 2: Volume reduction
-    new_r = volume_reduction!(survived, x, y, z, r, order, sh)
-    n_after_red = count(survived)
-    verbose && @info "Reduction: $n_after_exc → $n_after_red halos (removed $(n_after_exc - n_after_red) by volume)"
+    # Pass 2: Volume reduction (disabled — Fortran has this commented out)
+    new_r = copy(r)
+    n_after_red = n_after_exc
 
     # Build output catalog with updated radii
     out = T[]
