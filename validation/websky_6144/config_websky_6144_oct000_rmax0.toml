@@ -1,0 +1,44 @@
+# Websky 6144^3 GPU Multi-Resolution — Octant 000 (rmax2rs=0.0 test)
+#
+# Same as oct000 but with rmax2rs=0.0 to match Fortran reference.
+# This removes the additional shell search radius clipping that limits
+# small-filter analysis.
+
+[cosmology]
+Om   = 0.31
+OB   = 0.049
+OL   = 0.69
+h    = 0.68
+
+[grid]
+n       = 399
+boxsize = 500.05
+nbuff   = 8
+cenx    = -3850.0
+ceny    = -3850.0
+cenz    = -3850.0
+
+[run]
+z_out     = 0.0
+z_max     = 4.6
+ievol     = 1
+ilpt      = 2
+ioutshear = 1
+wsmooth   = 1
+rmax2rs   = 0.0
+NonGauss  = 0
+fNL       = 0.0
+seed      = 12345
+ntile     = 16
+coarse_factor = 4
+generate_table = true
+
+[files]
+pk         = "validation/websky_6144/data/pk_websky.dat"
+filterbank = "validation/websky_6144/data/filters_websky.dat"
+homeltab   = "validation/websky_6144/data/HomelTab_websky.dat"
+output     = "catalog_websky_6144_oct000_rmax0.pksc"
+
+[output]
+format = "pksc"
+path   = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"

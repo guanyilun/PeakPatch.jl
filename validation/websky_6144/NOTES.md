@@ -16,6 +16,13 @@ using PeakPatch.jl on CITA's Sunnyvale cluster.
 - 8 octants (observer at each corner of the core region, ±3789.84 Mpc/h)
 - z_max = 4.6, chi_max ~ 6700 Mpc/h
 - Expected ~100-120M halos per octant, ~900M total (full sky)
+  - **Actual GPU result (Killarney)**: ~920K halos per octant, 7.35M total
+  - This is ~120× fewer than the original Websky (~9 × 10⁸ halos, Stein+ 2020 §4.4.3)
+  - Primary suspect: filter bank configuration — our run uses 20 filters with
+    fixed 1.15× spacing, while the original uses "optimal" σ(R)-based spacing
+    (ref [68], Stein+ 2019) which likely has many more filters at small scales
+  - See `NOTES_killarney.md` → "Halo Count Comparison with Original Websky"
+    for full analysis
 
 ### Cosmology (Planck 2018, Websky values)
 - Om = 0.31, OB = 0.049, OL = 0.69, h = 0.68

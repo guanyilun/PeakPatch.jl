@@ -1,0 +1,52 @@
+# Websky 6144^3 GPU Multi-Resolution — Octant 000
+#
+# Killarney Standard Compute (4x L40S 48 GB)
+# Observer at centered coord (-3850.0, -3850.0, -3850.0) Mpc/h
+# (= box corner in physical coords)
+#
+# Geometry:
+#   ntile=16, nmesh=399, nbuff=8
+#   nsub = 399 - 16 = 383
+#   N = 383*16 + 16 = 6144
+#   cellsize = 7700/6144 = 1.25326 Mpc/h
+#   per-tile boxsize = 399 * 1.25326 = 500.05 Mpc/h
+#   total box = 6144 * 1.25326 = 7700 Mpc/h
+
+[cosmology]
+Om   = 0.31
+OB   = 0.049
+OL   = 0.69
+h    = 0.68
+
+[grid]
+n       = 399
+boxsize = 500.05
+nbuff   = 8
+cenx    = -3850.0
+ceny    = -3850.0
+cenz    = -3850.0
+
+[run]
+z_out     = 0.0
+z_max     = 4.6
+ievol     = 1
+ilpt      = 2
+ioutshear = 1
+wsmooth   = 1
+rmax2rs   = 1.0
+NonGauss  = 0
+fNL       = 0.0
+seed      = 12345
+ntile     = 16
+coarse_factor = 4
+generate_table = true
+
+[files]
+pk         = "validation/websky_6144/data/pk_websky.dat"
+filterbank = "validation/websky_6144/data/filters_websky.dat"
+homeltab   = "validation/websky_6144/data/HomelTab_websky.dat"
+output     = "catalog_websky_6144_oct000.pksc"
+
+[output]
+format = "pksc"
+path   = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"
