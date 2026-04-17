@@ -132,7 +132,7 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     a_out = 1.0 / (1.0 + z_out)
     ZZon = 1.0 + z_out
 
-    fcrit_val = fsc_of_z(z_out, growth_tables)
+    fcrit_val = fsc_of_z(z_out, ct)
     _, _, D_out = Dlinear_ab(a_out, growth_tables)
 
     Rfclmax = filters[1][3]
@@ -241,12 +241,9 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             delta_s_tile = Tf.(extract_tile(delta_s_full, it, jt, kt, nsub, nmesh))
             xbx, ybx, zbx = tile_center(it, jt, kt, ntile, dcore_box)
 
-            # Per-tile fcrit in lightcone mode
+            # Peak finding uses constant fcrit = fsc_of_z(z_out), matching Fortran.
+            # Per-peak redshift is applied later in shell analysis only.
             fcrit_tile = fcrit
-            if ievol == 1
-                z_tile = peak_redshift(obs[1], obs[2], obs[3], xbx, ybx, zbx, chi2z)
-                fcrit_tile = Tf(fsc_of_z(z_tile, growth_tables))
-            end
 
             new_peaks = find_peaks(delta_s_tile, tile_masks[tid],
                                    xbx, ybx, zbx, alatt, nbuff, fcrit_tile, Rf)
@@ -335,7 +332,6 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             tile_results[idx] = analyse_peak(pg, peaks[idx].ipp, alatt, ir2min,
                                              ZZon_tile[idx], Rf, ct, shells;
                                              nbuff=nbuff,
-                                             growth_tables=growth_tables,
                                              rmax2rs=cfg.rmax2rs,
                                              fortran_compat=fortran_compat)
         end
@@ -471,7 +467,7 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     a_out = 1.0 / (1.0 + z_out)
     ZZon = 1.0 + z_out
 
-    fcrit_val = fsc_of_z(z_out, growth_tables)
+    fcrit_val = fsc_of_z(z_out, ct)
     _, _, D_out = Dlinear_ab(a_out, growth_tables)
 
     Rfclmax = filters[1][3]
@@ -579,11 +575,9 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             delta_s_tile = Tf.(extract_tile(delta_s_full, it, jt, kt, nsub, nmesh))
             xbx, ybx, zbx = tile_center(it, jt, kt, ntile, dcore_box)
 
+            # Peak finding uses constant fcrit = fsc_of_z(z_out), matching Fortran.
+            # Per-peak redshift is applied later in shell analysis only.
             fcrit_tile = fcrit
-            if ievol == 1
-                z_tile = peak_redshift(obs[1], obs[2], obs[3], xbx, ybx, zbx, chi2z)
-                fcrit_tile = Tf(fsc_of_z(z_tile, growth_tables))
-            end
 
             new_peaks = find_peaks(delta_s_tile, tile_masks[tid],
                                    xbx, ybx, zbx, alatt, nbuff, fcrit_tile, Rf)
@@ -688,7 +682,6 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             tile_results[idx] = analyse_peak(pg, peaks[idx].ipp, alatt, ir2min,
                                              ZZon_tile[idx], Rf, ct, shells;
                                              nbuff=nbuff,
-                                             growth_tables=growth_tables,
                                              rmax2rs=cfg.rmax2rs,
                                              fortran_compat=fortran_compat)
         end

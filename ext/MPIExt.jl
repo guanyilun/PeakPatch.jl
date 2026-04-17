@@ -571,8 +571,7 @@ function _analyse_tile_shells!(halos_basic, halos_ext,
         end
 
         result = PeakPatch.analyse_peak(pg, peak.ipp, alatt, ir2min, ZZon_pk, Rf, ct, shells;
-                                         nbuff=nbuff, growth_tables=growth_tables,
-                                         rmax2rs=cfg.rmax2rs)
+                                         nbuff=nbuff, rmax2rs=cfg.rmax2rs)
 
         if result.RTHL > 0
             a_pk = 1.0 / ZZon_pk
@@ -656,7 +655,7 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
     z_out  = cfg.z_out
     a_out  = 1.0 / (1.0 + z_out)
     ZZon   = 1.0 + z_out
-    fcrit  = Float32(PeakPatch.fsc_of_z(z_out, growth_tables))
+    fcrit  = Float32(PeakPatch.fsc_of_z(z_out, ct))
     _, _, D_out = PeakPatch.Dlinear_ab(a_out, growth_tables)
 
     Rfclmax = filters[1][3]
@@ -894,11 +893,9 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
             delta_s_tile = delta_s_tiles[tid]
             xbx, ybx, zbx = PeakPatch.tile_center(it, jt, kt, ntile, dcore_box)
 
+            # Peak finding uses constant fcrit = fsc_of_z(z_out), matching Fortran.
+            # Per-peak redshift is applied later in shell analysis only.
             fcrit_tile = fcrit
-            if ievol == 1
-                z_tile = PeakPatch.peak_redshift(obs[1], obs[2], obs[3], xbx, ybx, zbx, chi2z)
-                fcrit_tile = Float32(PeakPatch.fsc_of_z(z_tile, growth_tables))
-            end
 
             new_peaks = PeakPatch.find_peaks(delta_s_tile, tile_masks[tid],
                                               xbx, ybx, zbx, alatt, nbuff, fcrit_tile, Rf)

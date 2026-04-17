@@ -35,7 +35,7 @@ Base.@kwdef struct PipelineConfig
     ilpt::Int = 2
     ioutshear::Int = 0
     wsmooth::Int = 0
-    rmax2rs::Float64 = 1.0
+    rmax2rs::Float64 = 0.0
     NonGauss::Int = 0
     fNL::Float64 = 0.0
     # Files
@@ -74,7 +74,7 @@ ievol     = 0     # 0: global z, 1: lightcone (per-peak z)
 ilpt      = 2     # LPT order (1 or 2)
 ioutshear = 0     # 0: basic catalog, ≥1: extended catalog
 wsmooth   = 0     # smoothing window (0=Gaussian, 1=tophat)
-rmax2rs   = 1.0   # max shell radius / filter radius
+rmax2rs   = 0.0   # max shell radius / filter radius (0=unlimited, matches Fortran)
 NonGauss  = 0     # non-Gaussian mode (0=none, 1=correlated fNL, 2=uncorrelated)
 fNL       = 0.0
 
@@ -114,7 +114,7 @@ function PipelineConfig(config::Dict{String,Any})
         ilpt      = Int(get(run, "ilpt", 2)),
         ioutshear = Int(get(run, "ioutshear", 0)),
         wsmooth   = Int(get(run, "wsmooth", 0)),
-        rmax2rs   = Float64(get(run, "rmax2rs", 1.0)),
+        rmax2rs   = Float64(get(run, "rmax2rs", 0.0)),
         NonGauss  = Int(get(run, "NonGauss", 0)),
         fNL       = Float64(get(run, "fNL", 0.0)),
         pkfile        = get(files, "pk", "pk.dat"),

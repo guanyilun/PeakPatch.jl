@@ -73,7 +73,6 @@
 
     # Run analyse_peak with Fortran's fcrit
     result = analyse_peak(pg, ipp, 1.0, 4, 1.0, 4.0, ct, shells;
-                          growth_tables = nothing,
                           fcrit_override = fortran_fcrit)
 
     # =========================================================

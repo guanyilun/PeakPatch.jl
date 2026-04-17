@@ -364,7 +364,7 @@ end
 """
     _gpu_analyse_peaks_batch(delta_tile, psi_tile, psi2_tile, lapd_tile, mask,
                              peaks, Rf_per_peak, stab_gpu, ct_table_gpu,
-                             ct_params, alatt, ZZon, nbuff, rmax2rs, growth_tables)
+                             ct_params, alatt, ZZon, nbuff, rmax2rs, ct)
 
 Batched GPU shell analysis: groups peaks by filter scale Rf (so `ir2min`,
 `Rfclvi` are uniform per batch) and invokes `analyse_peak_gpu_cuda` once per
@@ -380,7 +380,7 @@ function _gpu_analyse_peaks_batch(delta_tile,
                                     stab_gpu, ct_table_gpu,
                                     ct_params, alatt::Float64,
                                     ZZon::Float64, nbuff::Int,
-                                    rmax2rs::Float64, growth_tables;
+                                    rmax2rs::Float64, ct;
                                     ZZon_pp::Union{Nothing,AbstractVector}=nothing,
                                     fcrit_pp::Union{Nothing,AbstractVector}=nothing)
     npeaks = length(peaks)
@@ -458,7 +458,7 @@ function _gpu_analyse_peaks_batch(delta_tile,
         ct_params.Y1, ct_params.Y2,
         ct_params.Z1, ct_params.Z2,
         alatt, ZZon;
-        growth_tables=growth_tables, rmax2rs=rmax2rs,
+        ct=ct, rmax2rs=rmax2rs,
         lapd=lapd_tile, mask=mask, nbuff=nbuff)
 
     # Scatter results back to per-peak slots
@@ -563,7 +563,7 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     z_out = cfg.z_out
     a_out = 1.0 / (1.0 + z_out)
     ZZon = 1.0 + z_out
-    fcrit = Float32(fsc_of_z(z_out, growth_tables))
+    fcrit = Float32(fsc_of_z(z_out, ct))
     _, _, D_out = Dlinear_ab(a_out, growth_tables)
     Rfclmax = filters[1][3]
     nhunt = min(nbuff - 1, floor(Int, Rfclmax * 1.75 / alatt))
@@ -716,11 +716,11 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     # state; writes go into `local_halos_basic[wid]` / `local_halos_ext[wid]`
     # / `local_timings[wid]`. Safe for concurrent invocation across workers
     # as long as each worker uses its own `wid`.
-    process_tile! = function (wid::Int, ti::Int, tid::NTuple{3,Int})
+    process_tile! = function (wid::Int, ti::Int, tid::NTuple{3,Int},
+                              halos_basic::Vector{HaloRecord},
+                              halos_ext::Vector{ExtHaloRecord},
+                              timings::Dict{String,Float64})
         it, jt, kt = tid
-        halos_basic = local_halos_basic[wid]
-        halos_ext   = local_halos_ext[wid]
-        timings     = local_timings[wid]
         _tic()  = profile ? time() : 0.0
         _toc!(key::String, t0::Float64) = profile ? (timings[key] += time() - t0) : nothing
 
@@ -863,15 +863,10 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
         tile_d2Rf   = Float32[]
 
         xbx, ybx, zbx = tile_center(it, jt, kt, ntile, dcore_box)
-        # Per-filter fcrit (ievol=1 depends on tile position; ievol=0 constant)
+        # Peak finding uses constant fcrit = fsc_of_z(z_out), matching Fortran.
+        # Per-peak redshift is applied later in shell analysis only.
         fcrits_per_filter = Vector{Float32}(undef, length(filters))
-        if ievol == 1
-            z_tile = peak_redshift(obs[1], obs[2], obs[3], xbx, ybx, zbx, chi2z)
-            fcrit_tile = Float32(fsc_of_z(z_tile, growth_tables))
-            fill!(fcrits_per_filter, fcrit_tile)
-        else
-            fill!(fcrits_per_filter, fcrit)
-        end
+        fill!(fcrits_per_filter, fcrit)
 
         if use_gpu
             fn = getglobal(_pp_parent(), :peak_find_tile_gpu)
@@ -966,7 +961,7 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                     z_pk = peak_redshift(obs[1], obs[2], obs[3], p.x, p.y, p.z, chi2z)
                     z_pk_tile[idx]     = z_pk
                     ZZon_pp_full[idx]  = Float32(1.0 + z_pk)
-                    fcrit_pp_full[idx] = Float32(fsc_of_z(z_pk, growth_tables))
+                    fcrit_pp_full[idx] = Float32(fsc_of_z(z_pk, ct))
                 end
                 keep = findall(z -> z <= z_max, z_pk_tile)
                 if length(keep) < npk0
@@ -1004,7 +999,7 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                 tile_masks,
                 tile_peaks, tile_Rf,
                 stab_gpu, ct_table_gpu, ct_params,
-                alatt, ZZon, nbuff, cfg.rmax2rs, growth_tables;
+                alatt, ZZon, nbuff, cfg.rmax2rs, ct;
                 ZZon_pp=ZZon_pp_tile, fcrit_pp=fcrit_pp_tile)
             _toc!("09_shell_analysis", t0)
 
@@ -1029,11 +1024,6 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             # vectors to `npks` so `push!` doesn't keep re-growing.
             r = gpu_res
             npks = length(tile_peaks)
-            if ioutshear >= 1
-                sizehint!(halos_ext, length(halos_ext) + npks)
-            else
-                sizehint!(halos_basic, length(halos_basic) + npks)
-            end
             coef2_base = -3.0/7.0          # 2LPT: coef = coef2_base * Om_a^(-1/143) * D_pk^2
             @inbounds for idx in 1:npks
                 r.RTHL[idx] <= 0 && continue
@@ -1109,14 +1099,12 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                 result = if profile
                     ts = time()
                     r = analyse_peak(pg, peak.ipp, alatt, ir2min, ZZon_pk, Rf, ct, shells;
-                                      nbuff=nbuff, growth_tables=growth_tables,
-                                      rmax2rs=cfg.rmax2rs)
+                                      nbuff=nbuff, rmax2rs=cfg.rmax2rs)
                     shell_cpu_time += time() - ts
                     r
                 else
                     analyse_peak(pg, peak.ipp, alatt, ir2min, ZZon_pk, Rf, ct, shells;
-                                  nbuff=nbuff, growth_tables=growth_tables,
-                                  rmax2rs=cfg.rmax2rs)
+                                  nbuff=nbuff, rmax2rs=cfg.rmax2rs)
                 end
 
                 result.RTHL <= 0 && continue
@@ -1184,26 +1172,37 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
         # Round-robin partition of tile_ids across workers (load-balance by
         # interleaving; small tiles won't cluster on one worker).
         wid_of = Int[mod1(i, n_workers) for i in 1:length(tile_ids)]
+        # Each task owns its output arrays (Julia 1.12 ConcurrencyViolationError
+        # prevents mutating parent-task arrays from spawned tasks).
+        worker_results = Vector{Any}(undef, n_workers)
         tasks = Task[]
         for wid in 1:n_workers
             my_indices = [i for i in 1:length(tile_ids) if wid_of[i] == wid]
             my_device  = devices[wid]
             t = Threads.@spawn begin
-                # Bind this task to its assigned CUDA device via the
-                # CUDAExt-provided stub (avoids importing CUDA into
-                # PeakPatch.jl core).
                 set_dev = getglobal(_pp_parent(), :set_cuda_device!)
                 set_dev(my_device)
+                # Create task-local accumulators so Julia 1.12 task ownership is respected
+                my_halos_basic = HaloRecord[]
+                my_halos_ext   = ExtHaloRecord[]
+                my_timings     = _new_timing_dict()
                 for idx in my_indices
-                    process_tile!(wid, idx, tile_ids[idx])
+                    process_tile!(wid, idx, tile_ids[idx], my_halos_basic, my_halos_ext, my_timings)
                 end
+                worker_results[wid] = (my_halos_basic, my_halos_ext, my_timings)
             end
             push!(tasks, t)
         end
         foreach(wait, tasks)
+        # Collect per-worker results into the shared vectors
+        for wid in 1:n_workers
+            local_halos_basic[wid] = worker_results[wid][1]
+            local_halos_ext[wid]   = worker_results[wid][2]
+            local_timings[wid]     = worker_results[wid][3]
+        end
     else
         for (ti, tid) in enumerate(tile_ids)
-            process_tile!(1, ti, tid)
+            process_tile!(1, ti, tid, local_halos_basic[1], local_halos_ext[1], local_timings[1])
         end
     end
 

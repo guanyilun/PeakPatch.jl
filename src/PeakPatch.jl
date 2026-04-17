@@ -192,7 +192,7 @@ function kernel_strain_gpu end
                           peaks_i, peaks_j, peaks_k, stab,
                           collapse_table_vals, X1, X2, Y1, Y2, Z1, Z2,
                           alatt, ir2min, ZZon, Rfclvi;
-                          fcrit_override=nothing, growth_tables=nothing,
+                          fcrit_override=nothing, ct=nothing,
                           rmax2rs=0.0, lapd=nothing, mask=nothing, nbuff=0,
                           threads=128, ct_out_val=-1.0)
         -> NamedTuple with Matrix{Float32} fields per-peak
@@ -233,7 +233,7 @@ function analyse_peak_gpu_cuda end
                                     batches, stab, ct_table,
                                     X1, X2, Y1, Y2, Z1, Z2, alatt, ZZon;
                                     lapd=nothing, mask=nothing, nbuff=0,
-                                    growth_tables=nothing, rmax2rs=0.0,
+                                    ct=nothing, rmax2rs=0.0,
                                     fcrit_override=nothing, threads=128,
                                     ct_out_val=-1.0)
         -> (results::Vector{NamedTuple}, mask::Union{Array{Int8,3},Nothing})

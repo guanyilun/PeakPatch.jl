@@ -89,7 +89,7 @@ function run_tile(cfg::PipelineConfig; seed::Integer=42, verbose::Bool=false,
     a_out = 1.0 / (1.0 + z_out)
     ZZon = 1.0 + z_out
 
-    fcrit_val = fsc_of_z(z_out, growth_tables)
+    fcrit_val = fsc_of_z(z_out, ct)
 
     _, _, D_out = Dlinear_ab(a_out, growth_tables)
 
@@ -235,7 +235,6 @@ function run_tile(cfg::PipelineConfig; seed::Integer=42, verbose::Bool=false,
                                     ir2min_vec[idx], ZZon_vec[idx], peak_Rf[idx],
                                     ct, shells;
                                     nbuff=cfg.nbuff,
-                                    growth_tables=growth_tables,
                                     rmax2rs=cfg.rmax2rs,
                                     fortran_compat=fortran_compat)
     end
