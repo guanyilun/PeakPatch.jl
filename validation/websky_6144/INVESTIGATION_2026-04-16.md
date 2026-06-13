@@ -373,3 +373,39 @@ total count is harder to predict without a test run. The **rmax2rs** and
 4. Rerun single octant to measure impact of fixes 1-3
 5. Investigate optimal filter spacing (ref [68]) and denser filter bank
 6. Consider increasing nbuff (requires re-tuning nmesh/ntile for GPU memory)
+
+---
+
+## ADDENDUM 2026-06-13 — Comoving-distance bug (χ a factor h too small)
+
+While verifying the post-fix octant 000 catalog (`catalog_websky_6144_oct000.pksc`,
+3.21M halos, produced 04-17 10:34 *after* commits 91c4145/c9d3df9), the halos were
+found to reach only **r ≈ 3557 Mpc/h** from the observer — i.e. z ≈ 1.96, not the
+intended z_max = 4.6 (r = 5231 Mpc/h). The lightcone was being truncated at ~31% of
+the octant comoving volume.
+
+**Root cause:** `chi(z)` in `src/Cosmology/Cosmology.jl` multiplied by a spurious
+`* c.h`:
+
+    return (2.998e5 / 100.0) * c.h * integral   # WRONG
+
+The Mpc/h comoving distance is `(c/100)·∫dz/E` with **no** explicit h factor
+(c/H₀ = c/(100h) → Mpc, ×h → Mpc/h cancels). The extra `·h` made χ a factor
+h ≈ 0.68 too small. Numerically the coded `chi(4.6) = 3556.9 Mpc/h` — matching the
+observed truncation radius to the meter. The identical error was present in
+`AbundanceMatch.jl:95` (`* cosmo.h`).
+
+**Two effects** (both consume `chi`: tile selection uses `chi_max = chi(z_max)`,
+and the `chi2z` table that converts each peak's observer-distance to z_pk):
+1. Lightcone radius capped at z ≈ 1.96 → entire z ≈ 2–4.6 shell discarded.
+2. Every retained halo assigned z = z_true(r/0.68), an over-estimate → wrong D(z),
+   wrong collapse threshold, wrong mass.
+
+**Why it hid:** ievol=0 (z=0 snapshot) never calls `chi`, so all earlier z=0
+Fortran validation was unaffected. Like the `fsc_of_z` bug, it lived exclusively in
+the lightcone (ievol=1) path that was never validated.
+
+**Fix:** removed the `·h` factor in both `Cosmology.jl` and `AbundanceMatch.jl`.
+Updated `test_cosmology.jl` (it had asserted the buggy `1500 < χ(1.0) < 1600`; the
+correct value is ≈2294 Mpc/h) and a stale comment in the GPU ievol=1 test.
+Re-run of octant 000 on Killarney pending to measure the impact.

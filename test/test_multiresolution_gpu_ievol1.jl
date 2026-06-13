@@ -112,7 +112,7 @@ end
 # =====================================================================
 # Test 2: ievol=1 with tight z_max (forces peaks to be filtered)
 # Observer at box center; box spans ±113 Mpc/h per axis.
-# z_max=0.03 corresponds to chi ≈ 130 Mpc/h, cutting off the outer shell.
+# z_max=0.03 corresponds to chi ≈ 89 Mpc/h, cutting off the outer shell.
 # =====================================================================
 @testset "run_multitile_split ievol=1, z_max tight (filter exercised)" begin
     tmpdir = mktempdir()

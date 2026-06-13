@@ -92,7 +92,9 @@ function build_abundance_table(halos::AbstractVector, cosmo::CosmologyParams, pk
             chi_val = 0.0
             for zp in zz
                 E = sqrt(cosmo.Om * (1 + zp)^3 + cosmo.OL)
-                chi_val += (2.998e5 / 100.0) * cosmo.h / E * dz
+                # Mpc/h comoving distance: no explicit h factor (see chi() in
+                # Cosmology.jl). The previous *cosmo.h made χ ≈0.68× too small.
+                chi_val += (2.998e5 / 100.0) / E * dz
             end
             redge[i] = chi_val
         end
