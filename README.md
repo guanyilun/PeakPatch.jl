@@ -9,6 +9,10 @@ direct integration with
 
 This code is developed by a coding agent, so use with more care!
 
+> ⚠️ **Units:** all lengths in configs and output are **Mpc/h** (the Fortran code and Websky
+> use Mpc). To match a box of `L` Mpc, set `boxsize = L*h`. See **[CONVENTIONS.md](CONVENTIONS.md)**
+> before writing a config or cross-comparing catalogs — a Mpc-vs-Mpc/h mixup is a real, easy bug.
+
 ## Features
 
 - **Lightcone evolution** (`ievol=1`): per-peak redshift from observer distance, with tile pruning and horizon cuts
@@ -108,6 +112,22 @@ ntile=2). The `coarse_factor` parameter controls the coarse/fine split; cf=5
 is the default and optimal for halo counts. See
 [`docs/multi_resolution_fft.md`](docs/multi_resolution_fft.md) for the full
 accuracy analysis and error budget.
+
+> **ℹ️ Note on P(k) file normalization (root cause of a 2026-06 Websky bug, now fixed):**
+> The field-generation convolution uses `amp = sqrt(P·dk³·n³) = sqrt(P/dx³)·(2π)^1.5`, so
+> **P(k) input files MUST be pre-divided by (2π)³** (for CAMB output in (Mpc/h) units; the
+> official `tools/powerspectrum_create.py` uses `(2π·h)³` because its CAMB output is in
+> physical Mpc). A Websky P(k) file generated without this division produced a field ~16×
+> too high in σ at every scale, which made δ exceed the collapse threshold everywhere →
+> a flood of fake ~10¹⁵ M☉/h "clusters" (RTHL pinned at the `nhunt` shell-search cap) →
+> over-exclusion of real halos → a net halo *deficit*. It evaded validation because the
+> Julia↔Fortran checks used a correctly-normalized P(k) and compared halo *counts* (which
+> match under a shared normalization error), never absolute σ₈ or the mass function.
+> Verified factor: `÷(2π)³` gives field σ(R)/theory ≈ 1.00 across all R. The
+> `validation/websky_6144/generate_pk_camb.py` generator now applies it. A *separate,
+> secondary* effect: `run_multitile_split` over-produces ~1.6× vs the global FFT
+> (coarse+residual). See
+> [`validation/websky_6144/INVESTIGATION_2026-06-14.md`](validation/websky_6144/INVESTIGATION_2026-06-14.md).
 
 **Memory**: ~15 GB per tile at nmesh=768 (vs ~1 TB for global FFT at N=6144).
 Tiles are independent and can be trivially parallelized.

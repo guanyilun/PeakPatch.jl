@@ -1,0 +1,48 @@
+# Small-scale GPU test — 128^3 equivalent, single GPU
+# Quick sanity check that CUDA pipeline works on Killarney L40S
+#
+# Geometry:
+#   ntile=2, nmesh=68, nbuff=8
+#   nsub = 68 - 16 = 52
+#   N = 52*2 + 16 = 120
+#   cellsize = 226.67/68 = 3.333 Mpc/h
+#   total box = 120 * 3.333 = 400 Mpc/h
+
+[cosmology]
+Om   = 0.31
+OB   = 0.049
+OL   = 0.69
+h    = 0.68
+
+[grid]
+n       = 68
+boxsize = 226.67
+nbuff   = 8
+cenx    = 0.0
+ceny    = 0.0
+cenz    = 0.0
+
+[run]
+z_out     = 0.0
+z_max     = 0.0
+ievol     = 0
+ilpt      = 2
+ioutshear = 0
+wsmooth   = 1
+rmax2rs   = 1.0
+NonGauss  = 0
+fNL       = 0.0
+seed      = 42
+ntile     = 2
+coarse_factor = 5
+generate_table = false
+
+[files]
+pk         = "validation/websky_6144/data/pk_websky.dat"
+filterbank = "validation/websky_6144/data/filters_websky.dat"
+homeltab   = "validation/websky_6144/data/HomelTab_websky.dat"
+output     = "catalog_test_gpu.pksc"
+
+[output]
+format = "pksc"
+path   = "/home/yguan/scratch/websky_6144/test_gpu"

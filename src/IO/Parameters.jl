@@ -60,8 +60,10 @@ OL   = 0.685    # Omega_Lambda
 h    = 0.674
 
 [grid]
+# UNITS: ALL lengths are Mpc/h (pipeline convention; see CONVENTIONS.md). Fortran/Websky use
+# Mpc. To match a box of L Mpc set boxsize = L*h (Websky 7700 Mpc -> 5236, NOT 7700).
 n      = 142    # grid cells per dimension
-boxsize = 200.0 # box size [Mpc/h]
+boxsize = 200.0 # box size [Mpc/h]  (NOT Mpc)
 nbuff  = 4      # buffer cells
 cenx   = 0.0    # observer x position [Mpc/h]
 ceny   = 0.0    # observer y position [Mpc/h]

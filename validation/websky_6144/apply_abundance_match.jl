@@ -1,0 +1,47 @@
+#!/usr/bin/env julia
+# Apply abundance matching to the corrected production octant catalog and measure
+# how much it closes the gap to Websky (N(>1.7e12): ours 26.5M, Websky 110M).
+# AM remaps raw peak-patch top-hat masses to Tinker M200 in z-bins (Websky's step).
+#
+# NOTE: build_abundance_table needs the PHYSICAL P(k) (σ8=0.81) for σ(M)/Tinker —
+# use the RAW (un-normalized) pk file, NOT the ÷(2π)³ field-gen one.
+#
+# Usage: julia --project=. -t 8 validation/websky_6144/apply_abundance_match.jl
+
+using PeakPatch, Printf
+const D = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"
+
+cat = joinpath(D, "catalog_websky_6144_oct000_pkfix.pksc")
+@info "reading catalog..." cat
+halos, RTHLmax, z_out = read_pksc(cat)
+@info "read" n=length(halos)
+
+# CosmologyParams first arg is Om_TOTAL (=Omx+OmB). Websky Om=0.31 total, OmB=0.049.
+# (Was previously 0.31+0.049=0.359 — wrong; double-counted baryons, corrupting rho_mean/D(z)/volumes.)
+cosmo = CosmologyParams(0.31, 0.049, 0.69, 0.68, 0.965, 0.81)
+pk = PeakPatch.PowerSpectrum.load_pk(joinpath(@__DIR__, "data", "pk_websky_RAW_unnormalized.dat"))
+obs = (-3850.0, -3850.0, -3850.0)
+rho_m = 2.775e11 * 0.31
+
+NgtM(hs, M0) = count(h -> (4π/3)*rho_m*Float64(h.RTHL)^3 > M0, hs)
+function report(label, hs)
+    @printf("%-18s  N(>1.7e12)=%.3e  N(>1e13)=%.3e  N(>1e14)=%.3e\n",
+            label, NgtM(hs,1.7e12), NgtM(hs,1e13), NgtM(hs,1e14))
+end
+
+report("RAW (pre-AM)", halos)
+
+@info "building abundance table (Tinker, z_max=4.6)..."
+table = build_abundance_table(halos, cosmo, pk; hmf=:tinker, z_max=4.6, obs=obs,
+                              fsky=1/8, verbose=true)   # single octant = 1/8 sky
+@info "applying abundance match..."
+halos_am = abundance_match(halos, table, cosmo; obs=obs)
+
+report("AFTER AM (Tinker)", halos_am)
+@printf("\nReference: Websky N(>1.7e12) = 1.1e8/octant ; ST theory = 5.6e7 ; Tinker theory ~1.1e8\n")
+
+# write the AM'd catalog
+out = joinpath(D, "catalog_websky_6144_oct000_pkfix_AM.pksc")
+Rmax = isempty(halos_am) ? 0f0 : maximum(h.RTHL for h in halos_am)
+write_pksc(out, halos_am, Float32(Rmax), Float32(z_out))
+@info "wrote AM catalog" out

@@ -52,13 +52,23 @@ s8_final = results.get_sigma8_0()
 # --- Get P(k) ---
 kh, z, pk = results.get_matter_power_spectrum(minkh=1e-5, maxkh=100.0, npoints=500)
 
+# --- Peak Patch normalization convention ---
+# The field-generation convolution uses amp = sqrt(P * dk^3 * n^3) = sqrt(P/dx^3)*(2pi)^1.5,
+# so the P(k) FILE must be PRE-DIVIDED by (2*pi)^3 for the generated field to have the
+# correct power spectrum. (The official peakpatch/tools/powerspectrum_create.py divides
+# by (2*pi*h)^3 because its CAMB output is in physical Mpc; CAMB's get_matter_power_spectrum
+# here returns (Mpc/h)^3 with k in h/Mpc, so the factor is (2*pi)^3, NO h. Verified
+# empirically 2026-06-14 via probe_pk_norm.jl: ÷(2pi)^3 gives field sigma(R)/theory ~1.00.)
+pp_norm = (2.0 * np.pi) ** 3
+
 # --- Write ---
 with open(pk_path, "w") as f:
     f.write(f"# CAMB power spectrum for Websky cosmology\n")
     f.write(f"# Om={Om_total}, OB={OB}, OL={OL}, h={h}, ns={ns}, sigma8={s8_final:.4f}\n")
-    f.write(f"# k [h/Mpc]    P(k) [(Mpc/h)^3]\n")
+    f.write(f"# P(k) PRE-DIVIDED by (2*pi)^3 for Peak Patch convolution convention\n")
+    f.write(f"# k [h/Mpc]    P_pp(k) = P(k)/(2pi)^3 [(Mpc/h)^3]\n")
     for i in range(len(kh)):
-        f.write(f"{kh[i]:.10e}  {pk[0][i]:.10e}\n")
+        f.write(f"{kh[i]:.10e}  {pk[0][i] / pp_norm:.10e}\n")
 
 print(f"Wrote {len(kh)} k-points to {pk_path}")
 print(f"sigma8 = {s8_final:.4f}")

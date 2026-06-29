@@ -50,6 +50,7 @@ function build_abundance_table(halos::AbstractVector, cosmo::CosmologyParams, pk
         nMbins::Int=10000, z_min::Real=0.0, z_max::Real=4.6, nzbins::Int=46,
         Mmin::Real=5e11, Mmax::Real=1e16, hmf::Symbol=:tinker,
         obs::Tuple=(0.0, 0.0, 0.0),
+        fsky::Real=1.0,            # sky fraction of the catalog: 1.0 full-sky, 1/8 for one octant
         nsub_integral::Int=10,
         verbose::Bool=false)
 
@@ -149,8 +150,8 @@ function build_abundance_table(halos::AbstractVector, cosmo::CosmologyParams, pk
             z_mid = chi_to_z(chi2z, r_mid)
             D_z = growth_factor(z_mid, cosmo)
 
-            # Shell volume (full sky)
-            dV = (4π/3.0) * (r_hi^3 - r_lo^3)
+            # Shell volume × sky fraction (fsky=1/8 for a single octant catalog)
+            dV = fsky * (4π/3.0) * (r_hi^3 - r_lo^3)
 
             # σ(M, z) = D(z) × σ(M, z=0)
             sigma_cent_z = sigma_cent .* D_z

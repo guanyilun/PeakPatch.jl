@@ -151,6 +151,10 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     chi2z = ievol == 1 ? build_chi_to_z(cosmo; z_max=z_max + 1.0) : nothing
 
     verbose && @info "Phase 0: N=$N, box=$(round(boxsize_full;digits=2)), ntile=$ntile, nsub=$nsub, nmesh=$nmesh, fcrit=$fcrit_val$(ievol == 1 ? ", lightcone mode" : "")"
+    # UNITS GUARD: the pipeline is Mpc/h throughout (chi(z) uses H0=100h). Print cellsize/box
+    # in BOTH Mpc/h and Mpc so a Fortran/Websky (Mpc) vs Julia (Mpc/h) mixup is visible at a glance.
+    # To match a Fortran/Websky box of L Mpc, set boxsize = L*h (e.g. Websky 7700 Mpc -> 5236 Mpc/h).
+    verbose && @info "  Units (Mpc/h pipeline): cellsize=$(round(alatt;digits=4)) Mpc/h (=$(round(alatt/cosmo.h;digits=4)) Mpc), full box=$(round(boxsize_full;digits=1)) Mpc/h (=$(round(boxsize_full/cosmo.h;digits=1)) Mpc)"
 
     # ---- Phase 1: Field generation on full grid ----
     pk = load_pk(cfg.pkfile)
@@ -486,6 +490,8 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     chi2z = ievol == 1 ? build_chi_to_z(cosmo; z_max=z_max + 1.0) : nothing
 
     verbose && @info "Phase 0 (lowmem): N=$N, box=$(round(boxsize_full;digits=2)), ntile=$ntile, nsub=$nsub, nmesh=$nmesh$(ievol == 1 ? ", lightcone mode" : "")"
+    # UNITS GUARD (see run_multitile): pipeline is Mpc/h. To match a Fortran/Websky box of L Mpc, boxsize = L*h.
+    verbose && @info "  Units (Mpc/h pipeline): cellsize=$(round(alatt;digits=4)) Mpc/h (=$(round(alatt/cosmo.h;digits=4)) Mpc), full box=$(round(boxsize_full;digits=1)) Mpc/h (=$(round(boxsize_full/cosmo.h;digits=1)) Mpc)"
 
     # ---- Build tile list ----
     tile_ids = NTuple{3,Int}[]

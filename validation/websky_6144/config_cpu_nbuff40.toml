@@ -1,0 +1,46 @@
+# CPU large-nbuff confirmation test. Same box/seed/filters as config_ab_test.toml
+# (N=256, cellsize 1.25326, box 320.8 Mpc/h, z=0), but nbuff 24->40 so the nhunt
+# cap rises 28.8 -> 48.9 Mpc/h (well above the ~30 Mpc/h max-halo collapse radius).
+# CPU shell analysis has no _MAX_SHELLS_GPU=512 limit. If the fake-giant high-mass
+# bump vanishes vs the nbuff=24 A/B, the cap is confirmed as the cause.
+#   ntile=4, nbuff=40, nsub=(256-80)/4=44, nmesh=124, M=4*4=16 (256/16=16) OK
+#   nhunt = min(39, 47) = 39 cells = 48.9 Mpc/h
+
+[cosmology]
+Om   = 0.31
+OB   = 0.049
+OL   = 0.69
+h    = 0.68
+
+[grid]
+n       = 124
+boxsize = 155.4042
+nbuff   = 40
+cenx    = 0.0
+ceny    = 0.0
+cenz    = 0.0
+
+[run]
+z_out     = 0.0
+z_max     = 4.6
+ievol     = 0
+ilpt      = 2
+ioutshear = 1
+wsmooth   = 1
+rmax2rs   = 0.0
+NonGauss  = 0
+fNL       = 0.0
+seed      = 13579
+ntile     = 4
+coarse_factor = 4
+generate_table = false
+
+[files]
+pk         = "validation/websky_6144/data/pk_websky.dat"
+filterbank = "validation/websky_6144/data/filters_websky.dat"
+homeltab   = "validation/websky_6144/data/HomelTab_websky.dat"
+output     = "cpu_nbuff40.pksc"
+
+[output]
+format = "pksc"
+path   = "/home/yguan/scratch/websky_6144/ab_test"
