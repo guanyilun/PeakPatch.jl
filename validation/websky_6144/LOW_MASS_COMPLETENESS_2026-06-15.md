@@ -1,5 +1,15 @@
 # The Websky low-mass count deficit (2026-06-15)
 
+> ✅✅ **FINAL: FULL-RANGE MATCH CONFIRMED (2026-06-24, job 4033130).** With BOTH fixes —
+> finecell catalog (cellsize 0.852 Mpc/h, fixes M<3e12) + abundance matching (Tinker, Om=0.31,
+> obs=-2618, fixes M>3e12) — our catalog matches Websky to ~1% across the ENTIRE mass range:
+> finecell+AM/Websky cumulative N(>M)/deg² = 1.23e12:1.01, 1.69e12:1.01, 3e12:1.00, 5e12:1.00,
+> 1e13:1.00, 3e13:1.02, 1e14:1.01, 3e14:0.93 (rare-cluster noise). Absolute totals also match
+> (N(>1.69e12)=5.08e7/octant vs Websky ~5.09e7). The original ~2× deficit = finecell (resolution)
+> × missing AM (mass calibration); fix both → Websky reproduced. Catalog:
+> `catalog_websky_6144_oct000_finecell_AM.pksc`. Investigation CLOSED.
+
+
 > 🎯 **ROOT CAUSE of the sub-3e12 residual: a FACTOR-of-h cellsize error.** Our run used
 > box=7700 **Mpc/h** (cellsize 1.2533 Mpc/h); Websky's (7.7 Gpc)³ = 7700 **Mpc** (cellsize
 > 1.2533 Mpc = **0.852 Mpc/h**). We ran **1/h = 1.47× COARSER**, so our resolution mass floor is

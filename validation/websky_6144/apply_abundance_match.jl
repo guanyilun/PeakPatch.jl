@@ -11,7 +11,11 @@
 using PeakPatch, Printf
 const D = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"
 
-cat = joinpath(D, "catalog_websky_6144_oct000_pkfix.pksc")
+# ARGS: [1]=input catalog, [2]=output catalog, [3]=observer offset (Mpc/h, per axis).
+# Defaults = old coarse pkfix octant (obs -3850). For finecell octant pass obs -2618.
+cat     = length(ARGS) >= 1 ? ARGS[1] : joinpath(D, "catalog_websky_6144_oct000_pkfix.pksc")
+out     = length(ARGS) >= 2 ? ARGS[2] : joinpath(D, "catalog_websky_6144_oct000_pkfix_AM.pksc")
+obs_off = length(ARGS) >= 3 ? parse(Float64, ARGS[3]) : -3850.0
 @info "reading catalog..." cat
 halos, RTHLmax, z_out = read_pksc(cat)
 @info "read" n=length(halos)
@@ -20,7 +24,7 @@ halos, RTHLmax, z_out = read_pksc(cat)
 # (Was previously 0.31+0.049=0.359 — wrong; double-counted baryons, corrupting rho_mean/D(z)/volumes.)
 cosmo = CosmologyParams(0.31, 0.049, 0.69, 0.68, 0.965, 0.81)
 pk = PeakPatch.PowerSpectrum.load_pk(joinpath(@__DIR__, "data", "pk_websky_RAW_unnormalized.dat"))
-obs = (-3850.0, -3850.0, -3850.0)
+obs = (obs_off, obs_off, obs_off)
 rho_m = 2.775e11 * 0.31
 
 NgtM(hs, M0) = count(h -> (4π/3)*rho_m*Float64(h.RTHL)^3 > M0, hs)
@@ -41,7 +45,6 @@ report("AFTER AM (Tinker)", halos_am)
 @printf("\nReference: Websky N(>1.7e12) = 1.1e8/octant ; ST theory = 5.6e7 ; Tinker theory ~1.1e8\n")
 
 # write the AM'd catalog
-out = joinpath(D, "catalog_websky_6144_oct000_pkfix_AM.pksc")
 Rmax = isempty(halos_am) ? 0f0 : maximum(h.RTHL for h in halos_am)
 write_pksc(out, halos_am, Float32(Rmax), Float32(z_out))
 @info "wrote AM catalog" out

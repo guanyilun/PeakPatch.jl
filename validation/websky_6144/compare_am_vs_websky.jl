@@ -43,9 +43,12 @@ Mw = websky_masses("/home/yguan/scratch/websky_6144/websky_ref/halos_10x10.pksc"
 patch_deg2 = 100.0
 
 @info "streaming RAW octant..."
-Mraw = stream_masses(joinpath(D,"catalog_websky_6144_oct000_pkfix.pksc"))
+# ARGS: [1]=raw octant catalog, [2]=AM octant catalog (default = old coarse pkfix pair)
+raw_cat = length(ARGS) >= 1 ? ARGS[1] : joinpath(D,"catalog_websky_6144_oct000_pkfix.pksc")
+am_cat  = length(ARGS) >= 2 ? ARGS[2] : joinpath(D,"catalog_websky_6144_oct000_pkfix_AM.pksc")
+Mraw = stream_masses(raw_cat)
 @info "streaming AM octant..."
-Mam  = stream_masses(joinpath(D,"catalog_websky_6144_oct000_pkfix_AM.pksc"))
+Mam  = stream_masses(am_cat)
 oct_deg2 = 41253.0/8
 
 NgtM(M,M0)=count(>(M0),M)
