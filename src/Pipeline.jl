@@ -253,21 +253,22 @@ function run_tile(cfg::PipelineConfig; seed::Integer=42, verbose::Bool=false,
             continue
         end
 
-        # Per-peak growth factor and velocity scaling
+        # Per-peak growth factor and DISPLACEMENT scaling (Mpc/h). Eulerian position + km/s
+        # velocity (merge_pkvd) is done by finalize_eulerian.
         a_pk = 1.0 / ZZon_vec[idx]
-        _, _, D_pk = Dlinear_ab(a_pk, growth_tables)
+        D_pk, _, _ = Dlinear_ab(a_pk, growth_tables)   # 1st return = D (growth factor); was D/a (3rd) — bug
 
         peak = all_peaks[idx]
         Rf = peak_Rf[idx]
         RTHL_phys = Float32(result.RTHL * alatt)
 
-        # 1LPT velocity: Sbar × D(z_peak)
+        # 1LPT displacement: Sbar × D(z_peak)
         Sbar_vel = result.Sbar .* D_pk
 
-        # 2LPT velocity
+        # 2LPT displacement
         Sbar2_vel = if psi2_x !== nothing
             Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
-            result.Sbar2 .* (-(-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2))
+            result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)   # -3/7 matches Fortran; was +3/7 (sign bug)
         else
             @SVector zeros(3)
         end

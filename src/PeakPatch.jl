@@ -49,7 +49,7 @@ using .CollapseTable: CollapseTableParams, CollapseTableInterp,
     write_homeltab, read_homeltab, interpolate
 using .Exclusion: SpatialHash, build_hash, sphere_overlap,
     lagrangian_exclusion!, volume_reduction!
-using .Merger: merge_catalog
+using .Merger: merge_catalog, finalize_eulerian
 using .MassFunction: rho_mean, R_of_M, M_of_R, sigma_R, sigma_M,
     dlnsigma_dlnM, tinker_dndlnM, sheth_tormen_dndlnM,
     cumulative_ngtm, precompute_sigma
@@ -399,7 +399,7 @@ export
     CollapseTableParams, CollapseTableInterp,
     make_table, make_table_threaded,
     write_homeltab, read_homeltab, interpolate,
-    sphere_overlap, merge_catalog,
+    sphere_overlap, merge_catalog, finalize_eulerian,
     rho_mean, R_of_M, M_of_R, sigma_R, sigma_M,
     dlnsigma_dlnM, tinker_dndlnM, sheth_tormen_dndlnM,
     cumulative_ngtm, precompute_sigma,

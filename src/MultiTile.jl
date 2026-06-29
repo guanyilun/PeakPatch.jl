@@ -351,9 +351,11 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                 continue
             end
 
-            # Per-peak growth factor and velocity scaling
+            # Per-peak growth factor and displacement scaling.
+            # Stores the 1LPT/2LPT DISPLACEMENT at the peak's redshift (Sbar in Mpc/h); the
+            # Eulerian position + km/s velocity conversion (merge_pkvd) is done by finalize_eulerian.
             a_pk = 1.0 / ZZon_tile[idx]
-            _, _, D_pk = Dlinear_ab(a_pk, growth_tables)
+            D_pk, _, _ = Dlinear_ab(a_pk, growth_tables)   # 1st return = D (growth factor); was D/a (3rd) — bug
 
             peak = peaks[idx]
             Rf = tile_Rfs[idx]
@@ -361,7 +363,7 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             Sbar_vel = result.Sbar .* D_pk
             Sbar2_vel = if psi2_x_full !== nothing
                 Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
-                result.Sbar2 .* (-(-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2))
+                result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)   # -3/7 matches Fortran; was +3/7 (sign bug)
             else
                 @SVector zeros(3)
             end
@@ -703,7 +705,7 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             end
 
             a_pk = 1.0 / ZZon_tile[idx]
-            _, _, D_pk = Dlinear_ab(a_pk, growth_tables)
+            D_pk, _, _ = Dlinear_ab(a_pk, growth_tables)   # 1st return = D (growth factor); was D/a (3rd) — bug
 
             peak = peaks[idx]
             Rf = tile_Rfs[idx]
@@ -711,7 +713,7 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             Sbar_vel = result.Sbar .* D_pk
             Sbar2_vel = if src2_k !== nothing
                 Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
-                result.Sbar2 .* (-(-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2))
+                result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)   # -3/7 matches Fortran; was +3/7 (sign bug)
             else
                 @SVector zeros(3)
             end

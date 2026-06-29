@@ -89,11 +89,19 @@ function main()
 
     @info "Pipeline complete" halos=length(halos) elapsed_min=round(elapsed/60; digits=1)
 
-    # ---- Merge ----
+    # ---- Merge (Lagrangian-space exclusion) ----
     if length(halos) > 1
         @info "Running merger (exclusion + volume reduction)..."
         halos = merge_catalog(halos; verbose=true)
         @info "After merge: $(length(halos)) halos"
+    end
+
+    # ---- Finalize: Eulerian positions + km/s peculiar velocities (merge_pkvd conversion) ----
+    if !isempty(halos)
+        @info "Finalizing (Eulerian position + km/s velocity)..."
+        cosmo_fin = CosmologyParams(cfg.Omx + cfg.OmB, cfg.OmB, cfg.Omvac, cfg.h, 0.965, 0.808)
+        obs_fin = (Float64(cfg.cenx), Float64(cfg.ceny), Float64(cfg.cenz))
+        halos = finalize_eulerian(halos, cosmo_fin, obs_fin; ievol=cfg.ievol, z_out=Float64(cfg.z_out))
     end
 
     # ---- Write output ----
