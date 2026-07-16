@@ -377,6 +377,20 @@ Defined in `ext/CUDAExt.jl` — requires `using CUDA`.
 """
 function set_cuda_device! end
 
+"""
+    paint_tile_field_gpu!(maps_d, p1x, p1y, p1z, p2x, p2y, p2z, rt_d, geometry...)
+
+Device-side field-matter painting of one tile (Phase B of docs/field_lightcone_plan.md):
+on-device 2LPT displacement + HEALPix RING pixelization + atomic accumulation into a
+device-resident (npix × nk) Float64 map. Method defined in ext/CUDAExt.jl.
+"""
+function paint_tile_field_gpu! end
+
+"Allocate device maps + radial table for GPU field painting. Method in ext/CUDAExt.jl."
+function fieldmap_gpu_alloc end
+"Download device field maps to a host Matrix. Method in ext/CUDAExt.jl."
+function fieldmap_gpu_collect end
+
 export
     CosmologyParams, E2, H, chi, growth_factor, growth_rate, delta_c,
     DlinearTables, Dlinear_tables, Dlinear_ab, Dfnofa,

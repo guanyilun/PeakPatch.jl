@@ -21,6 +21,39 @@ using ..Cosmology: chi_to_z
 
 export run_multitile_fieldmap
 
+"""
+    ang2pix_ring(nside, x, y, z) -> pixel index (1-based, RING ordering)
+
+HEALPix RING ang2pix for a direction vector (need not be normalized). Implemented from
+the published HEALPix algorithm (Górski et al. 2005); pure scalar code so it runs both
+on CPU and inside CUDA kernels (Phase-B GPU painting). Validated against Healpix.jl in
+`test_fieldmap_smoke.jl`.
+"""
+@inline function ang2pix_ring(nside::Integer, x::Real, y::Real, z::Real)
+    r = sqrt(x * x + y * y + z * z)
+    zn = z / r
+    za = abs(zn)
+    tt = mod(atan(y, x), 2π) * (2 / π)          # in [0,4)
+    if za <= 2 / 3
+        temp1 = nside * (0.5 + tt)
+        temp2 = nside * zn * 0.75
+        jp = floor(Int, temp1 - temp2)          # ascending edge line
+        jm = floor(Int, temp1 + temp2)          # descending edge line
+        ir = nside + 1 + jp - jm                # ring counted from z=2/3
+        kshift = 1 - (ir & 1)
+        ip = mod(div(jp + jm - nside + kshift + 1, 2), 4nside)
+        return 2nside * (nside - 1) + 4nside * (ir - 1) + ip + 1
+    else
+        tp = tt - floor(tt)
+        tmp = nside * sqrt(3 * (1 - za))
+        jp = floor(Int, tp * tmp)
+        jm = floor(Int, (1 - tp) * tmp)
+        ir = jp + jm + 1                        # ring counted from the nearest pole
+        ip = mod(floor(Int, tt * ir), 4ir)
+        return zn > 0 ? 2ir * (ir - 1) + ip + 1 : 12nside^2 - 2ir * (ir + 1) + ip + 1
+    end
+end
+
 @inline function _rt_lerp(tab::Vector{Float64}, r::Float64, inv_dr::Float64, n::Int)
     x = r * inv_dr + 1.0
     i = unsafe_trunc(Int, x)
@@ -121,16 +154,23 @@ Other kwargs mirror `run_multitile_split` (`ntile`, `seed`, `coarse_factor`,
 sub-cell splitting (Websky uses 5); `rmin` [Mpc/h] drops cells closer than this to the
 observer (their splitting would be hopeless anyway; default 2 cells).
 
+GPU painting (Phase B): `gpu_paint=true` with `nside` (and `npix == 12*nside^2`)
+pixelizes on-device — own RING `ang2pix_ring` + Float64 atomic adds into a
+device-resident map, no per-tile device→host ψ transfers, `vec2pix` not needed.
+Requires `use_gpu=true`; maps match the CPU path up to float rounding
+(cross-checked in `test_fieldmap_smoke.jl --gpu`).
+
 Requires `ievol == 1` (lightcone). Returns one accumulated Float64 map per kernel.
 """
 function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
-                                npix::Int, vec2pix, omega_pix::Float64=4π/npix,
+                                npix::Int, vec2pix=nothing, omega_pix::Float64=4π/npix,
                                 kernels::Vector{Symbol}=[:kappa, :mass],
                                 chi_star::Float64=0.0, subdiv_max::Int=3,
                                 rmin::Float64=0.0,
                                 coarse_factor::Int=0, coarse_grid::Int=0,
                                 use_gpu::Bool=false,
                                 devices::Union{Nothing,AbstractVector{Int}}=nothing,
+                                gpu_paint::Bool=false, nside::Int=0,
                                 verbose::Bool=false)
     cfg.ievol == 1 || error("run_multitile_fieldmap requires ievol=1 (lightcone mode)")
     if use_gpu
@@ -139,6 +179,14 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
     end
     if devices !== nothing && !isempty(devices)
         use_gpu || error("devices=$devices requires use_gpu=true")
+    end
+    if gpu_paint
+        # Phase B: on-device RING pixelization + atomic accumulation (ext/CUDAExt.jl).
+        use_gpu || error("gpu_paint=true requires use_gpu=true")
+        nside > 0 || error("gpu_paint=true requires nside")
+        npix == 12 * nside^2 || error("gpu_paint: npix must be 12*nside^2 (full-sky RING)")
+    else
+        vec2pix === nothing && error("vec2pix is required unless gpu_paint=true")
     end
     n_workers = (use_gpu && devices !== nothing && length(devices) >= 1) ? length(devices) : 1
 
@@ -195,6 +243,16 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
         end
     end
 
+    # Radial table as a matrix for the GPU painter: columns D, coef2, then weights
+    rtM = Matrix{Float64}(undef, 0, 0)
+    if gpu_paint
+        rtM = Matrix{Float64}(undef, nrt, 2 + length(kernels))
+        rtM[:, 1] = rt_D; rtM[:, 2] = rt_c2
+        for ik in eachindex(kernels)
+            rtM[:, 2+ik] = rt_w[ik]
+        end
+    end
+
     # ---- Coarse fields (Phase 1a; same as run_multitile_split, minus 2LPT/laplacian) ----
     if coarse_grid > 0
         M = coarse_grid
@@ -244,14 +302,18 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
     end
     verbose && @info "fieldmap: $(length(tile_ids)) tiles inside z_max horizon"
 
-    # ---- Per-tile work: Phase-1 fields, download to host, paint core cells ----
-    process_tile_field! = function (ti::Int, tid::NTuple{3,Int}, maps::Vector{Vector{Float64}})
+    # ---- Per-tile work: Phase-1 fields, then paint core cells (host or device) ----
+    # `acc` is a Vector{Vector{Float64}} of per-kernel host maps (CPU pixelization), or a
+    # NamedTuple (maps_d, rt_d) of device arrays (gpu_paint).
+    process_tile_field! = function (ti::Int, tid::NTuple{3,Int}, acc)
         it, jt, kt = tid
         residual = _generate_extended_residual(it, jt, kt, nsub, nmesh, N, seed,
                                                 coarse_noise, M, 0)
         delta_tile = nothing
         psi_host = Vector{Array{Float32,3}}(undef, 3)
         psi2_host = nothing
+        psi_dev = nothing
+        psi2_dev = nothing
         if use_gpu
             fn_multi = getglobal(_pp_parent(), :isolated_convolve_gpu_multi)
             outs = fn_multi(residual, pk, boxsize_local, nmesh;
@@ -262,23 +324,32 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
             delta_tile = delta_self .+ fn_interp(delta_coarse, it, jt, kt, nsub, nmesh, N, M;
                                                   return_device=true)
             delta_self = nothing
+            psi_dev = Vector{Any}(undef, 3)
             for dim in 1:3
                 psi_long = fn_interp(psi_coarse[dim], it, jt, kt, nsub, nmesh, N, M;
                                       return_device=true)
-                psi_dev = outs[dim+1] .+ psi_long
-                psi_host[dim] = Array(psi_dev)
-                psi_dev = nothing; psi_long = nothing
+                psi_dev[dim] = outs[dim+1] .+ psi_long
+                psi_long = nothing
             end
             if ilpt >= 2
                 fn2 = getglobal(_pp_parent(), :compute_2lpt_gpu)
                 psi2_dev = fn2(delta_tile, nmesh, boxsize_local; return_device=true)
-                psi2_host = Vector{Array{Float32,3}}(undef, 3)
-                for dim in 1:3
-                    psi2_host[dim] = Array(psi2_dev[dim])
-                end
-                psi2_dev = nothing
             end
             delta_tile = nothing
+            if !gpu_paint
+                for dim in 1:3
+                    psi_host[dim] = Array(psi_dev[dim])
+                    psi_dev[dim] = nothing
+                end
+                psi_dev = nothing
+                if psi2_dev !== nothing
+                    psi2_host = Vector{Array{Float32,3}}(undef, 3)
+                    for dim in 1:3
+                        psi2_host[dim] = Array(psi2_dev[dim])
+                    end
+                    psi2_dev = nothing
+                end
+            end
         else
             delta_self = _isolated_convolve_dispatch(false, residual, pk,
                                                       boxsize_local, nmesh, 0, 0, 0)
@@ -318,14 +389,43 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
         residual = nothing
 
         xbx, ybx, zbx = tile_center(it, jt, kt, ntile, dcore_box)
-        _paint_tile_field!(maps, psi_host[1], psi_host[2], psi_host[3],
-                           psi2_host === nothing ? nothing : psi2_host[1],
-                           psi2_host === nothing ? nothing : psi2_host[2],
-                           psi2_host === nothing ? nothing : psi2_host[3],
-                           nmesh, nbuff, alatt, xbx, ybx, zbx, obs, rmin_eff, chi_max,
-                           inv_dr, nrt, rt_D, rt_c2, rt_w, theta_pix, subdiv_max, vec2pix)
+        if gpu_paint
+            fnp = getglobal(_pp_parent(), :paint_tile_field_gpu!)
+            has2 = psi2_dev !== nothing
+            p2 = has2 ? psi2_dev : psi_dev
+            fnp(acc.maps_d, psi_dev[1], psi_dev[2], psi_dev[3], p2[1], p2[2], p2[3],
+                acc.rt_d, nmesh, nbuff, alatt, xbx, ybx, zbx, obs, rmin_eff, chi_max,
+                inv_dr, nrt, theta_pix, subdiv_max, nside, length(kernels), has2)
+            psi_dev = nothing; psi2_dev = nothing
+        else
+            _paint_tile_field!(acc, psi_host[1], psi_host[2], psi_host[3],
+                               psi2_host === nothing ? nothing : psi2_host[1],
+                               psi2_host === nothing ? nothing : psi2_host[2],
+                               psi2_host === nothing ? nothing : psi2_host[3],
+                               nmesh, nbuff, alatt, xbx, ybx, zbx, obs, rmin_eff, chi_max,
+                               inv_dr, nrt, rt_D, rt_c2, rt_w, theta_pix, subdiv_max, vec2pix)
+        end
         verbose && @info "  fieldmap tile $ti/$(length(tile_ids)) ($it,$jt,$kt) painted"
         return nothing
+    end
+
+    _make_acc = function ()
+        if gpu_paint
+            alloc = getglobal(_pp_parent(), :fieldmap_gpu_alloc)
+            maps_d, rt_d = alloc(npix, length(kernels), rtM)
+            (maps_d=maps_d, rt_d=rt_d)
+        else
+            [zeros(Float64, npix) for _ in kernels]
+        end
+    end
+    _collect_acc = function (acc)
+        if gpu_paint
+            coll = getglobal(_pp_parent(), :fieldmap_gpu_collect)
+            Mh = coll(acc.maps_d)
+            [Mh[:, ik] for ik in 1:length(kernels)]
+        else
+            acc
+        end
     end
 
     # ---- Dispatch (mirrors run_multitile_split worker pattern) ----
@@ -339,21 +439,21 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
             t = Threads.@spawn begin
                 set_dev = getglobal(_pp_parent(), :set_cuda_device!)
                 set_dev(my_device)
-                my_maps = [zeros(Float64, npix) for _ in kernels]
+                my_acc = _make_acc()
                 for idx in my_indices
-                    process_tile_field!(idx, tile_ids[idx], my_maps)
+                    process_tile_field!(idx, tile_ids[idx], my_acc)
                 end
-                worker_maps[wid] = my_maps
+                worker_maps[wid] = _collect_acc(my_acc)
             end
             push!(tasks, t)
         end
         foreach(wait, tasks)
     else
-        my_maps = [zeros(Float64, npix) for _ in kernels]
+        my_acc = _make_acc()
         for (ti, tid) in enumerate(tile_ids)
-            process_tile_field!(ti, tid, my_maps)
+            process_tile_field!(ti, tid, my_acc)
         end
-        worker_maps[1] = my_maps
+        worker_maps[1] = _collect_acc(my_acc)
     end
 
     out = Dict{Symbol,Vector{Float64}}()

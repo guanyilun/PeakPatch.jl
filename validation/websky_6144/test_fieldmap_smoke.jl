@@ -4,7 +4,7 @@
 #        (2) mean κ: map mean == (Ω_octant/4π)·∫W_κ dχ analytically (grid-quantized),
 #        (3) pixel bookkeeping sanity (all mass lands in the observer's octant of sky).
 # Usage: julia --project=. -t 4 validation/websky_6144/test_fieldmap_smoke.jl [--gpu]
-using PeakPatch, Healpix, Printf, Statistics
+using PeakPatch, Healpix, Printf, Statistics, Random
 import PeakPatch.Cosmology: CosmologyParams, build_chi_to_z, chi_to_z, chi
 
 const USE_GPU = "--gpu" in ARGS
@@ -32,6 +32,15 @@ cfg = PipelineConfig(config)
 nside = 64; res = Resolution(nside); npix = nside2npix(nside)
 v2p = (x, y, z) -> Healpix.vec2pixRing(res, x, y, z)
 
+# ---- ang2pix_ring (own implementation, used by the GPU painter) vs Healpix.jl ----
+let a2p = PeakPatch.MultiResolution.ang2pix_ring, rng = Random.MersenneTwister(7), nbad = 0
+    for _ in 1:200_000
+        x = randn(rng); y = randn(rng); z = randn(rng)
+        a2p(nside, x, y, z) == Healpix.vec2pixRing(res, x, y, z) || (nbad += 1)
+    end
+    @printf("ang2pix_ring vs Healpix.jl: %d/200000 mismatches (exact-boundary ties only)\n", nbad)
+end
+
 @info "running fieldmap (subdiv_max=1: exact bookkeeping)..." N ntile use_gpu=USE_GPU
 maps = run_multitile_fieldmap(cfg; ntile=ntile, seed=12345, npix=npix, vec2pix=v2p,
                               kernels=[:kappa, :mass], subdiv_max=1,
@@ -42,6 +51,26 @@ maps3 = run_multitile_fieldmap(cfg; ntile=ntile, seed=12345, npix=npix, vec2pix=
                                kernels=[:kappa, :mass], subdiv_max=3,
                                use_gpu=USE_GPU, devices=USE_GPU ? [0] : nothing,
                                verbose=false)
+
+# ---- Phase B cross-check: on-device painting (gpu_paint) vs CPU pixelization ----
+# Non-fatal: reports and continues so a Phase-B regression never blocks the octant job.
+if USE_GPU
+    @info "running fieldmap (gpu_paint=true: device RING pixelization)..."
+    try
+        mapsg = run_multitile_fieldmap(cfg; ntile=ntile, seed=12345, npix=npix,
+                                       kernels=[:kappa, :mass], subdiv_max=3,
+                                       use_gpu=true, devices=[0],
+                                       gpu_paint=true, nside=nside, verbose=false)
+        mr = sum(mapsg[:mass]) / sum(maps3[:mass])
+        kr = sum(mapsg[:kappa]) / sum(maps3[:kappa])
+        dk = maximum(abs.(mapsg[:kappa] .- maps3[:kappa])) / maximum(maps3[:kappa])
+        ndiff = count(abs.(mapsg[:mass] .- maps3[:mass]) .> 1e-6 .* maximum(maps3[:mass]))
+        @printf("gpu_paint vs cpu: mass ratio=%.8f  kappa ratio=%.8f  max|dkappa|/max=%.2e  npix-diff=%d\n",
+                mr, kr, dk, ndiff)
+    catch err
+        @error "gpu_paint cross-check FAILED (non-fatal)" exception=(err, catch_backtrace())
+    end
+end
 
 # ---- expected cell count / mass ----
 cosmo = CosmologyParams(0.31, 0.049, 0.69, 0.68, 0.965, 0.808)

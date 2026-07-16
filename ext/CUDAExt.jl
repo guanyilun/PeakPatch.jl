@@ -3376,4 +3376,100 @@ function PeakPatch.set_cuda_device!(id::Int)
     return nothing
 end
 
+# ============================================================
+# Field-matter lightcone painting (Phase B of docs/field_lightcone_plan.md):
+# on-device 2LPT displacement + HEALPix RING pixelization + atomic map
+# accumulation. One thread per core cell; each thread handles its own
+# sub-cell splitting loop. Maps are device-resident Float64 (npix × nk);
+# atomics on Float64 are supported on sm_60+.
+# ============================================================
+
+import PeakPatch.MultiResolution: ang2pix_ring
+
+function _fieldmap_paint_kernel!(maps, p1x, p1y, p1z, p2x, p2y, p2z, rt,
+                                 nmesh::Int, nbuff::Int, alatt::Float64,
+                                 xbx::Float64, ybx::Float64, zbx::Float64,
+                                 ox::Float64, oy::Float64, oz::Float64,
+                                 rmin::Float64, chimax::Float64, inv_dr::Float64,
+                                 nrt::Int, theta_pix::Float64, subdiv_max::Int,
+                                 nside::Int, nk::Int, has2::Bool)
+    ncore = nmesh - 2 * nbuff
+    idx = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    idx > ncore * ncore * ncore && return nothing
+    t = idx - 1
+    i = nbuff + 1 + t % ncore
+    j = nbuff + 1 + (t ÷ ncore) % ncore
+    k = nbuff + 1 + t ÷ (ncore * ncore)
+    cen = 0.5 * (nmesh + 1)
+    qx = xbx + alatt * (i - cen)
+    qy = ybx + alatt * (j - cen)
+    qz = zbx + alatt * (k - cen)
+    dqx = qx - ox; dqy = qy - oy; dqz = qz - oz
+    rq = sqrt(dqx * dqx + dqy * dqy + dqz * dqz)
+    (rmin <= rq <= chimax) || return nothing
+    @inbounds begin
+        s1x = Float64(p1x[i, j, k]); s1y = Float64(p1y[i, j, k]); s1z = Float64(p1z[i, j, k])
+        s2x = 0.0; s2y = 0.0; s2z = 0.0
+        if has2
+            s2x = Float64(p2x[i, j, k]); s2y = Float64(p2y[i, j, k]); s2z = Float64(p2z[i, j, k])
+        end
+        ns = min(subdiv_max, max(1, ceil(Int, (alatt / rq) / theta_pix)))
+        wsub = 1.0 / (ns * ns * ns)
+        for c3 in 1:ns, c2i in 1:ns, c1 in 1:ns
+            qsx = qx + ((c1 - 0.5) / ns - 0.5) * alatt
+            qsy = qy + ((c2i - 0.5) / ns - 0.5) * alatt
+            qsz = qz + ((c3 - 0.5) / ns - 0.5) * alatt
+            dsx = qsx - ox; dsy = qsy - oy; dsz = qsz - oz
+            rqs = sqrt(dsx * dsx + dsy * dsy + dsz * dsz)
+            (rmin <= rqs <= chimax) || continue
+            xr = rqs * inv_dr + 1.0
+            ii = unsafe_trunc(Int, xr)
+            ii = ii < 1 ? 1 : (ii > nrt - 1 ? nrt - 1 : ii)
+            tt = xr - ii
+            D  = rt[ii, 1] * (1.0 - tt) + rt[ii+1, 1] * tt
+            c2 = rt[ii, 2] * (1.0 - tt) + rt[ii+1, 2] * tt
+            ex = qsx + D * s1x + c2 * s2x - ox
+            ey = qsy + D * s1y + c2 * s2y - oy
+            ez = qsz + D * s1z + c2 * s2z - oz
+            pix = ang2pix_ring(nside, ex, ey, ez)
+            for ik in 1:nk
+                w = (rt[ii, 2+ik] * (1.0 - tt) + rt[ii+1, 2+ik] * tt) * wsub
+                CUDA.@atomic maps[pix, ik] += w
+            end
+        end
+    end
+    return nothing
+end
+
+# Allocation/collection helpers so src/FieldMap.jl never touches CUDA types.
+PeakPatch.fieldmap_gpu_alloc(npix::Int, nk::Int, rtM::Matrix{Float64}) =
+    (CUDA.zeros(Float64, npix, nk), CuArray(rtM))
+PeakPatch.fieldmap_gpu_collect(maps_d::CuArray{Float64,2}) = Array(maps_d)
+
+"""
+    paint_tile_field_gpu!(maps_d, p1x, p1y, p1z, p2x, p2y, p2z, rt_d, ...)
+
+Device-side painting of one tile's core cells into `maps_d` (npix × nk Float64
+CuArray, RING ordering). `rt_d` is the radial factor table (nrt × (2+nk):
+columns D, coef2, then one weight column per kernel). When `has2=false` the
+`p2*` arguments are ignored (pass the `p1*` arrays as placeholders).
+"""
+function PeakPatch.paint_tile_field_gpu!(maps_d::CuArray{Float64,2},
+        p1x::CuArray{Float32,3}, p1y::CuArray{Float32,3}, p1z::CuArray{Float32,3},
+        p2x::CuArray{Float32,3}, p2y::CuArray{Float32,3}, p2z::CuArray{Float32,3},
+        rt_d::CuArray{Float64,2}, nmesh::Int, nbuff::Int, alatt::Float64,
+        xbx::Float64, ybx::Float64, zbx::Float64, obs::NTuple{3,Float64},
+        rmin::Float64, chimax::Float64, inv_dr::Float64, nrt::Int,
+        theta_pix::Float64, subdiv_max::Int, nside::Int, nk::Int, has2::Bool)
+    ncore = nmesh - 2 * nbuff
+    ntot = ncore^3
+    threads = 256
+    @cuda threads=threads blocks=cld(ntot, threads) _fieldmap_paint_kernel!(
+        maps_d, p1x, p1y, p1z, p2x, p2y, p2z, rt_d, nmesh, nbuff, alatt,
+        xbx, ybx, zbx, obs[1], obs[2], obs[3], rmin, chimax, inv_dr, nrt,
+        theta_pix, subdiv_max, nside, nk, has2)
+    CUDA.synchronize()
+    return nothing
+end
+
 end # module CUDAExt
