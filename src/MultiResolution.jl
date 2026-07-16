@@ -1364,4 +1364,6 @@ function _rms_frac(a, b)
     return rms_a > 0 ? rms_diff / rms_a : 0.0
 end
 
+include("FieldMap.jl")
+
 end # module MultiResolution

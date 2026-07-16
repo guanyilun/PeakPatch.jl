@@ -57,7 +57,7 @@ using .AbundanceMatch: AbundanceTable, build_abundance_table,
     abundance_match, save_abundance_table, load_abundance_table
 using .Pipeline: run_tile
 using .MultiTile: run_multitile, run_multitile_lowmem, extract_tile, tile_center
-using .MultiResolution: run_multitile_split, compare_fields_split
+using .MultiResolution: run_multitile_split, compare_fields_split, run_multitile_fieldmap
 using .ShellAnalysisGPU: ShellTables, build_shell_tables, analyse_peak_gpu
 
 # MPI extension stub — method defined in ext/MPIExt.jl when MPI+PencilFFTs are loaded
@@ -407,7 +407,7 @@ export
     abundance_match, save_abundance_table, load_abundance_table,
     run_tile,
     run_multitile, run_multitile_lowmem, extract_tile, tile_center,
-    run_multitile_split, compare_fields_split,
+    run_multitile_split, compare_fields_split, run_multitile_fieldmap,
     run_multitile_mpi,
     write_catalog_hdf5,
     shell_fbar_gather_gpu,
