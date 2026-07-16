@@ -177,11 +177,12 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
         r = (irt - 1) * rt_dr
         z = chi_to_z(chi2z, r)
         a = 1.0 / (1.0 + z)
-        _, _, D = Dlinear_ab(a, growth_tables)
-        # 2LPT coefficient: copied from the halo record packing (MultiResolution.jl)
+        D, _, _ = Dlinear_ab(a, growth_tables)   # 1st return = D (growth factor); 3rd is D/a
+        # 2LPT coefficient: FIXED convention (MultiTile.jl post-95f04a1): -3/7, true D.
+        # (MultiResolution's packing carried the pre-fix +3/7 and D/a — do not copy it.)
         Om_a = cosmo.Om * a^3 / (cosmo.Om * a^3 + cosmo.OL)
         rt_D[irt]  = D
-        rt_c2[irt] = ilpt >= 2 ? (3.0 / 7.0) * Om_a^(-1.0 / 143) * D^2 : 0.0
+        rt_c2[irt] = ilpt >= 2 ? (-3.0 / 7.0) * Om_a^(-1.0 / 143) * D^2 : 0.0
         for (ik, kern) in enumerate(kernels)
             rt_w[ik][irt] = if kern === :mass
                 rho_m * alatt^3
