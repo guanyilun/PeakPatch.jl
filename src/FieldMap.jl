@@ -150,7 +150,9 @@ Kernels (per-cell pixel contribution, lengths in Mpc/h):
   pass Websky's 9656 (=14.2 Gpc × h) to match their hardwired value.
 
 Other kwargs mirror `run_multitile_split` (`ntile`, `seed`, `coarse_factor`,
-`coarse_grid`, `use_gpu`, `devices`, `verbose`). `subdiv_max` caps the per-dimension
+`coarse_grid`, `use_gpu`, `devices`, `verbose`). `cpu_workers` spreads the tile loop
+over that many CPU tasks when not using GPU devices (also lets the smoke test cover
+the multi-worker dispatch without a GPU). `subdiv_max` caps the per-dimension
 sub-cell splitting (Websky uses 5); `rmin` [Mpc/h] drops cells closer than this to the
 observer (their splitting would be hopeless anyway; default 2 cells).
 
@@ -171,6 +173,7 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
                                 use_gpu::Bool=false,
                                 devices::Union{Nothing,AbstractVector{Int}}=nothing,
                                 gpu_paint::Bool=false, nside::Int=0,
+                                cpu_workers::Int=1,
                                 verbose::Bool=false)
     cfg.ievol == 1 || error("run_multitile_fieldmap requires ievol=1 (lightcone mode)")
     if use_gpu
@@ -188,7 +191,12 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
     else
         vec2pix === nothing && error("vec2pix is required unless gpu_paint=true")
     end
-    n_workers = (use_gpu && devices !== nothing && length(devices) >= 1) ? length(devices) : 1
+    n_workers = if use_gpu && devices !== nothing && length(devices) >= 1
+        length(devices)
+    else
+        gpu_paint && cpu_workers > 1 && error("cpu_workers > 1 requires gpu_paint=false")
+        max(1, cpu_workers)
+    end
 
     # ---- Geometry (identical to run_multitile_split) ----
     nmesh = cfg.n
@@ -435,15 +443,21 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
         tasks = Task[]
         for wid in 1:n_workers
             my_indices = [i for i in 1:length(tile_ids) if wid_of[i] == wid]
-            my_device = devices[wid]
+            my_device = (use_gpu && devices !== nothing) ? devices[wid] : -1
             t = Threads.@spawn begin
-                set_dev = getglobal(_pp_parent(), :set_cuda_device!)
-                set_dev(my_device)
-                my_acc = _make_acc()
-                for idx in my_indices
-                    process_tile_field!(idx, tile_ids[idx], my_acc)
+                if my_device >= 0
+                    set_dev = getglobal(_pp_parent(), :set_cuda_device!)
+                    set_dev(my_device)
                 end
-                worker_maps[wid] = _collect_acc(my_acc)
+                # `wacc` must not be assigned anywhere else in this function: a name
+                # shared with the enclosing scope is captured by ALL worker closures
+                # as one boxed variable, so every worker paints into the same map and
+                # the reduction below self-adds it (2^(n_workers-1)× inflation).
+                local wacc = _make_acc()
+                for idx in my_indices
+                    process_tile_field!(idx, tile_ids[idx], wacc)
+                end
+                worker_maps[wid] = _collect_acc(wacc)
             end
             push!(tasks, t)
         end
@@ -458,8 +472,10 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
 
     out = Dict{Symbol,Vector{Float64}}()
     for (ik, kern) in enumerate(kernels)
-        total = worker_maps[1][ik]
+        total = copy(worker_maps[1][ik])
         for wid in 2:n_workers
+            worker_maps[wid][ik] === worker_maps[1][ik] &&
+                error("fieldmap: worker accumulators alias each other")
             total .+= worker_maps[wid][ik]
         end
         out[kern] = total

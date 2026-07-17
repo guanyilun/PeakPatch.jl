@@ -52,6 +52,16 @@ maps3 = run_multitile_fieldmap(cfg; ntile=ntile, seed=12345, npix=npix, vec2pix=
                                use_gpu=USE_GPU, devices=USE_GPU ? [0] : nothing,
                                verbose=false)
 
+# ---- Multi-worker dispatch: 4 CPU workers must reproduce the single-worker maps ----
+# (Painted totals are psi-independent, so sums must match to summation-order roundoff.
+#  Guards against shared/aliased worker accumulators: job 4280770 painted 2^(n-1)=8x.)
+@info "running fieldmap (cpu_workers=4: multi-worker dispatch)..."
+maps4 = run_multitile_fieldmap(cfg; ntile=ntile, seed=12345, npix=npix, vec2pix=v2p,
+                               kernels=[:kappa, :mass], subdiv_max=3,
+                               use_gpu=false, cpu_workers=4, verbose=false)
+@printf("cpu_workers=4 vs 1: mass ratio=%.8f  kappa ratio=%.8f (both MUST be 1.00000000)\n",
+        sum(maps4[:mass]) / sum(maps3[:mass]), sum(maps4[:kappa]) / sum(maps3[:kappa]))
+
 # ---- Phase B cross-check: on-device painting (gpu_paint) vs CPU pixelization ----
 # Non-fatal: reports and continues so a Phase-B regression never blocks the octant job.
 if USE_GPU
