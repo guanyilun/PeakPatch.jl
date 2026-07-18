@@ -102,35 +102,41 @@ let M = 3e14, z = 0.7
 end
 
 # ---------- load catalog once: Eulerian positions + masses ----------
+# NOTE: all hot loops live in functions taking the arrays as ARGUMENTS — non-const
+# globals in Julia dynamically dispatch every operation (100-1000× slowdown).
+function load_catalog(path, chi2z)
+    nh_tot = open(path) do io Int(read(io, Int32)) end
+    EX = Vector{Float32}(undef, nh_tot); EY = similar(EX); EZ = similar(EX)
+    MM = similar(EX)
+    open(path) do io
+        read(io, Int32); read(io, Float32); read(io, Float32)
+        nf = 33; chunk = 1_000_000; buf = Vector{Float32}(undef, chunk * nf); ndone = 0
+        while ndone < nh_tot
+            m = min(chunk, nh_tot - ndone); read!(io, view(buf, 1:m*nf))
+            @inbounds Threads.@threads for k in 1:m
+                b = (k - 1) * nf
+                R = Float64(buf[b+7])
+                q1 = Float64(buf[b+1]); q2 = Float64(buf[b+2]); q3 = Float64(buf[b+3])
+                rq = sqrt((q1 - OBS)^2 + (q2 - OBS)^2 + (q3 - OBS)^2)
+                zq = chi_to_z(chi2z, rq)
+                a = 1.0 / (1.0 + zq)
+                # old-convention catalog: Eulerian = q + d1·a − d2·a² (stored ψ₂ carries +3/7)
+                j = ndone + k
+                EX[j] = Float32(q1 + Float64(buf[b+4]) * a - Float64(buf[b+8]) * a^2 - OBS)
+                EY[j] = Float32(q2 + Float64(buf[b+5]) * a - Float64(buf[b+9]) * a^2 - OBS)
+                EZ[j] = Float32(q3 + Float64(buf[b+6]) * a - Float64(buf[b+10]) * a^2 - OBS)
+                MM[j] = Float32(4 / 3 * π * rho_mh * R^3)
+            end
+            ndone += m
+        end
+    end
+    return EX, EY, EZ, MM
+end
 @info "loading catalog (26 GB single pass)..." CAT
 cosmo = CosmologyParams(0.31, 0.049, 0.69, hub, 0.965, 0.81)
 chi2z = build_chi_to_z(cosmo; z_max=6.0)
-nh_tot = open(CAT) do io Int(read(io, Int32)) end
-EX = Vector{Float32}(undef, nh_tot); EY = similar(EX); EZ = similar(EX)
-MM = similar(EX)
-open(CAT) do io
-    read(io, Int32); read(io, Float32); read(io, Float32)
-    nf = 33; chunk = 4_000_000; buf = Vector{Float32}(undef, chunk * nf); ndone = 0
-    while ndone < nh_tot
-        m = min(chunk, nh_tot - ndone); read!(io, view(buf, 1:m*nf))
-        @inbounds Threads.@threads for k in 1:m
-            b = (k - 1) * nf
-            R = Float64(buf[b+7])
-            q1 = Float64(buf[b+1]); q2 = Float64(buf[b+2]); q3 = Float64(buf[b+3])
-            rq = sqrt((q1 - OBS)^2 + (q2 - OBS)^2 + (q3 - OBS)^2)
-            zq = chi_to_z(chi2z, rq)
-            a = 1.0 / (1.0 + zq)
-            # old-convention catalog: Eulerian = q + d1·a − d2·a² (stored ψ₂ carries +3/7)
-            j = ndone + k
-            EX[j] = Float32(q1 + Float64(buf[b+4]) * a - Float64(buf[b+8]) * a^2 - OBS)
-            EY[j] = Float32(q2 + Float64(buf[b+5]) * a - Float64(buf[b+9]) * a^2 - OBS)
-            EZ[j] = Float32(q3 + Float64(buf[b+6]) * a - Float64(buf[b+10]) * a^2 - OBS)
-            MM[j] = Float32(4 / 3 * π * rho_mh * R^3)
-        end
-        ndone += m
-    end
-end
-@info "catalog loaded" nh_tot
+EX, EY, EZ, MM = load_catalog(CAT, chi2z)
+@info "catalog loaded" nh=length(MM)
 
 # ---------- caps and flat-sky machinery (same as compare_fieldmap_kappa.jl) ----------
 ortho_basis(a) = (t = abs(a[1]) < 0.9 ? [1.0,0,0] : [0.0,1,0]; e1 = normalize(cross(a,t)); e2 = cross(a,e1); (e1,e2))
@@ -172,8 +178,8 @@ function cl_flat(A, L, ledges)
 end
 
 # paint the cap's halos on the SAME gnomonic grid, exact per-pixel angles.
-# Returns (plain, compensated) patches in one pass.
-function paint_halos_cap(ax, s, npixf)
+# Returns (plain, compensated) patches in one pass. Arrays passed as args (see NOTE).
+function paint_halos_cap(EX, EY, EZ, MM, chi2z, ax, s, npixf)
     e1, e2 = ortho_basis(ax)
     h0 = zeros(npixf, npixf); hc = zeros(npixf, npixf)
     dpix = 2s / npixf
@@ -237,7 +243,7 @@ for (ic, ax) in enumerate(axes)
     pfe = flat_patch(mfe, ax, s, NPIXFLAT)
     pfa = flat_patch(mfa, ax, s, NPIXFLAT)
     pk_ = flat_patch(mk, ax, s, NPIXFLAT)
-    h0, hc, npaint = paint_halos_cap(ax, s, NPIXFLAT)
+    h0, hc, npaint = paint_halos_cap(EX, EY, EZ, MM, chi2z, ax, s, NPIXFLAT)
     pA = pfe .+ h0                     # scheme A: excluded field + plain NFW
     pB = pfa .+ hc                     # scheme B: full field + Δ=3-compensated NFW
     cA[:, ic] = cl_flat(pA, L, ledges);  cB[:, ic] = cl_flat(pB, L, ledges)
