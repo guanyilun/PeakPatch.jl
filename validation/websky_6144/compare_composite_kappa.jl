@@ -273,14 +273,21 @@ axes = cap_axes()
 # maps one at a time (kap.fits alone is 0.8 GB): extract all cap patches, then free
 function patches_of(path, axes, s)
     m = Healpix.readMapFromFITS(path, 1, Float32)
+    ns = m.resolution.nside
     p = [flat_patch(m, ax, s, NPIXFLAT) for ax in axes]
     m = nothing; GC.gc()
-    p
+    p, ns
 end
 @info "extracting cap patches (maps read one at a time)..."
-PFE = patches_of(field_excl_path, axes, s)
-PFA = patches_of(field_all_path, axes, s)
-PK  = patches_of(joinpath(WREF, "kap.fits"), axes, s)
+PFE, ns_fe = patches_of(field_excl_path, axes, s)
+PFA, ns_fa = patches_of(field_all_path, axes, s)
+PK,  ns_k  = patches_of(joinpath(WREF, "kap.fits"), axes, s)
+@info "map nsides" field_excl=ns_fe field_all=ns_fa kap=ns_k
+
+# Gaussian pixel-window approximations (good to <1% at these ell):
+# HEALPix pixel size sqrt(pi/3)/nside; flat halo grid dpix; sigma = size/sqrt(12)
+w2_hp(l, nside) = exp(-l * (l + 1) * (sqrt(π / 3) / nside)^2 / 12)
+w2_flat(l, dpix) = exp(-l * (l + 1) * dpix^2 / 12)
 
 @info "streaming catalog (26 GB) for per-cap halo lists..." CAT
 caphalos = select_cap_halos(CAT, chi2z, axes, s)
@@ -301,15 +308,21 @@ for (ic, ax) in enumerate(axes)
     @info "cap $ic done" npaint mean_A=round(mean(pA); digits=4) mean_B=round(mean(pB); digits=4) mean_kap=round(mean(pk_); digits=4)
 end
 
-@printf("\n%-7s %-11s %-8s %-8s %-8s %-8s %-8s %-8s %-8s\n",
-        "ell", "Cl_kap", "A/kap", "+-", "B/kap", "+-", "fldE/kap", "fldA/kap", "halo/kap")
+@printf("\n%-7s %-11s %-8s %-8s %-8s %-8s %-8s %-8s %-8s %-8s\n",
+        "ell", "Cl_kap", "A/kap", "+-", "A/kap*", "B/kap", "+-", "fldE/kap", "fldA/kap", "halo/kap")
+dpixf = 2s / NPIXFLAT
 for i in eachindex(lc)
     rA = [cA[i, c] / cK[i, c] for c in 1:NCAPS]
     rB = [cB[i, c] / cK[i, c] for c in 1:NCAPS]
-    @printf("%-7.0f %-11.3e %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f\n",
-            lc[i], mean(cK[i, :]), mean(rA), std(rA), mean(rB), std(rB),
-            mean(cFE[i, :]) / mean(cK[i, :]), mean(cFA[i, :]) / mean(cK[i, :]),
-            mean(cH0[i, :]) / mean(cK[i, :]))
+    # window-corrected A/kap from the measured per-band decomposition:
+    # A = fldE (field-map window) + halo (flat-grid window) + cross (geometric mean)
+    wfe = w2_hp(lc[i], ns_fe); wh = w2_flat(lc[i], dpixf); wk = w2_hp(lc[i], ns_k)
+    fldE = mean(cFE[i, :]); halo = mean(cH0[i, :]); crossA = mean(cA[i, :]) - fldE - halo
+    Astar = (fldE / wfe + halo / wh + crossA / sqrt(wfe * wh)) / (mean(cK[i, :]) / wk)
+    @printf("%-7.0f %-11.3e %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f\n",
+            lc[i], mean(cK[i, :]), mean(rA), std(rA), Astar, mean(rB), std(rB),
+            fldE / mean(cK[i, :]), mean(cFA[i, :]) / mean(cK[i, :]),
+            halo / mean(cK[i, :]))
 end
 sel = findall(l -> 150 <= l <= 2500, lc)
 mA = mean([mean(cA[i, :]) / mean(cK[i, :]) for i in sel])
