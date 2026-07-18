@@ -71,16 +71,19 @@ function _paint_tile_field!(maps::Vector{Vector{Float64}},
                             obs::NTuple{3,Float64}, rmin::Float64, chi_max::Float64,
                             inv_dr::Float64, nrt::Int,
                             rt_D::Vector{Float64}, rt_c2::Vector{Float64},
-                            rt_w::Vector{Vector{Float64}},
+                            rt_vf::Vector{Float64}, rt_w::Vector{Vector{Float64}},
+                            vw::Vector{Bool}, excl::Union{Nothing,Array{Bool,3}},
                             theta_pix::Float64, subdiv_max::Int, vec2pix::F) where {F}
     cen = 0.5 * (nmesh + 1)
     has2 = p2x !== nothing
     nk = length(maps)
+    need_v = any(vw)
     @inbounds for k in (nbuff+1):(nmesh-nbuff)
         qz = zbx + alatt * (k - cen)
         for j in (nbuff+1):(nmesh-nbuff)
             qy = ybx + alatt * (j - cen)
             for i in (nbuff+1):(nmesh-nbuff)
+                excl === nothing || !excl[i-nbuff, j-nbuff, k-nbuff] || continue
                 qx = xbx + alatt * (i - cen)
                 dqx = qx - obs[1]; dqy = qy - obs[2]; dqz = qz - obs[3]
                 rq = sqrt(dqx*dqx + dqy*dqy + dqz*dqz)
@@ -98,8 +101,16 @@ function _paint_tile_field!(maps::Vector{Vector{Float64}},
                     ey = qy + D*s1y + c2*s2y - obs[2]
                     ez = qz + D*s1z + c2*s2z - obs[3]
                     pix = vec2pix(ex, ey, ez)
+                    vr = 0.0
+                    if need_v
+                        vf = _rt_lerp(rt_vf, rq, inv_dr, nrt)
+                        vr = vf * ((D*s1x + 2*c2*s2x)*dqx + (D*s1y + 2*c2*s2y)*dqy +
+                                   (D*s1z + 2*c2*s2z)*dqz) / rq
+                    end
                     for ik in 1:nk
-                        maps[ik][pix] += _rt_lerp(rt_w[ik], rq, inv_dr, nrt)
+                        w = _rt_lerp(rt_w[ik], rq, inv_dr, nrt)
+                        vw[ik] && (w *= vr)
+                        maps[ik][pix] += w
                     end
                 else
                     wsub = 1.0 / (ns * ns * ns)
@@ -116,8 +127,16 @@ function _paint_tile_field!(maps::Vector{Vector{Float64}},
                         ey = qsy + D*s1y + c2*s2y - obs[2]
                         ez = qsz + D*s1z + c2*s2z - obs[3]
                         pix = vec2pix(ex, ey, ez)
+                        vr = 0.0
+                        if need_v
+                            vf = _rt_lerp(rt_vf, rqs, inv_dr, nrt)
+                            vr = vf * ((D*s1x + 2*c2*s2x)*dsx + (D*s1y + 2*c2*s2y)*dsy +
+                                       (D*s1z + 2*c2*s2z)*dsz) / rqs
+                        end
                         for ik in 1:nk
-                            maps[ik][pix] += wsub * _rt_lerp(rt_w[ik], rqs, inv_dr, nrt)
+                            w = wsub * _rt_lerp(rt_w[ik], rqs, inv_dr, nrt)
+                            vw[ik] && (w *= vr)
+                            maps[ik][pix] += w
                         end
                     end
                 end
@@ -125,6 +144,50 @@ function _paint_tile_field!(maps::Vector{Vector{Float64}},
         end
     end
     return nothing
+end
+
+# Rasterize the Lagrangian exclusion spheres of nearby halos into a core-sized Bool
+# mask for one tile (true = cell inside a halo, skip). `bins` maps tile index →
+# halo indices; ±1-neighbor search assumes max(R) < dcore (checked by the caller).
+function _build_exclusion_mask(halos, bins::Dict{NTuple{3,Int},Vector{Int}},
+                               it::Int, jt::Int, kt::Int, ntile::Int, dcore::Float64,
+                               nmesh::Int, nbuff::Int, alatt::Float64,
+                               xbx::Float64, ybx::Float64, zbx::Float64)
+    ncore = nmesh - 2 * nbuff
+    excl = zeros(Bool, ncore, ncore, ncore)
+    cen = 0.5 * (nmesh + 1)
+    half = dcore / 2
+    @inbounds for dk in -1:1, dj in -1:1, di in -1:1
+        bt = (it + di, jt + dj, kt + dk)
+        haskey(bins, bt) || continue
+        for n in bins[bt]
+            hx = Float64(halos.x[n]); hy = Float64(halos.y[n]); hz = Float64(halos.z[n])
+            R = Float64(halos.R[n])
+            (abs(hx - xbx) <= half + R && abs(hy - ybx) <= half + R &&
+             abs(hz - zbx) <= half + R) || continue
+            R2 = R * R
+            ilo = max(nbuff + 1, ceil(Int,  (hx - R - xbx) / alatt + cen))
+            ihi = min(nmesh - nbuff, floor(Int, (hx + R - xbx) / alatt + cen))
+            jlo = max(nbuff + 1, ceil(Int,  (hy - R - ybx) / alatt + cen))
+            jhi = min(nmesh - nbuff, floor(Int, (hy + R - ybx) / alatt + cen))
+            klo = max(nbuff + 1, ceil(Int,  (hz - R - zbx) / alatt + cen))
+            khi = min(nmesh - nbuff, floor(Int, (hz + R - zbx) / alatt + cen))
+            for k in klo:khi
+                dz2 = (zbx + alatt * (k - cen) - hz)^2
+                for j in jlo:jhi
+                    dyz2 = dz2 + (ybx + alatt * (j - cen) - hy)^2
+                    dyz2 > R2 && continue
+                    for i in ilo:ihi
+                        dx = xbx + alatt * (i - cen) - hx
+                        if dx * dx + dyz2 <= R2
+                            excl[i-nbuff, j-nbuff, k-nbuff] = true
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return excl
 end
 
 """
@@ -148,6 +211,16 @@ Kernels (per-cell pixel contribution, lengths in Mpc/h):
   convergence of the full matter field (subtract the map mean for fluctuations).
   `chi_star` [Mpc/h] defaults to chi(z=1089) of the run cosmology (no radiation);
   pass Websky's 9656 (=14.2 Gpc × h) to match their hardwired value.
+- `:tau`   — Thomson depth (Stein+2020 eq 3.22): σ_T·n_e,0·(1+z)²/χ² · a_latt³/Ω_pix
+  with n_e,0 = f_e·ρ_b,0·x_e/m_p, f_e=0.9, He once-ionized above z=3, doubly below.
+- `:ksz`   — −(v_r/c)·W_τ (eq 3.23): kSZ ΔT/T_CMB. v_r is the cell's LOS peculiar
+  velocity v·q̂ with v = a·H·f·(D·ψ₁ + 2·D₂·ψ₂) (the `Merger.finalize_eulerian`
+  convention, f₂≈2f) evaluated at the cell's Lagrangian distance.
+
+Halo exclusion (Websky §3.1.3 "field component"): pass
+`exclude_halos = (x=…, y=…, z=…, R=…)` (equal-length vectors; Lagrangian halo centers
+in the same centered coordinates as the tiles, top-hat radii in Mpc/h, R < tile core
+size). Cells whose Lagrangian centers fall inside any halo sphere are skipped.
 
 Other kwargs mirror `run_multitile_split` (`ntile`, `seed`, `coarse_factor`,
 `coarse_grid`, `use_gpu`, `devices`, `verbose`). `cpu_workers` spreads the tile loop
@@ -169,6 +242,7 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
                                 kernels::Vector{Symbol}=[:kappa, :mass],
                                 chi_star::Float64=0.0, subdiv_max::Int=3,
                                 rmin::Float64=0.0,
+                                exclude_halos::Union{Nothing,NamedTuple}=nothing,
                                 coarse_factor::Int=0, coarse_grid::Int=0,
                                 use_gpu::Bool=false,
                                 devices::Union{Nothing,AbstractVector{Int}}=nothing,
@@ -223,41 +297,78 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
     rmin_eff = rmin > 0 ? rmin : 2 * alatt
     theta_pix = sqrt(omega_pix)
 
+    # Thomson-depth constant (Stein+2020 eq 3.22): σ_T·n_e,0 in (Mpc/h)⁻¹, comoving,
+    # BEFORE the He-ionization factor x_e(z). n_e,0 = f_e·ρ_b,0·x_e/m_p with f_e=0.9;
+    # ρ_crit,0/m_p = 11.2299·h² m⁻³, σ_T = 6.65246e-29 m², 1 Mpc = 3.0857e22 m.
+    f_e = 0.9; Y_He = 0.245
+    sigT_ne0 = 6.65246e-29 * 11.2299 * f_e * cfg.OmB * cosmo.h^2 * 3.0857e22 / cosmo.h
+    c_kms = 299792.458
+
     # ---- Radial factor tables: everything per-cell depends only on r_Lagrangian ----
     nrt = 4096
     rt_dr = chi_max / (nrt - 1)
     inv_dr = 1.0 / rt_dr
-    rt_D  = zeros(nrt); rt_c2 = zeros(nrt)
+    rt_D  = zeros(nrt); rt_c2 = zeros(nrt); rt_vf = zeros(nrt)
     rt_w  = [zeros(nrt) for _ in kernels]
+    vw    = Bool[kern === :ksz for kern in kernels]   # velocity-weighted kernels (×v_r)
     for irt in 2:nrt
         r = (irt - 1) * rt_dr
         z = chi_to_z(chi2z, r)
         a = 1.0 / (1.0 + z)
-        D, _, _ = Dlinear_ab(a, growth_tables)   # 1st return = D (growth factor); 3rd is D/a
+        D, f, _ = Dlinear_ab(a, growth_tables)   # 1st return = D (growth factor); 3rd is D/a
         # 2LPT coefficient: FIXED convention (MultiTile.jl post-95f04a1): -3/7, true D.
         # (MultiResolution's packing carried the pre-fix +3/7 and D/a — do not copy it.)
         Om_a = cosmo.Om * a^3 / (cosmo.Om * a^3 + cosmo.OL)
         rt_D[irt]  = D
         rt_c2[irt] = ilpt >= 2 ? (-3.0 / 7.0) * Om_a^(-1.0 / 143) * D^2 : 0.0
+        # velocity factor km/s per Mpc/h of displacement (finalize_eulerian convention)
+        rt_vf[irt] = a * 100.0 * sqrt(cosmo.Om * a^-3 + cosmo.OL) * f
+        x_e = z < 3 ? (1 - Y_He / 2) : (1 - 3 * Y_He / 4)   # He doubly/once ionized
+        w_tau = sigT_ne0 * x_e * (1 + z)^2 / r^2 * alatt^3 / omega_pix
         for (ik, kern) in enumerate(kernels)
             rt_w[ik][irt] = if kern === :mass
                 rho_m * alatt^3
             elseif kern === :kappa
                 1.5 * cosmo.Om * (1.0 / 2997.92458)^2 * (1 + z) * (1 - r / chistar) / r *
                     alatt^3 / omega_pix
+            elseif kern === :tau
+                w_tau
+            elseif kern === :ksz
+                -w_tau / c_kms          # painted weight × v_r [km/s] → −(v_r/c)·W_τ
             else
-                error("unknown field-map kernel: $kern (supported: :mass, :kappa)")
+                error("unknown field-map kernel: $kern (supported: :mass, :kappa, :tau, :ksz)")
             end
         end
     end
 
-    # Radial table as a matrix for the GPU painter: columns D, coef2, then weights
+    # Radial table as a matrix for the GPU painter: columns D, coef2, vfac, then weights
     rtM = Matrix{Float64}(undef, 0, 0)
     if gpu_paint
-        rtM = Matrix{Float64}(undef, nrt, 2 + length(kernels))
-        rtM[:, 1] = rt_D; rtM[:, 2] = rt_c2
+        rtM = Matrix{Float64}(undef, nrt, 3 + length(kernels))
+        rtM[:, 1] = rt_D; rtM[:, 2] = rt_c2; rtM[:, 3] = rt_vf
         for ik in eachindex(kernels)
-            rtM[:, 2+ik] = rt_w[ik]
+            rtM[:, 3+ik] = rt_w[ik]
+        end
+    end
+    vwmask = UInt32(0)
+    for ik in eachindex(kernels)
+        vw[ik] && (vwmask |= UInt32(1) << (ik - 1))
+    end
+
+    # ---- Halo exclusion: bin halos by tile for fast per-tile mask rasterization ----
+    excl_bins = nothing
+    if exclude_halos !== nothing
+        length(exclude_halos.x) == length(exclude_halos.y) == length(exclude_halos.z) ==
+            length(exclude_halos.R) || error("exclude_halos: x/y/z/R length mismatch")
+        isempty(exclude_halos.R) || maximum(exclude_halos.R) < dcore_box ||
+            error("exclude_halos: max R must be smaller than the tile core size")
+        x0 = -(ntile / 2) * dcore_box     # left edge of the tile grid, centered coords
+        excl_bins = Dict{NTuple{3,Int},Vector{Int}}()
+        for n in eachindex(exclude_halos.x)
+            bt = (clamp(floor(Int, (exclude_halos.x[n] - x0) / dcore_box) + 1, 1, ntile),
+                  clamp(floor(Int, (exclude_halos.y[n] - x0) / dcore_box) + 1, 1, ntile),
+                  clamp(floor(Int, (exclude_halos.z[n] - x0) / dcore_box) + 1, 1, ntile))
+            push!(get!(excl_bins, bt, Int[]), n)
         end
     end
 
@@ -397,13 +508,17 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
         residual = nothing
 
         xbx, ybx, zbx = tile_center(it, jt, kt, ntile, dcore_box)
+        excl = excl_bins === nothing ? nothing :
+            _build_exclusion_mask(exclude_halos, excl_bins, it, jt, kt, ntile, dcore_box,
+                                  nmesh, nbuff, alatt, xbx, ybx, zbx)
         if gpu_paint
             fnp = getglobal(_pp_parent(), :paint_tile_field_gpu!)
             has2 = psi2_dev !== nothing
             p2 = has2 ? psi2_dev : psi_dev
             fnp(acc.maps_d, psi_dev[1], psi_dev[2], psi_dev[3], p2[1], p2[2], p2[3],
                 acc.rt_d, nmesh, nbuff, alatt, xbx, ybx, zbx, obs, rmin_eff, chi_max,
-                inv_dr, nrt, theta_pix, subdiv_max, nside, length(kernels), has2)
+                inv_dr, nrt, theta_pix, subdiv_max, nside, length(kernels), has2,
+                vwmask, excl)
             psi_dev = nothing; psi2_dev = nothing
         else
             _paint_tile_field!(acc, psi_host[1], psi_host[2], psi_host[3],
@@ -411,7 +526,8 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
                                psi2_host === nothing ? nothing : psi2_host[2],
                                psi2_host === nothing ? nothing : psi2_host[3],
                                nmesh, nbuff, alatt, xbx, ybx, zbx, obs, rmin_eff, chi_max,
-                               inv_dr, nrt, rt_D, rt_c2, rt_w, theta_pix, subdiv_max, vec2pix)
+                               inv_dr, nrt, rt_D, rt_c2, rt_vf, rt_w, vw, excl,
+                               theta_pix, subdiv_max, vec2pix)
         end
         verbose && @info "  fieldmap tile $ti/$(length(tile_ids)) ($it,$jt,$kt) painted"
         return nothing

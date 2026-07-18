@@ -41,14 +41,15 @@ let a2p = PeakPatch.MultiResolution.ang2pix_ring, rng = Random.MersenneTwister(7
     @printf("ang2pix_ring vs Healpix.jl: %d/200000 mismatches (exact-boundary ties only)\n", nbad)
 end
 
+KERNELS = [:kappa, :mass, :tau, :ksz]
 @info "running fieldmap (subdiv_max=1: exact bookkeeping)..." N ntile use_gpu=USE_GPU
 maps = run_multitile_fieldmap(cfg; ntile=ntile, seed=12345, npix=npix, vec2pix=v2p,
-                              kernels=[:kappa, :mass], subdiv_max=1,
+                              kernels=KERNELS, subdiv_max=1,
                               use_gpu=USE_GPU, devices=USE_GPU ? [0] : nothing,
                               verbose=false)
 @info "running fieldmap (subdiv_max=3: exercises splitting)..."
 maps3 = run_multitile_fieldmap(cfg; ntile=ntile, seed=12345, npix=npix, vec2pix=v2p,
-                               kernels=[:kappa, :mass], subdiv_max=3,
+                               kernels=KERNELS, subdiv_max=3,
                                use_gpu=USE_GPU, devices=USE_GPU ? [0] : nothing,
                                verbose=false)
 
@@ -57,7 +58,7 @@ maps3 = run_multitile_fieldmap(cfg; ntile=ntile, seed=12345, npix=npix, vec2pix=
 #  Guards against shared/aliased worker accumulators: job 4280770 painted 2^(n-1)=8x.)
 @info "running fieldmap (cpu_workers=4: multi-worker dispatch)..."
 maps4 = run_multitile_fieldmap(cfg; ntile=ntile, seed=12345, npix=npix, vec2pix=v2p,
-                               kernels=[:kappa, :mass], subdiv_max=3,
+                               kernels=KERNELS, subdiv_max=3,
                                use_gpu=false, cpu_workers=4, verbose=false)
 @printf("cpu_workers=4 vs 1: mass ratio=%.8f  kappa ratio=%.8f (both MUST be 1.00000000)\n",
         sum(maps4[:mass]) / sum(maps3[:mass]), sum(maps4[:kappa]) / sum(maps3[:kappa]))
@@ -68,7 +69,7 @@ if USE_GPU
     @info "running fieldmap (gpu_paint=true: device RING pixelization)..."
     try
         mapsg = run_multitile_fieldmap(cfg; ntile=ntile, seed=12345, npix=npix,
-                                       kernels=[:kappa, :mass], subdiv_max=3,
+                                       kernels=KERNELS, subdiv_max=3,
                                        use_gpu=true, devices=[0],
                                        gpu_paint=true, nside=nside, verbose=false)
         mr = sum(mapsg[:mass]) / sum(maps3[:mass])
@@ -77,6 +78,10 @@ if USE_GPU
         ndiff = count(abs.(mapsg[:mass] .- maps3[:mass]) .> 1e-6 .* maximum(maps3[:mass]))
         @printf("gpu_paint vs cpu: mass ratio=%.8f  kappa ratio=%.8f  max|dkappa|/max=%.2e  npix-diff=%d\n",
                 mr, kr, dk, ndiff)
+        dt = maximum(abs.(mapsg[:tau] .- maps3[:tau])) / maximum(maps3[:tau])
+        ksz_rms = sqrt(sum(abs2, maps3[:ksz]) / count(!iszero, maps3[:ksz]))
+        dz = maximum(abs.(mapsg[:ksz] .- maps3[:ksz])) / ksz_rms
+        @printf("gpu_paint vs cpu: max|dtau|/max=%.2e  max|dksz|/rms=%.2e\n", dt, dz)
     catch err
         @error "gpu_paint cross-check FAILED (non-fatal)" exception=(err, catch_backtrace())
     end
@@ -114,6 +119,28 @@ kgot = sum(maps[:kappa]) / npix
 @printf("subdiv=3 vs 1:     mass ratio=%.6f (boundary sub-cell truncation, expect ~0.99)\n", sum(maps3[:mass])/Mgot)
 @printf("subdiv=3 vs 1:     kappa-mean ratio=%.6f\n", (sum(maps3[:kappa])/npix)/kgot)
 
+# ---- mean tau vs analytic (same construction as mean kappa) ----
+sigT_ne0 = 6.65246e-29 * 11.2299 * 0.9 * 0.049 * 0.68^2 * 3.0857e22 / 0.68
+tacc = 0.0
+for ii in 0:nint-1
+    r = rmin_eff + (ii + 0.5) * dr
+    z = chi_to_z(chi2z, r)
+    x_e = z < 3 ? (1 - 0.245 / 2) : (1 - 3 * 0.245 / 4)
+    global tacc += sigT_ne0 * x_e * (1 + z)^2 * dr
+end
+texp = tacc / 8
+tgot = sum(maps[:tau]) / npix
+@printf("mean tau:          painted=%.6e  expected=%.6e  ratio=%.6f\n", tgot, texp, tgot/texp)
+
+# ---- kSZ: signed map, mean must cancel against rms; rms at the tau*v/c scale ----
+cov = findall(!iszero, maps[:tau])
+kszm = sum(maps[:ksz][cov]) / length(cov)
+kszr = sqrt(sum(abs2, maps[:ksz][cov]) / length(cov))
+vr_eff = abs(kszm) / (sum(maps[:tau][cov]) / length(cov)) * 299792.458
+@printf("ksz (covered pix): mean=%.3e  rms=%.3e  |mean|/rms=%.3f (should be <<1)\n",
+        kszm, kszr, abs(kszm) / kszr)
+@printf("ksz implied bulk v_r: %.1f km/s (few-hundred km/s coherent flow OK at this tiny volume)\n", vr_eff)
+
 # ---- octant containment: pixels with mass should have direction in +++ octant (from obs at corner) ----
 pix_on = findall(>(0), maps[:mass])
 bad = 0
@@ -124,3 +151,49 @@ end
 @printf("octant containment: %d/%d nonzero pixels outside +++ octant (should be ~0)\n", bad, length(pix_on))
 @printf("nonzero pixels: %d/%d (octant fraction=%.3f, expect ~0.125 of sky covered by chi_max cone)\n",
         length(pix_on), npix, length(pix_on)/npix)
+
+# ---- exclude_halos: mass deficit must equal the exact count of excluded cells ----
+@info "running fieldmap (exclude_halos: 2 synthetic Lagrangian spheres)..."
+halos = (x=[-250.0, -150.0], y=[-250.0, -320.0], z=[-250.0, -300.0], R=[30.0, 20.0])
+maps_ex = run_multitile_fieldmap(cfg; ntile=ntile, seed=12345, npix=npix, vec2pix=v2p,
+                                 kernels=[:mass], subdiv_max=1, exclude_halos=halos,
+                                 use_gpu=USE_GPU, devices=USE_GPU ? [0] : nothing,
+                                 verbose=false)
+n_excl = 0
+for n in 1:2
+    hx, hy, hz, R = halos.x[n], halos.y[n], halos.z[n], halos.R[n]
+    for k in 1:Nc, j in 1:Nc, i in 1:Nc
+        x = (i - (Nc + 1) / 2) * alatt; y = (j - (Nc + 1) / 2) * alatt; zz = (k - (Nc + 1) / 2) * alatt
+        (x - hx)^2 + (y - hy)^2 + (zz - hz)^2 <= R^2 || continue
+        r = sqrt((x - obs[1])^2 + (y - obs[2])^2 + (zz - obs[3])^2)
+        (rmin_eff <= r <= chimax) && (global n_excl += 1)
+    end
+end
+deficit = Mgot - sum(maps_ex[:mass])
+@printf("exclude_halos: deficit=%.6e  expected=%.6e (%d cells)  ratio=%.6f\n",
+        deficit, rho_m * alatt^3 * n_excl, n_excl, deficit / (rho_m * alatt^3 * n_excl))
+
+# ---- cross-tile mask rasterization: sphere straddling the x=0 tile boundary ----
+let bmask = PeakPatch.MultiResolution._build_exclusion_mask,
+    tc = PeakPatch.MultiResolution.tile_center
+    hb = (x=[0.0], y=[-200.0], z=[-200.0], R=[30.0])
+    dcore = nsub * alatt
+    x0 = -(ntile / 2) * dcore
+    bins = Dict{NTuple{3,Int},Vector{Int}}()
+    bt = (clamp(floor(Int, (hb.x[1] - x0) / dcore) + 1, 1, ntile),
+          clamp(floor(Int, (hb.y[1] - x0) / dcore) + 1, 1, ntile),
+          clamp(floor(Int, (hb.z[1] - x0) / dcore) + 1, 1, ntile))
+    bins[bt] = [1]
+    nmask = 0
+    for kt in 1:ntile, jt in 1:ntile, it in 1:ntile
+        xbx, ybx, zbx = tc(it, jt, kt, ntile, dcore)
+        m = bmask(hb, bins, it, jt, kt, ntile, dcore, nmesh, nbuff, alatt, xbx, ybx, zbx)
+        nmask += count(m)
+    end
+    nbrute = 0
+    for k in 1:Nc, j in 1:Nc, i in 1:Nc
+        x = (i - (Nc + 1) / 2) * alatt; y = (j - (Nc + 1) / 2) * alatt; zz = (k - (Nc + 1) / 2) * alatt
+        (x - hb.x[1])^2 + (y - hb.y[1])^2 + (zz - hb.z[1])^2 <= hb.R[1]^2 && (nbrute += 1)
+    end
+    @printf("cross-tile mask: masked=%d  brute-force=%d  (must be equal)\n", nmask, nbrute)
+end

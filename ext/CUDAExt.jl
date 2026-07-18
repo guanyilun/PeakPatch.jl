@@ -3392,7 +3392,8 @@ function _fieldmap_paint_kernel!(maps, p1x, p1y, p1z, p2x, p2y, p2z, rt,
                                  ox::Float64, oy::Float64, oz::Float64,
                                  rmin::Float64, chimax::Float64, inv_dr::Float64,
                                  nrt::Int, theta_pix::Float64, subdiv_max::Int,
-                                 nside::Int, nk::Int, has2::Bool)
+                                 nside::Int, nk::Int, has2::Bool,
+                                 vwmask::UInt32, excl, has_excl::Bool)
     ncore = nmesh - 2 * nbuff
     idx = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     idx > ncore * ncore * ncore && return nothing
@@ -3400,6 +3401,9 @@ function _fieldmap_paint_kernel!(maps, p1x, p1y, p1z, p2x, p2y, p2z, rt,
     i = nbuff + 1 + t % ncore
     j = nbuff + 1 + (t ÷ ncore) % ncore
     k = nbuff + 1 + t ÷ (ncore * ncore)
+    if has_excl
+        @inbounds excl[i-nbuff, j-nbuff, k-nbuff] && return nothing
+    end
     cen = 0.5 * (nmesh + 1)
     qx = xbx + alatt * (i - cen)
     qy = ybx + alatt * (j - cen)
@@ -3432,8 +3436,15 @@ function _fieldmap_paint_kernel!(maps, p1x, p1y, p1z, p2x, p2y, p2z, rt,
             ey = qsy + D * s1y + c2 * s2y - oy
             ez = qsz + D * s1z + c2 * s2z - oz
             pix = ang2pix_ring(nside, ex, ey, ez)
+            vr = 0.0
+            if vwmask != UInt32(0)
+                vf = rt[ii, 3] * (1.0 - tt) + rt[ii+1, 3] * tt
+                vr = vf * ((D * s1x + 2 * c2 * s2x) * dsx + (D * s1y + 2 * c2 * s2y) * dsy +
+                           (D * s1z + 2 * c2 * s2z) * dsz) / rqs
+            end
             for ik in 1:nk
-                w = (rt[ii, 2+ik] * (1.0 - tt) + rt[ii+1, 2+ik] * tt) * wsub
+                w = (rt[ii, 3+ik] * (1.0 - tt) + rt[ii+1, 3+ik] * tt) * wsub
+                (vwmask >> (ik - 1)) & UInt32(1) == UInt32(1) && (w *= vr)
                 CUDA.@atomic maps[pix, ik] += w
             end
         end
@@ -3450,9 +3461,12 @@ PeakPatch.fieldmap_gpu_collect(maps_d::CuArray{Float64,2}) = Array(maps_d)
     paint_tile_field_gpu!(maps_d, p1x, p1y, p1z, p2x, p2y, p2z, rt_d, ...)
 
 Device-side painting of one tile's core cells into `maps_d` (npix × nk Float64
-CuArray, RING ordering). `rt_d` is the radial factor table (nrt × (2+nk):
-columns D, coef2, then one weight column per kernel). When `has2=false` the
-`p2*` arguments are ignored (pass the `p1*` arrays as placeholders).
+CuArray, RING ordering). `rt_d` is the radial factor table (nrt × (3+nk):
+columns D, coef2, vfac, then one weight column per kernel). `vwmask` bit ik-1
+set means kernel ik's weight is multiplied by the cell's LOS velocity v_r [km/s].
+`excl` is an optional host-side core-shaped Bool mask (true = skip cell). When
+`has2=false` the `p2*` arguments are ignored (pass the `p1*` arrays as
+placeholders).
 """
 function PeakPatch.paint_tile_field_gpu!(maps_d::CuArray{Float64,2},
         p1x::CuArray{Float32,3}, p1y::CuArray{Float32,3}, p1z::CuArray{Float32,3},
@@ -3460,14 +3474,17 @@ function PeakPatch.paint_tile_field_gpu!(maps_d::CuArray{Float64,2},
         rt_d::CuArray{Float64,2}, nmesh::Int, nbuff::Int, alatt::Float64,
         xbx::Float64, ybx::Float64, zbx::Float64, obs::NTuple{3,Float64},
         rmin::Float64, chimax::Float64, inv_dr::Float64, nrt::Int,
-        theta_pix::Float64, subdiv_max::Int, nside::Int, nk::Int, has2::Bool)
+        theta_pix::Float64, subdiv_max::Int, nside::Int, nk::Int, has2::Bool,
+        vwmask::UInt32=UInt32(0), excl::Union{Nothing,Array{Bool,3}}=nothing)
     ncore = nmesh - 2 * nbuff
     ntot = ncore^3
+    has_excl = excl !== nothing
+    excl_d = has_excl ? CuArray(excl) : CUDA.zeros(Bool, 1, 1, 1)
     threads = 256
     @cuda threads=threads blocks=cld(ntot, threads) _fieldmap_paint_kernel!(
         maps_d, p1x, p1y, p1z, p2x, p2y, p2z, rt_d, nmesh, nbuff, alatt,
         xbx, ybx, zbx, obs[1], obs[2], obs[3], rmin, chimax, inv_dr, nrt,
-        theta_pix, subdiv_max, nside, nk, has2)
+        theta_pix, subdiv_max, nside, nk, has2, vwmask, excl_d, has_excl)
     CUDA.synchronize()
     return nothing
 end
