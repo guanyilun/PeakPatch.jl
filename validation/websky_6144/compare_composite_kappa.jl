@@ -64,6 +64,10 @@ const RHOS_OVER_RHOM = 200 * CNFW^3 / (3 * f_nfw(CNFW))
 
 # κ of one halo at angle θ: W_κ(χ)·(Σ/ρ̄)(θχ), comoving Mpc/h throughout.
 # comp=true subtracts the uniform Δ=3 sphere of the same TOTAL painted mass.
+# Kernel W_κ = (3/2)Ω_m(H0/c)²(1+z)·χ·(1−χ/χ*) — the χ MULTIPLIES (Born kernel);
+# an earlier version divided, suppressing halos by χ² ≈ 10⁷ (and its self-test
+# used the same wrong W, so it "passed" — hence the independent aggregate check
+# against ∫W f_coll dχ below).
 @inline function kappa_halo(θ, M, z, χ; comp::Bool)
     r200 = cbrt(3 * M / (800π * rho_mh))
     rs = r200 / CNFW
@@ -73,19 +77,24 @@ const RHOS_OVER_RHOM = 200 * CNFW^3 / (3 * f_nfw(CNFW))
         Rc = cbrt(3 * MTOT_FAC * M / (4π * DCOMP * rho_mh))
         b < Rc && (Σ -= DCOMP * 2 * sqrt(Rc^2 - b^2))
     end
-    1.5 * 0.31 * H0C^2 * (1 + z) * (1 - χ / chistar) / χ * Σ
+    1.5 * 0.31 * H0C^2 * (1 + z) * χ * (1 - χ / chistar) * Σ
 end
+
+# analytic solid-angle integral of one plain halo: ∫κ dΩ = W_κ·M_tot/(ρ̄χ²)
+kappa_halo_integral(M, z, χ) =
+    1.5 * 0.31 * H0C^2 * (1 + z) * χ * (1 - χ / chistar) * MTOT_FAC * M / (rho_mh * χ^2)
 function paint_radius(M; comp::Bool)
     r200 = cbrt(3 * M / (800π * rho_mh))
     fac = comp ? max(XMAX, cbrt(MTOT_FAC * 200 / DCOMP)) : XMAX   # comp sphere: 4.78·r200
     return fac * r200
 end
 
-# self-test: ∫κ 2πθ dθ · χ²ρ̄/W == M_tot (plain) and ≈0 (compensated)
+# self-test: ∫κ 2πθ dθ == kappa_halo_integral (plain) and ≈0 (compensated), PLUS an
+# independent amplitude anchor: κ of an M=1e15 cluster at z=0.5, θ=1′ must be O(0.1-1)
+# (breaks the circularity of testing the kernel against itself).
 let M = 3e14, z = 0.7
     cosmo0 = CosmologyParams(0.31, 0.049, 0.69, hub, 0.965, 0.81)
     χ = chi(z, cosmo0)
-    W = 1.5 * 0.31 * H0C^2 * (1 + z) * (1 - χ / chistar) / χ
     for comp in (false, true)
         θmax = paint_radius(M; comp=comp) / χ
         n = 40000; h = θmax / n; acc = 0.0
@@ -93,12 +102,14 @@ let M = 3e14, z = 0.7
             θ = (i - 0.5) * h
             acc += kappa_halo(θ, M, z, χ; comp=comp) * 2π * θ * h
         end
-        got = acc * χ^2 * rho_mh / W / M
-        want = comp ? 0.0 : MTOT_FAC
-        @printf("NFW self-test comp=%-5s: mass integral / M200m = %+.4f (expect %+.4f)\n",
-                comp, got, want)
-        abs(got - want) < 0.01 * MTOT_FAC || error("NFW painting self-test failed")
+        want = comp ? 0.0 : kappa_halo_integral(M, z, χ)
+        @printf("NFW self-test comp=%-5s: ∫κdΩ = %+.4e (expect %+.4e)\n", comp, acc, want)
+        abs(acc - want) < 0.01 * kappa_halo_integral(M, z, χ) || error("NFW self-test failed")
     end
+    χ5 = chi(0.5, cosmo0)
+    κ1 = kappa_halo(deg2rad(1 / 60), 1e15, 0.5, χ5; comp=false)
+    @printf("amplitude anchor: κ(1e15 Msun/h, z=0.5, θ=1′) = %.3f (expect 0.05-2)\n", κ1)
+    0.05 < κ1 < 2 || error("halo κ amplitude anchor failed — kernel wrong")
 end
 
 # ---------- cosmology ----------
@@ -216,6 +227,7 @@ function paint_halos_cap(h, chi2z, ax, s, npixf)
         jhi = min(npixf, ceil(Int, (gyh + gmax + s) / dpix))
         (ilo <= ihi && jlo <= jhi) || continue
         npaint += 1
+        sum0 = 0.0; sumc = 0.0
         for j in jlo:jhi
             gy = -s + (j - 0.5) * dpix
             for i in ilo:ihi
@@ -227,9 +239,22 @@ function paint_halos_cap(h, chi2z, ax, s, npixf)
                          (sqrt(px^2 + py^2 + pz^2) * vn)
                 θ = acos(clamp(cosang, -1.0, 1.0))
                 θ > θmaxc && continue
-                h0[i, j] += kappa_halo(θ, M, z, r; comp=false)
-                hc[i, j] += kappa_halo(θ, M, z, r; comp=true)
+                w0 = kappa_halo(θ, M, z, r; comp=false)
+                wc = kappa_halo(θ, M, z, r; comp=true)
+                h0[i, j] += w0; hc[i, j] += wc
+                sum0 += w0; sumc += wc
             end
+        end
+        # per-halo exactness: pixel-center sampling misses the NFW cusp for halos
+        # near/below the pixel scale — deposit the residual vs the analytic totals
+        # (plain: W·M_tot/ρ̄χ²; compensated: exactly 0) into the nearest pixel.
+        # Only for halos whose full paint window fits the grid (no edge clipping).
+        icen = floor(Int, (gxh + s) / dpix) + 1
+        jcen = floor(Int, (gyh + s) / dpix) + 1
+        if 1 <= icen <= npixf && 1 <= jcen <= npixf &&
+           gxh - gmax > -s && gxh + gmax < s && gyh - gmax > -s && gyh + gmax < s
+            h0[icen, jcen] += kappa_halo_integral(M, z, r) / dpix^2 - sum0
+            hc[icen, jcen] += -sumc
         end
     end
     (h0, hc, npaint)
