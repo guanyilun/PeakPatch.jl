@@ -173,6 +173,17 @@ deficit = Mgot - sum(maps_ex[:mass])
 @printf("exclude_halos: deficit=%.6e  expected=%.6e (%d cells)  ratio=%.6f\n",
         deficit, rho_m * alatt^3 * n_excl, n_excl, deficit / (rho_m * alatt^3 * n_excl))
 
+# gpu_paint × exclusion (the combination the field-4096 production job uses):
+# mass is psi-independent, so the sum must match the CPU-pixelized excluded run exactly
+if USE_GPU
+    maps_exg = run_multitile_fieldmap(cfg; ntile=ntile, seed=12345, npix=npix,
+                                      kernels=[:mass], subdiv_max=1, exclude_halos=halos,
+                                      use_gpu=true, devices=[0],
+                                      gpu_paint=true, nside=nside, verbose=false)
+    @printf("gpu_paint exclusion: mass ratio=%.8f (MUST be 1.00000000)\n",
+            sum(maps_exg[:mass]) / sum(maps_ex[:mass]))
+end
+
 # ---- cross-tile mask rasterization: sphere straddling the x=0 tile boundary ----
 let bmask = PeakPatch.MultiResolution._build_exclusion_mask,
     tc = PeakPatch.MultiResolution.tile_center

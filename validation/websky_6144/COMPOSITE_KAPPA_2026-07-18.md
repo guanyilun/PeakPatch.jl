@@ -31,9 +31,38 @@ double-counting schemes against the released kap.fits (job 4310996,
 2. With scheme A, our pipeline reproduces the released kap.fits at 0.94–1.06 for
    ℓ=165–450 and within 10–20% to ℓ=3400. Component split is physical: field
    dominates at low ℓ, the 1-halo term takes over by ℓ~2500.
-3. Remaining high-ℓ deficit (~15–20% at ℓ≳2000) candidates: uncorrected pixel
-   windows (ours Nside 2048 vs kap's 4096), 2LPT field missing deep-nonlinear power,
-   NFW profile detail differences, and our z≤4.6 vs kap's z<4.5+Gaussian tail.
+3. **The high-ℓ deficit (0.84 at ℓ=2419, 0.81 at ℓ=3383 — i.e. 16–19%, with cap
+   scatter only ±1–2% → a real systematic) is NOT yet understood.** Quantified
+   so far (2026-07-18 follow-up analysis):
+   - **Pixel windows explain only +1–2%**, not the deficit. Per-component Gaussian
+     w_ℓ² (our field patches carry Nside-2048's 0.885/0.79 at ℓ=2419/3383; the halo
+     patches are painted at 0.33′ so w²≈0.99; kap.fits carries Nside-4096's
+     0.970/0.942): correcting the measured decomposition moves A/kap 0.839→0.854
+     at ℓ=2419 and 0.811→0.82 at ℓ=3383. Where the window is large (field), the
+     component is small (~15% of total); where the component is large (halo), the
+     window is negligible.
+   - **The halo side looks healthy**: our halo/kap fraction (0.45→0.54 at
+     ℓ=2400–3400) matches the split measured from Websky's own catalog, and our
+     NFW painting matched their halos at 1.02–1.10 over ℓ=2000–6900
+     (KAPPA_PAINTED_2026-07-16.md). The deficit is concentrated in the
+     **field + cross terms at small scales**.
+   - Live suspects, unquantified: (a) **exclusion radius** — we excise the full
+     Lagrangian sphere (AM RTHL); a smaller excision leaves more field mass near
+     halos, boosting exactly the missing cross/1-halo-scale power (a real modeling
+     freedom); (b) our field ran the CPU paint path with subdiv 3 vs Websky's n≤5
+     splitting; (c) nearest-neighbor HEALPix→gnomonic resampling aliasing in the
+     comparison itself.
+
+## Follow-up plan (2026-07-18)
+
+1. **Nside-4096 field rerun** (gpu_paint=true, subdiv 5 — Phase B built for this):
+   removes suspects (b) and most of the window mismatch; `run_fieldmap_oct000_field4096.slurm`.
+2. Composite script: print a window-corrected A/kap column from the measured
+   per-band decomposition (Gaussian w_ℓ per map's actual Nside + flat halo grid).
+3. If the ℓ≳2000 gap persists: **exclusion-radius scan** (R = 0.7·R_L vs R_L, one
+   octant field job each) — the knob with genuine physics freedom.
+4. Then: kSZ field validation (τ/kSZ maps exist from job 4304169) and the z>4.5
+   Gaussian κ tail.
 
 ## Bugs found on the way (fixed in 74bace1)
 
