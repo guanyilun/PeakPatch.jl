@@ -68,13 +68,16 @@ const RHOS_OVER_RHOM = 200 * CNFW^3 / (3 * f_nfw(CNFW))
 # an earlier version divided, suppressing halos by χ² ≈ 10⁷ (and its self-test
 # used the same wrong W, so it "passed" — hence the independent aggregate check
 # against ∫W f_coll dχ below).
-@inline function kappa_halo(θ, M, z, χ; comp::Bool)
+# comp: 0 = plain NFW; 1 = subtract sphere of the TOTAL painted mass 1.636·M200m
+# (zero net mass); 2 = paper-literal "same mass as the halo" = M200m (net +0.636·M).
+@inline function kappa_halo(θ, M, z, χ; comp::Int=0)
     r200 = cbrt(3 * M / (800π * rho_mh))
     rs = r200 / CNFW
     b = θ * χ
     Σ = b / rs < XMAX * CNFW ? RHOS_OVER_RHOM * rs * g_of_x(b / rs) : 0.0
-    if comp
-        Rc = cbrt(3 * MTOT_FAC * M / (4π * DCOMP * rho_mh))
+    if comp > 0
+        Msph = comp == 1 ? MTOT_FAC * M : M
+        Rc = cbrt(3 * Msph / (4π * DCOMP * rho_mh))
         b < Rc && (Σ -= DCOMP * 2 * sqrt(Rc^2 - b^2))
     end
     1.5 * 0.31 * H0C^2 * (1 + z) * χ * (1 - χ / chistar) * Σ
@@ -95,15 +98,15 @@ end
 let M = 3e14, z = 0.7
     cosmo0 = CosmologyParams(0.31, 0.049, 0.69, hub, 0.965, 0.81)
     χ = chi(z, cosmo0)
-    for comp in (false, true)
-        θmax = paint_radius(M; comp=comp) / χ
+    for comp in (0, 1, 2)
+        θmax = paint_radius(M; comp=comp > 0) / χ
         n = 40000; h = θmax / n; acc = 0.0
         for i in 1:n
             θ = (i - 0.5) * h
             acc += kappa_halo(θ, M, z, χ; comp=comp) * 2π * θ * h
         end
-        want = comp ? 0.0 : kappa_halo_integral(M, z, χ)
-        @printf("NFW self-test comp=%-5s: ∫κdΩ = %+.4e (expect %+.4e)\n", comp, acc, want)
+        want = (comp == 0 ? 1.0 : comp == 1 ? 0.0 : 1 - 1 / MTOT_FAC) * kappa_halo_integral(M, z, χ)
+        @printf("NFW self-test comp=%d: ∫κdΩ = %+.4e (expect %+.4e)\n", comp, acc, want)
         abs(acc - want) < 0.01 * kappa_halo_integral(M, z, χ) || error("NFW self-test failed")
     end
     χ5 = chi(0.5, cosmo0)
@@ -208,7 +211,7 @@ end
 # Returns (plain, compensated) patches in one pass.
 function paint_halos_cap(h, chi2z, ax, s, npixf)
     e1, e2 = ortho_basis(ax)
-    h0 = zeros(npixf, npixf); hc = zeros(npixf, npixf)
+    h0 = zeros(npixf, npixf); hc = zeros(npixf, npixf); hp = zeros(npixf, npixf)
     dpix = 2s / npixf
     npaint = 0
     @inbounds for n in eachindex(h.M)
@@ -227,7 +230,7 @@ function paint_halos_cap(h, chi2z, ax, s, npixf)
         jhi = min(npixf, ceil(Int, (gyh + gmax + s) / dpix))
         (ilo <= ihi && jlo <= jhi) || continue
         npaint += 1
-        sum0 = 0.0; sumc = 0.0
+        sum0 = 0.0; sumc = 0.0; sump = 0.0
         for j in jlo:jhi
             gy = -s + (j - 0.5) * dpix
             for i in ilo:ihi
@@ -239,25 +242,28 @@ function paint_halos_cap(h, chi2z, ax, s, npixf)
                          (sqrt(px^2 + py^2 + pz^2) * vn)
                 θ = acos(clamp(cosang, -1.0, 1.0))
                 θ > θmaxc && continue
-                w0 = kappa_halo(θ, M, z, r; comp=false)
-                wc = kappa_halo(θ, M, z, r; comp=true)
-                h0[i, j] += w0; hc[i, j] += wc
-                sum0 += w0; sumc += wc
+                w0 = kappa_halo(θ, M, z, r; comp=0)
+                wc = kappa_halo(θ, M, z, r; comp=1)
+                wp = kappa_halo(θ, M, z, r; comp=2)
+                h0[i, j] += w0; hc[i, j] += wc; hp[i, j] += wp
+                sum0 += w0; sumc += wc; sump += wp
             end
         end
         # per-halo exactness: pixel-center sampling misses the NFW cusp for halos
         # near/below the pixel scale — deposit the residual vs the analytic totals
-        # (plain: W·M_tot/ρ̄χ²; compensated: exactly 0) into the nearest pixel.
-        # Only for halos whose full paint window fits the grid (no edge clipping).
+        # (plain: W·M_tot/ρ̄χ²; full comp: 0; partial comp: (1−1/1.636)·plain) into
+        # the nearest pixel. Only when the full paint window fits the grid.
         icen = floor(Int, (gxh + s) / dpix) + 1
         jcen = floor(Int, (gyh + s) / dpix) + 1
         if 1 <= icen <= npixf && 1 <= jcen <= npixf &&
            gxh - gmax > -s && gxh + gmax < s && gyh - gmax > -s && gyh + gmax < s
-            h0[icen, jcen] += kappa_halo_integral(M, z, r) / dpix^2 - sum0
+            ki = kappa_halo_integral(M, z, r) / dpix^2
+            h0[icen, jcen] += ki - sum0
             hc[icen, jcen] += -sumc
+            hp[icen, jcen] += ki * (1 - 1 / MTOT_FAC) - sump
         end
     end
-    (h0, hc, npaint)
+    (h0, hc, hp, npaint)
 end
 
 # ---------- run ----------
@@ -296,39 +302,44 @@ caphalos = select_cap_halos(CAT, chi2z, axes, s)
 @info "selected" nper=[length(h.M) for h in caphalos]
 
 nb = length(lc)
-cA = zeros(nb, NCAPS); cB = zeros(nb, NCAPS); cK = zeros(nb, NCAPS)
+cA = zeros(nb, NCAPS); cB = zeros(nb, NCAPS); cB2 = zeros(nb, NCAPS); cK = zeros(nb, NCAPS)
 cFE = zeros(nb, NCAPS); cFA = zeros(nb, NCAPS); cH0 = zeros(nb, NCAPS); cHC = zeros(nb, NCAPS)
 for (ic, ax) in enumerate(axes)
     pfe = PFE[ic]; pfa = PFA[ic]; pk_ = PK[ic]
-    h0, hc, npaint = paint_halos_cap(caphalos[ic], chi2z, ax, s, NPIXFLAT)
+    h0, hc, hp, npaint = paint_halos_cap(caphalos[ic], chi2z, ax, s, NPIXFLAT)
     pA = pfe .+ h0                     # scheme A: excluded field + plain NFW
-    pB = pfa .+ hc                     # scheme B: full field + Δ=3-compensated NFW
+    pB = pfa .+ hc                     # scheme B: full field + Δ=3 comp (mass 1.636·M)
+    pB2 = pfa .+ hp                    # scheme B2: full field + Δ=3 comp (mass M, paper literal)
     cA[:, ic] = cl_flat(pA, L, ledges);  cB[:, ic] = cl_flat(pB, L, ledges)
+    cB2[:, ic] = cl_flat(pB2, L, ledges)
     cK[:, ic] = cl_flat(pk_, L, ledges)
     cFE[:, ic] = cl_flat(pfe, L, ledges); cFA[:, ic] = cl_flat(pfa, L, ledges)
     cH0[:, ic] = cl_flat(h0, L, ledges);  cHC[:, ic] = cl_flat(hc, L, ledges)
-    @info "cap $ic done" npaint mean_A=round(mean(pA); digits=4) mean_B=round(mean(pB); digits=4) mean_kap=round(mean(pk_); digits=4)
+    @info "cap $ic done" npaint mean_A=round(mean(pA); digits=4) mean_B=round(mean(pB); digits=4) mean_B2=round(mean(pB2); digits=4) mean_kap=round(mean(pk_); digits=4)
 end
 
-@printf("\n%-7s %-11s %-8s %-8s %-8s %-8s %-8s %-8s %-8s %-8s\n",
-        "ell", "Cl_kap", "A/kap", "+-", "A/kap*", "B/kap", "+-", "fldE/kap", "fldA/kap", "halo/kap")
+@printf("\n%-7s %-11s %-8s %-8s %-8s %-8s %-8s %-8s %-8s %-8s %-8s\n",
+        "ell", "Cl_ref", "A/ref", "+-", "A/ref*", "B/ref", "+-", "B2/ref", "+-", "fldA/ref", "halo/ref")
 dpixf = 2s / NPIXFLAT
 for i in eachindex(lc)
     rA = [cA[i, c] / cK[i, c] for c in 1:NCAPS]
     rB = [cB[i, c] / cK[i, c] for c in 1:NCAPS]
-    # window-corrected A/kap from the measured per-band decomposition:
+    rB2 = [cB2[i, c] / cK[i, c] for c in 1:NCAPS]
+    # window-corrected A/ref from the measured per-band decomposition:
     # A = fldE (field-map window) + halo (flat-grid window) + cross (geometric mean)
     wfe = w2_hp(lc[i], ns_fe); wh = w2_flat(lc[i], dpixf); wk = w2_hp(lc[i], ns_k)
     fldE = mean(cFE[i, :]); halo = mean(cH0[i, :]); crossA = mean(cA[i, :]) - fldE - halo
     Astar = (fldE / wfe + halo / wh + crossA / sqrt(wfe * wh)) / (mean(cK[i, :]) / wk)
-    @printf("%-7.0f %-11.3e %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f\n",
+    @printf("%-7.0f %-11.3e %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f\n",
             lc[i], mean(cK[i, :]), mean(rA), std(rA), Astar, mean(rB), std(rB),
-            fldE / mean(cK[i, :]), mean(cFA[i, :]) / mean(cK[i, :]),
-            halo / mean(cK[i, :]))
+            mean(rB2), std(rB2),
+            mean(cFA[i, :]) / mean(cK[i, :]), halo / mean(cK[i, :]))
 end
 sel = findall(l -> 150 <= l <= 2500, lc)
 mA = mean([mean(cA[i, :]) / mean(cK[i, :]) for i in sel])
 mB = mean([mean(cB[i, :]) / mean(cK[i, :]) for i in sel])
-@printf("\nband mean 150<=ell<=2500:  A/kap = %.3f   B/kap = %.3f\n", mA, mB)
-@printf("Caveats: different realizations (cap scatter is the error bar); kap.fits includes\n")
-@printf("the z>4.5 Gaussian tail (small at ell>~100) and its own Nside-4096 pixel window.\n")
+mB2 = mean([mean(cB2[i, :]) / mean(cK[i, :]) for i in sel])
+@printf("\nband mean 150<=ell<=2500:  A/ref = %.3f   B/ref = %.3f   B2/ref = %.3f\n", mA, mB, mB2)
+@printf("Caveats: different realizations (cap scatter is the error bar). Reference map\n")
+@printf("choice matters: kap.fits INCLUDES the z>4.5 Gaussian tail (15-45%% of C_l,\n")
+@printf("measured from kap_gt4.5.fits); use kap_lt4.5.fits for apples-to-apples.\n")
