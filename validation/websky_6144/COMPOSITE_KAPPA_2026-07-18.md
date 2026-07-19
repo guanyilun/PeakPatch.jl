@@ -1,4 +1,11 @@
-# Composite κ vs kap.fits: full-map reproduction at the ~10% level (2026-07-18)
+# Composite κ vs kap.fits (2026-07-18)
+
+> **⚠️ MAJOR CORRECTION (2026-07-19, see the section at the bottom): the original
+> conclusion below — "scheme A wins" — was an artifact of comparing against the WRONG
+> reference. kap.fits INCLUDES the z>4.5 Gaussian tail (15–45% of C_ℓ, not "small").
+> Against the correct apples-to-apples reference kap_lt4.5.fits, scheme B
+> (compensated) matches and scheme A overshoots by ~40%. A's apparent agreement with
+> kap.fits was an accidental cancellation of two ~40% errors.**
 
 Assembled κ maps from our own pipeline components and compared both Websky
 double-counting schemes against the released kap.fits (job 4310996,
@@ -63,6 +70,37 @@ double-counting schemes against the released kap.fits (job 4310996,
    octant field job each) — the knob with genuine physics freedom.
 4. Then: kSZ field validation (τ/kSZ maps exist from job 4304169) and the z>4.5
    Gaussian κ tail.
+
+# CORRECTION & RESOLUTION (2026-07-19): the flat 10% and the scheme question
+
+Following the user's challenge on the residual deficit, three independent
+measurements got to the bottom:
+
+1. **Full-sky anafast of kap.fits** (degraded to Nside 512, window-corrected):
+   kap.fits/linear-total(z→1089) = 0.94–0.97 FLAT over ℓ=50–520, while
+   kap.fits/linear(z<4.6) rises 1.13→1.50. **kap.fits contains the z>4.5 tail.**
+2. **The release provides the split**: kap_lt4.5.fits and kap_gt4.5.fits
+   (downloaded to websky_ref/). Full-sky spectra: lt4.5 = 0.93–1.00 × linear(z<4.5);
+   gt4.5 = 0.92–0.94 × the linear Limber tail — the tail is **15% → 34% of total C_ℓ
+   over ℓ=50–520** (Limber: →47% by ℓ=3400 in linear terms). The old "small at
+   ℓ≳100" caveat was simply wrong.
+3. **Composite vs kap_lt4.5.fits** (job 4319404, apples-to-apples):
+   **A/lt4.5 = 1.38–1.44 at ℓ=323–1237** (falling to 1.19 at 3383) — scheme A
+   OVERSHOOTS their z<4.5 map, by just about the amount of its +0.636·M200m/halo
+   double count (plain NFW paints 1.636·M but the field only excises 1.0·M).
+   **B/lt4.5 = 1.05–1.14, roughly flat** — the compensated construction matches.
+   Consistency: B + measured gt4.5 tail reproduces kap.fits at ~1.04–1.06; and the
+   caps' implied tail (kap − lt at ℓ=884: 4.3e-9) equals 0.92 × the Limber tail.
+
+**Websky's κ construction is the COMPENSATED one (§3.2.4 applied to κ as §3.2.3
+says), not the exclusion reading.** Scheme A's match to kap.fits was two ~40% errors
+cancelling: (+) tail-mass double count vs (−) missing z>4.5 tail.
+
+Remaining +5–14% of B vs lt4.5 — suspected cause: our compensation sphere carries
+the total painted mass (1.636·M) while the paper says "the same mass as the halo"
+(M200m, leaving +0.636·M net — scheme B2). Final refinement run (B2 variant + both
+field maps at Nside 4096): jobs 4319537 (full-matter 4096 field) → chained composite
+vs kap_lt4.5. Numbers to be appended.
 
 ## Bugs found on the way (fixed in 74bace1)
 
