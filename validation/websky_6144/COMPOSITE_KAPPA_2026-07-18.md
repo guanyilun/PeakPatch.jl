@@ -96,11 +96,35 @@ measurements got to the bottom:
 says), not the exclusion reading.** Scheme A's match to kap.fits was two ~40% errors
 cancelling: (+) tail-mass double count vs (−) missing z>4.5 tail.
 
-Remaining +5–14% of B vs lt4.5 — suspected cause: our compensation sphere carries
-the total painted mass (1.636·M) while the paper says "the same mass as the halo"
-(M200m, leaving +0.636·M net — scheme B2). Final refinement run (B2 variant + both
-field maps at Nside 4096): jobs 4319537 (full-matter 4096 field) → chained composite
-vs kap_lt4.5. Numbers to be appended.
+## Final numbers (2026-07-19, job 4321268: both field maps Nside 4096, vs kap_lt4.5)
+
+| ℓ    | A/lt4.5 | B/lt4.5 (full comp, net 0) | B2/lt4.5 (M-sphere, net +0.636M) |
+|------|---------|----------------------------|----------------------------------|
+| 165  | 1.38    | **0.99 ± 0.22**            | 1.35                             |
+| 452  | 1.42    | **1.08 ± 0.12**            | 1.39                             |
+| 884  | 1.38    | **1.12 ± 0.04**            | 1.37                             |
+| 1730 | 1.34    | 1.20 ± 0.03                | 1.38                             |
+| 3383 | 1.19    | 1.20 ± 0.02                | 1.27                             |
+
+Band means (150≤ℓ≤2500): A = 1.384, **B = 1.107**, B2 = 1.376.
+
+- **B2 ≈ A (1.376 vs 1.384)** — a decisive internal consistency check: both net
+  +0.636·M200m per halo (A by exclusion bookkeeping, B2 by under-compensation), and
+  they land on the same C_ℓ. The mass ledger fully explains the scheme differences.
+- **B (zero-net-mass compensation) is Websky's construction**: 0.99–1.12 for
+  ℓ=165–884, rising to ~1.20 at ℓ≥1730. The earlier "B falls back to 1.05 at ℓ=3383"
+  was the Nside-2048 full-matter map's pixel window — gone at 4096.
+- The remaining high-ℓ excess (+20%, we are ABOVE kap_lt4.5) plausibly reflects that
+  OUR halo painting is per-halo mass-exact (residual deposits) while pks2map samples
+  profiles at Nside-4096 pixel centers with no residual correction — sub-pixel halos
+  lose most of their mass there (we measured 0.44× for exactly this failure mode in
+  our own painter before fixing it). At ℓ≳1500 our composite is plausibly MORE
+  faithful than kap_lt4.5 itself; low/mid ℓ agree within cap scatter.
+
+**Bottom line: Websky κ = full-matter 2LPT field + truncated-NFW halos minus a
+uniform Δ=3 sphere of the full painted mass (zero net) + Gaussian z>4.5 tail. Our
+pipeline reproduces kap_lt4.5 at ~1.0–1.1 (ℓ≲1000) and kap.fits at 1.04–1.06 once
+the measured tail is added.**
 
 ## Bugs found on the way (fixed in 74bace1)
 
