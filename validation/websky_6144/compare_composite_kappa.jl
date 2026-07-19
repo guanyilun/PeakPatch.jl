@@ -110,7 +110,7 @@ let M = 3e14, z = 0.7
         abs(acc - want) < 0.01 * kappa_halo_integral(M, z, χ) || error("NFW self-test failed")
     end
     χ5 = chi(0.5, cosmo0)
-    κ1 = kappa_halo(deg2rad(1 / 60), 1e15, 0.5, χ5; comp=false)
+    κ1 = kappa_halo(deg2rad(1 / 60), 1e15, 0.5, χ5; comp=0)
     @printf("amplitude anchor: κ(1e15 Msun/h, z=0.5, θ=1′) = %.3f (expect 0.05-2)\n", κ1)
     0.05 < κ1 < 2 || error("halo κ amplitude anchor failed — kernel wrong")
 end
