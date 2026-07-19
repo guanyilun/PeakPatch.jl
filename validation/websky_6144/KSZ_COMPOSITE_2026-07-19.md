@@ -56,12 +56,32 @@ variance: field/ksz.fits = 2.1, 2.4, 3.2, 1.8, 1.06, 0.93, 0.82 at
    prior validation passed. Halo v-statistics validated only at r<50 Mpc/h (v12) or
    1-pt (σ_vr) — also blind to this band.
 
-   **Test in flight**: job 4321358 reruns the full-matter octant with
-   coarse_factor=16 (256³, Nyquist 0.154) at Nside 2048; same seed (coarse noise is
-   block-averaged from the same fine noise, so same realization). Analysis:
-   `compare_cf16_ksz.jl` — if ksz_cf16/ksz.fits → ~1 at ℓ<350 while kappa_cf16/cf4
-   stays ~1 (density control), mechanism confirmed and the production fix is a
-   larger coarse grid.
+   **✅ CONFIRMED (job 4321559, coarse_factor=16 = 256³ coarse grid, Nyquist 0.154,
+   same underlying noise → same realization; 65 min on ONE L40S at Nside 2048).**
+   Whole-octant pseudo-C_ℓ (`compare_cf16_ksz.jl`):
+
+   | ℓ    | ksz cf4/ref | ksz cf16/ref | κ cf16/cf4 |
+   |------|-------------|--------------|------------|
+   | 118  | 2.13        | **1.44**     | 1.10       |
+   | 163  | 2.35        | **1.40**     | 1.19       |
+   | 226  | 3.16        | **1.29**     | 1.16       |
+   | 320  | 1.78        | **1.16**     | 1.11       |
+   | 449  | 1.06        | 1.01         | 1.03       |
+   | ≥626 | 0.93→0.70   | 0.94→0.77    | 0.95-1.04  |
+
+   The low-ℓ excess collapses (2.1-3.2× → 1.2-1.4×) with the density control moving
+   only 10-19% — and in the direction of MORE power in the same transition band,
+   i.e. the 64³ coarse grid was also mildly suppressing density there (κ field/CAMB
+   was 0.94-0.95; cf16 lands ~1.03-1.13). Residual 1.2-1.4× at ℓ≲250: coarse
+   Nyquist 0.154 still marginal for the band (tricubic interp degrades near
+   Nyquist), z_max 4.6 vs 4.5 (+10% in u0²), octant realization variance.
+   **Convergence test in flight: job 4321879, coarse_factor=32 (512³, Nyquist
+   0.31); `compare_cf32_ksz.jl`.**
+
+   Production implication: coarse_factor=4 is fine for catalogs/density statistics
+   but NOT for velocity-sensitive painted products; field-map (and eventually
+   catalog-velocity) runs should use coarse_factor ≥16 — cost is negligible
+   (65 min single-GPU octant at 2048 including the bigger coarse FFTs).
 
 ## Notes
 
