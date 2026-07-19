@@ -263,6 +263,7 @@ end
 # ---------- run ----------
 field_excl_path = ARGS[1]
 field_all_path = ARGS[2]
+ref_path = length(ARGS) >= 3 ? ARGS[3] : joinpath(WREF, "kap.fits")   # e.g. kap_lt4.5.fits
 
 s = tan(deg2rad(CAPDEG)) / sqrt(2)
 L = 2s
@@ -281,7 +282,8 @@ end
 @info "extracting cap patches (maps read one at a time)..."
 PFE, ns_fe = patches_of(field_excl_path, axes, s)
 PFA, ns_fa = patches_of(field_all_path, axes, s)
-PK,  ns_k  = patches_of(joinpath(WREF, "kap.fits"), axes, s)
+PK,  ns_k  = patches_of(ref_path, axes, s)
+@info "reference map" ref_path
 @info "map nsides" field_excl=ns_fe field_all=ns_fa kap=ns_k
 
 # Gaussian pixel-window approximations (good to <1% at these ell):
