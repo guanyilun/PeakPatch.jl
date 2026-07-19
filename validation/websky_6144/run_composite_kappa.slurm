@@ -19,7 +19,8 @@ export JULIA_DEPOT_PATH="/home/yguan/scratch/julia_depot_killarney:${HOME}/.juli
 
 cd /home/yguan/work/PeakPatch.jl
 FMAPS=/home/yguan/scratch/websky_6144/fieldmaps
+FIELD="${1:-${FMAPS}/kappa_websky_6144_oct000_finecell_field_nside2048.fits}"
 julia --project=. --threads=${JULIA_NUM_THREADS} \
     validation/websky_6144/compare_composite_kappa.jl \
-    "${FMAPS}/kappa_websky_6144_oct000_finecell_field_nside2048.fits" \
+    "${FIELD}" \
     "${FMAPS}/kappa_websky_6144_oct000_finecell_nside2048.fits"
