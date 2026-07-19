@@ -1,0 +1,55 @@
+# Websky 6144^3 GPU Multi-Resolution — Octant 000 — FACTOR-h-CORRECTED RESOLUTION
+#
+# ROOT-CAUSE FIX (see memory/websky_cellsize_factor_h.md): Websky's (7.7 Gpc)^3 box is
+# 7700 Mpc = 5236 Mpc/h, NOT 7700 Mpc/h. The original run used 7700 Mpc/h -> cellsize
+# 1.2533 Mpc/h, which is 1/h = 1.47x COARSER than Websky's 0.852 Mpc/h, raising our mass
+# floor to ~3e12 vs Websky's ~1.2e12. This config uses the CORRECTED box so cellsize matches.
+#
+# Killarney Standard Compute (4x L40S 48 GB). Observer at centered coord (-2618,-2618,-2618).
+#
+# Geometry (factor-h corrected):
+#   ntile=16, nmesh=414, nbuff=16  (same tiling as original)
+#   nsub = 414 - 32 = 382 ;  N = 382*16 + 32 = 6144
+#   cellsize = 5236/6144 = 0.85221 Mpc/h   (= 7700/6144 Mpc, MATCHES Websky)
+#   per-tile boxsize = 414 * 0.85221 = 352.8164 Mpc/h
+#   total box = 6144 * 0.85221 = 5236 Mpc/h  (= 7700 Mpc)
+#   smallest filter Rf_min = 1.65*0.85221 = 1.406 Mpc/h -> M_min ~1.0e12 (Websky floor ~1.23e12)
+
+[cosmology]
+Om   = 0.31
+OB   = 0.049
+OL   = 0.69
+h    = 0.68
+
+[grid]
+n       = 414
+boxsize = 352.8164
+nbuff   = 16
+cenx    = -2618.0
+ceny    = -2618.0
+cenz    = -2618.0
+
+[run]
+z_out     = 0.0
+z_max     = 4.6
+ievol     = 1
+ilpt      = 2
+ioutshear = 1
+wsmooth   = 1
+rmax2rs   = 0.0
+NonGauss  = 0
+fNL       = 0.0
+seed      = 12345
+ntile     = 16
+coarse_factor = 32
+generate_table = false
+
+[files]
+pk         = "validation/websky_6144/data/pk_websky.dat"
+filterbank = "validation/websky_6144/data/filters_websky_finecell.dat"
+homeltab   = "validation/websky_6144/data/HomelTab_websky.dat"
+output     = "catalog_websky_6144_oct000_finecell.pksc"
+
+[output]
+format = "pksc"
+path   = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"

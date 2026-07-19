@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=pp-field-cf16
+#SBATCH --job-name=pp-field-cf32
 #SBATCH --account=aip-aspuru-ab
 #SBATCH --partition=gpubase_l40s_b1
 #SBATCH --nodes=1
@@ -7,8 +7,8 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=96G
 #SBATCH --time=2:55:00
-#SBATCH --output=/home/yguan/scratch/websky_6144/logs/fieldmap_oct000_cf16_%j.out
-#SBATCH --error=/home/yguan/scratch/websky_6144/logs/fieldmap_oct000_cf16_%j.err
+#SBATCH --output=/home/yguan/scratch/websky_6144/logs/fieldmap_oct000_cf32_%j.out
+#SBATCH --error=/home/yguan/scratch/websky_6144/logs/fieldmap_oct000_cf32_%j.err
 
 # kSZ low-ell Doppler diagnosis: rerun the FULL-matter octant field maps with
 # coarse_factor=16 (coarse grid 256^3, Nyquist 0.154 h/Mpc, vs production 64^3 /
@@ -22,7 +22,7 @@ export JULIA_DEPOT_PATH="/home/yguan/scratch/julia_depot_killarney:${HOME}/.juli
 unset CUDA_VISIBLE_DEVICES
 
 cd /home/yguan/work/PeakPatch.jl
-CONFIG="validation/websky_6144/config_websky_6144_oct000_finecell_cf16.toml"
+CONFIG="validation/websky_6144/config_websky_6144_oct000_finecell_cf32.toml"
 
 echo "Node: $(hostname)"; echo "Start: $(date)"
 julia --project=. --threads=${JULIA_NUM_THREADS} \
