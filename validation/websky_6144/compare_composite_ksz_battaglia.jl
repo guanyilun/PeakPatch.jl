@@ -230,6 +230,9 @@ function select_cap_halos(path, chi2z, gt, axes, s)
                 M_RTH = 4 / 3 * π * rho_mh * R^3 / hub
                 mh = sqrt(deltacrit(z) / 200) * M_RTH
                 mh > MMIN_MSUN || continue
+                # Websky's second cut (§4.4.2): r200c must subtend > 0.5 arcmin;
+                # smaller-angle halos live in the field component
+                rvir_com_mpc(mh, z) * hub / r > 1.4544e-4 || continue
                 aE = 1.0 / (1.0 + z)
                 fE = Dlinear_ab(aE, gt)[2]
                 vfac = aE * 100.0 * sqrt(Om * aE^-3 + OL) * fE
