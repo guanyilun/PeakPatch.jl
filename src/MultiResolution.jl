@@ -326,6 +326,9 @@ end
 
 _kernel_laplacian() = (kx, ky, kz, k2) -> k2
 
+# Inverse Laplacian ∇⁻²δ (potential up to the Poisson prefactor): pot(k) = -δ(k)/k²
+_kernel_pot() = (kx, ky, kz, k2) -> -1 / k2
+
 # ============================================================
 # GPU dispatch helper
 # ============================================================
@@ -341,7 +344,7 @@ Shared entry point used by `run_multitile_split`. Calls the CPU
 `_isolated_convolve` or the GPU `isolated_convolve_gpu` based on `use_gpu`.
 `kernel_id` matches the CUDA kernel IDs:
   0=δ, 1=1LPT (uses `dim1`), 2=2LPT (uses `dim1`),
-  3=φ_ij (uses `dim1`, `dim2`), 4=Laplacian.
+  3=φ_ij (uses `dim1`, `dim2`), 4=Laplacian, 5=∇⁻² (potential).
 """
 function _isolated_convolve_dispatch(use_gpu::Bool, noise::Array{Float32,3}, pk,
                                       boxsize::Float64, n::Int,
@@ -357,6 +360,7 @@ function _isolated_convolve_dispatch(use_gpu::Bool, noise::Array{Float32,3}, pk,
          kernel_id == 2 ? _kernel_2lpt(dim1) :
          kernel_id == 3 ? _kernel_phi_ij(dim1, dim2) :
          kernel_id == 4 ? _kernel_laplacian() :
+         kernel_id == 5 ? _kernel_pot() :
          error("bad kernel_id $kernel_id")
     return _isolated_convolve(noise, pk, boxsize, n; kernel_fn=kf, nshell=nshell)
 end

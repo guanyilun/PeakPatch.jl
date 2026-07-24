@@ -65,19 +65,21 @@ end
 # Paint the core cells of one tile into per-kernel maps. Function barrier: specializes
 # on the vec2pix callable. ψ arrays are host Arrays (downloaded from device if needed).
 function _paint_tile_field!(maps::Vector{Vector{Float64}},
-                            p1x, p1y, p1z, p2x, p2y, p2z,
+                            p1x, p1y, p1z, p2x, p2y, p2z, pot,
                             nmesh::Int, nbuff::Int, alatt::Float64,
                             xbx::Float64, ybx::Float64, zbx::Float64,
                             obs::NTuple{3,Float64}, rmin::Float64, chi_max::Float64,
                             inv_dr::Float64, nrt::Int,
                             rt_D::Vector{Float64}, rt_c2::Vector{Float64},
                             rt_vf::Vector{Float64}, rt_w::Vector{Vector{Float64}},
-                            vw::Vector{Bool}, excl::Union{Nothing,Array{Bool,3}},
+                            vw::Vector{Bool}, pw::Vector{Bool},
+                            excl::Union{Nothing,Array{Bool,3}},
                             theta_pix::Float64, subdiv_max::Int, vec2pix::F) where {F}
     cen = 0.5 * (nmesh + 1)
     has2 = p2x !== nothing
     nk = length(maps)
     need_v = any(vw)
+    need_p = any(pw)
     @inbounds for k in (nbuff+1):(nmesh-nbuff)
         qz = zbx + alatt * (k - cen)
         for j in (nbuff+1):(nmesh-nbuff)
@@ -93,6 +95,7 @@ function _paint_tile_field!(maps::Vector{Vector{Float64}},
                 if has2
                     s2x = Float64(p2x[i,j,k]); s2y = Float64(p2y[i,j,k]); s2z = Float64(p2z[i,j,k])
                 end
+                pv = need_p ? Float64(pot[i,j,k]) : 0.0
                 ns = min(subdiv_max, max(1, ceil(Int, (alatt / rq) / theta_pix)))
                 if ns == 1
                     D  = _rt_lerp(rt_D,  rq, inv_dr, nrt)
@@ -110,6 +113,7 @@ function _paint_tile_field!(maps::Vector{Vector{Float64}},
                     for ik in 1:nk
                         w = _rt_lerp(rt_w[ik], rq, inv_dr, nrt)
                         vw[ik] && (w *= vr)
+                        pw[ik] && (w *= pv)
                         maps[ik][pix] += w
                     end
                 else
@@ -136,6 +140,7 @@ function _paint_tile_field!(maps::Vector{Vector{Float64}},
                         for ik in 1:nk
                             w = wsub * _rt_lerp(rt_w[ik], rqs, inv_dr, nrt)
                             vw[ik] && (w *= vr)
+                            pw[ik] && (w *= pv)
                             maps[ik][pix] += w
                         end
                     end
@@ -216,6 +221,12 @@ Kernels (per-cell pixel contribution, lengths in Mpc/h):
 - `:ksz`   — −(v_r/c)·W_τ (eq 3.23): kSZ ΔT/T_CMB. v_r is the cell's LOS peculiar
   velocity v·q̂ with v = a·H·f·(D·ψ₁ + 2·D₂·ψ₂) (the `Merger.finalize_eulerian`
   convention, f₂≈2f) evaluated at the cell's Lagrangian distance.
+- `:isw`   — linear ISW ΔT/T_CMB = 2∫dχ (aH/c)(f−1)·φ, φ = (3/2)Ωm(H0/c)²(D/a)·∇⁻²δ₀.
+  The potential ∇⁻²δ₀ is generated per tile (coarse + fine, kernel −1/k²) and painted
+  as the cell VALUE. Linear only (Websky isw.fits construction: halo catalogs unused);
+  cells are painted at their (2LPT-displaced) positions — a second-order detail at ISW
+  scales. NOTE: the potential is dominated by k ≲ 0.01 h/Mpc; use a LARGE coarse grid
+  (coarse_factor ≥ 32 — same velocity-coherence argument as kSZ, but stronger).
 
 Halo exclusion (Websky §3.1.3 "field component"): pass
 `exclude_halos = (x=…, y=…, z=…, R=…)` (equal-length vectors; Lagrangian halo centers
@@ -311,6 +322,8 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
     rt_D  = zeros(nrt); rt_c2 = zeros(nrt); rt_vf = zeros(nrt)
     rt_w  = [zeros(nrt) for _ in kernels]
     vw    = Bool[kern === :ksz for kern in kernels]   # velocity-weighted kernels (×v_r)
+    pw    = Bool[kern === :isw for kern in kernels]   # potential-weighted kernels (×∇⁻²δ₀)
+    needs_pot = any(pw)
     for irt in 2:nrt
         r = (irt - 1) * rt_dr
         z = chi_to_z(chi2z, r)
@@ -335,8 +348,14 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
                 w_tau
             elseif kern === :ksz
                 -w_tau / c_kms          # painted weight × v_r [km/s] → −(v_r/c)·W_τ
+            elseif kern === :isw
+                # linear ISW ΔT/T = 2∫dχ (aH/c)(f−1)·φ with φ = (3/2)Ωm(H0/c)²(D/a)·pot0,
+                # pot0 = ∇⁻²δ₀ painted as the cell VALUE (pw mask) — weight carries the rest
+                3.0 * cosmo.Om * (1.0 / 2997.92458)^2 *
+                    (a * 100.0 * sqrt(cosmo.Om * a^-3 + cosmo.OL) / c_kms) * (f - 1.0) *
+                    (D / a) * alatt^3 / omega_pix / r^2
             else
-                error("unknown field-map kernel: $kern (supported: :mass, :kappa, :tau, :ksz)")
+                error("unknown field-map kernel: $kern (supported: :mass, :kappa, :tau, :ksz, :isw)")
             end
         end
     end
@@ -353,6 +372,10 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
     vwmask = UInt32(0)
     for ik in eachindex(kernels)
         vw[ik] && (vwmask |= UInt32(1) << (ik - 1))
+    end
+    pwmask = UInt32(0)
+    for ik in eachindex(kernels)
+        pw[ik] && (pwmask |= UInt32(1) << (ik - 1))
     end
 
     # ---- Halo exclusion: bin halos by tile for fast per-tile mask rasterization ----
@@ -402,6 +425,12 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
         _periodic_convolve!(psi_k, pk, M, boxsize_full; kernel_fn=_kernel_1lpt(dim))
         psi_coarse[dim] = irfft(psi_k, M)
     end
+    pot_coarse = nothing
+    if needs_pot
+        pot_k = copy(coarse_k)
+        _periodic_convolve!(pot_k, pk, M, boxsize_full; kernel_fn=_kernel_pot())
+        pot_coarse = irfft(pot_k, M)
+    end
     coarse_k = nothing
     verbose && @info "fieldmap Phase 1a: coarse fields done (N=$N, M=$M)"
 
@@ -433,11 +462,15 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
         psi2_host = nothing
         psi_dev = nothing
         psi2_dev = nothing
+        pot_host = nothing
+        pot_dev = nothing
         if use_gpu
             fn_multi = getglobal(_pp_parent(), :isolated_convolve_gpu_multi)
+            klist = needs_pot ?
+                [(0, 0, 0), (1, 1, 0), (1, 2, 0), (1, 3, 0), (5, 0, 0)] :
+                [(0, 0, 0), (1, 1, 0), (1, 2, 0), (1, 3, 0)]
             outs = fn_multi(residual, pk, boxsize_local, nmesh;
-                             kernels=[(0, 0, 0), (1, 1, 0), (1, 2, 0), (1, 3, 0)],
-                             nshell=0, return_device=true)
+                             kernels=klist, nshell=0, return_device=true)
             delta_self = outs[1]
             fn_interp = getglobal(_pp_parent(), :interpolate_to_tile_gpu)
             delta_tile = delta_self .+ fn_interp(delta_coarse, it, jt, kt, nsub, nmesh, N, M;
@@ -449,6 +482,12 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
                                       return_device=true)
                 psi_dev[dim] = outs[dim+1] .+ psi_long
                 psi_long = nothing
+            end
+            if needs_pot
+                pot_long = fn_interp(pot_coarse, it, jt, kt, nsub, nmesh, N, M;
+                                      return_device=true)
+                pot_dev = outs[5] .+ pot_long
+                pot_long = nothing
             end
             if ilpt >= 2
                 fn2 = getglobal(_pp_parent(), :compute_2lpt_gpu)
@@ -468,6 +507,10 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
                     end
                     psi2_dev = nothing
                 end
+                if pot_dev !== nothing
+                    pot_host = Array(pot_dev)
+                    pot_dev = nothing
+                end
             end
         else
             delta_self = _isolated_convolve_dispatch(false, residual, pk,
@@ -480,6 +523,12 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
                                                         boxsize_local, nmesh, 1, dim, 0)
                 psi_host[dim] = psi_self .+ _interpolate_to_tile(psi_coarse[dim], it, jt, kt,
                                                                   nsub, nmesh, N, M)
+            end
+            if needs_pot
+                pot_self = _isolated_convolve_dispatch(false, residual, pk,
+                                                        boxsize_local, nmesh, 5, 0, 0)
+                pot_host = pot_self .+ _interpolate_to_tile(pot_coarse, it, jt, kt,
+                                                             nsub, nmesh, N, M)
             end
             if ilpt >= 2
                 delta_tile_k = rfft(delta_tile)
@@ -518,15 +567,16 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
             fnp(acc.maps_d, psi_dev[1], psi_dev[2], psi_dev[3], p2[1], p2[2], p2[3],
                 acc.rt_d, nmesh, nbuff, alatt, xbx, ybx, zbx, obs, rmin_eff, chi_max,
                 inv_dr, nrt, theta_pix, subdiv_max, nside, length(kernels), has2,
-                vwmask, excl)
-            psi_dev = nothing; psi2_dev = nothing
+                vwmask, excl, pot_dev, pwmask)
+            psi_dev = nothing; psi2_dev = nothing; pot_dev = nothing
         else
             _paint_tile_field!(acc, psi_host[1], psi_host[2], psi_host[3],
                                psi2_host === nothing ? nothing : psi2_host[1],
                                psi2_host === nothing ? nothing : psi2_host[2],
                                psi2_host === nothing ? nothing : psi2_host[3],
+                               pot_host,
                                nmesh, nbuff, alatt, xbx, ybx, zbx, obs, rmin_eff, chi_max,
-                               inv_dr, nrt, rt_D, rt_c2, rt_vf, rt_w, vw, excl,
+                               inv_dr, nrt, rt_D, rt_c2, rt_vf, rt_w, vw, pw, excl,
                                theta_pix, subdiv_max, vec2pix)
         end
         verbose && @info "  fieldmap tile $ti/$(length(tile_ids)) ($it,$jt,$kt) painted"

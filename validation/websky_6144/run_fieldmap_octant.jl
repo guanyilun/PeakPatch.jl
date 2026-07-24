@@ -78,7 +78,7 @@ function main()
     t0 = time()
     maps = run_multitile_fieldmap(cfg; ntile=ntile, seed=seed, coarse_factor=coarse_factor,
                                   npix=npix, vec2pix=v2p,
-                                  kernels=[:kappa, :mass, :tau, :ksz],
+                                  kernels=[:kappa, :mass, :tau, :ksz, :isw],
                                   chi_star=chi_star, subdiv_max=(gpu_paint ? 5 : 3),
                                   exclude_halos=exclude_halos,
                                   use_gpu=true, devices=devices,

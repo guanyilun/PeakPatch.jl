@@ -41,7 +41,7 @@ let a2p = PeakPatch.MultiResolution.ang2pix_ring, rng = Random.MersenneTwister(7
     @printf("ang2pix_ring vs Healpix.jl: %d/200000 mismatches (exact-boundary ties only)\n", nbad)
 end
 
-KERNELS = [:kappa, :mass, :tau, :ksz]
+KERNELS = [:kappa, :mass, :tau, :ksz, :isw]
 @info "running fieldmap (subdiv_max=1: exact bookkeeping)..." N ntile use_gpu=USE_GPU
 maps = run_multitile_fieldmap(cfg; ntile=ntile, seed=12345, npix=npix, vec2pix=v2p,
                               kernels=KERNELS, subdiv_max=1,
@@ -60,8 +60,9 @@ maps3 = run_multitile_fieldmap(cfg; ntile=ntile, seed=12345, npix=npix, vec2pix=
 maps4 = run_multitile_fieldmap(cfg; ntile=ntile, seed=12345, npix=npix, vec2pix=v2p,
                                kernels=KERNELS, subdiv_max=3,
                                use_gpu=false, cpu_workers=4, verbose=false)
-@printf("cpu_workers=4 vs 1: mass ratio=%.8f  kappa ratio=%.8f (both MUST be 1.00000000)\n",
-        sum(maps4[:mass]) / sum(maps3[:mass]), sum(maps4[:kappa]) / sum(maps3[:kappa]))
+@printf("cpu_workers=4 vs 1: mass ratio=%.8f  kappa ratio=%.8f  isw ratio=%.8f (all MUST be 1.00000000)\n",
+        sum(maps4[:mass]) / sum(maps3[:mass]), sum(maps4[:kappa]) / sum(maps3[:kappa]),
+        sum(maps4[:isw]) / sum(maps3[:isw]))
 
 # ---- Phase B cross-check: on-device painting (gpu_paint) vs CPU pixelization ----
 # Non-fatal: reports and continues so a Phase-B regression never blocks the octant job.
@@ -81,7 +82,9 @@ if USE_GPU
         dt = maximum(abs.(mapsg[:tau] .- maps3[:tau])) / maximum(maps3[:tau])
         ksz_rms = sqrt(sum(abs2, maps3[:ksz]) / count(!iszero, maps3[:ksz]))
         dz = maximum(abs.(mapsg[:ksz] .- maps3[:ksz])) / ksz_rms
-        @printf("gpu_paint vs cpu: max|dtau|/max=%.2e  max|dksz|/rms=%.2e\n", dt, dz)
+        isw_rms = sqrt(sum(abs2, maps3[:isw]) / count(!iszero, maps3[:tau]))
+        di = maximum(abs.(mapsg[:isw] .- maps3[:isw])) / isw_rms
+        @printf("gpu_paint vs cpu: max|dtau|/max=%.2e  max|dksz|/rms=%.2e  max|disw|/rms=%.2e\n", dt, dz, di)
     catch err
         @error "gpu_paint cross-check FAILED (non-fatal)" exception=(err, catch_backtrace())
     end
@@ -140,6 +143,13 @@ vr_eff = abs(kszm) / (sum(maps[:tau][cov]) / length(cov)) * 299792.458
 @printf("ksz (covered pix): mean=%.3e  rms=%.3e  |mean|/rms=%.3f (should be <<1)\n",
         kszm, kszr, abs(kszm) / kszr)
 @printf("ksz implied bulk v_r: %.1f km/s (few-hundred km/s coherent flow OK at this tiny volume)\n", vr_eff)
+
+# ---- ISW: signed potential-weighted map; mean ~ coherent local potential, rms finite ----
+iswm = sum(maps[:isw][cov]) / length(cov)
+iswr = sqrt(sum(abs2, maps[:isw][cov]) / length(cov))
+@printf("isw (covered pix): mean=%.3e  rms=%.3e (finite, signed; tiny box -> no analytic anchor)\n",
+        iswm, iswr)
+iswr > 0 && isfinite(iswr) || error("ISW map degenerate")
 
 # ---- octant containment: pixels with mass should have direction in +++ octant (from obs at corner) ----
 pix_on = findall(>(0), maps[:mass])

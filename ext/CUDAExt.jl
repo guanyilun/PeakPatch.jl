@@ -2607,6 +2607,10 @@ function _transfer_kernel!(padded_k, pk_table, log_k_min::Float32,
         # Laplacian: k² × √P(k)
         coeff = Float32(sqrt_pk * k2)
         @inbounds padded_k[ix, iy, iz] = val * coeff
+    elseif kernel_fn_id == Int32(5)
+        # ∇⁻² (potential): -1/k² × √P(k)  (real coefficient)
+        coeff = Float32(-sqrt_pk / k2)
+        @inbounds padded_k[ix, iy, iz] = val * coeff
     end
     return
 end
@@ -3393,7 +3397,8 @@ function _fieldmap_paint_kernel!(maps, p1x, p1y, p1z, p2x, p2y, p2z, rt,
                                  rmin::Float64, chimax::Float64, inv_dr::Float64,
                                  nrt::Int, theta_pix::Float64, subdiv_max::Int,
                                  nside::Int, nk::Int, has2::Bool,
-                                 vwmask::UInt32, excl, has_excl::Bool)
+                                 vwmask::UInt32, excl, has_excl::Bool,
+                                 pot, has_pot::Bool, pwmask::UInt32)
     ncore = nmesh - 2 * nbuff
     idx = (blockIdx().x - 1) * blockDim().x + threadIdx().x
     idx > ncore * ncore * ncore && return nothing
@@ -3417,6 +3422,7 @@ function _fieldmap_paint_kernel!(maps, p1x, p1y, p1z, p2x, p2y, p2z, rt,
         if has2
             s2x = Float64(p2x[i, j, k]); s2y = Float64(p2y[i, j, k]); s2z = Float64(p2z[i, j, k])
         end
+        pv = has_pot ? Float64(pot[i, j, k]) : 0.0
         ns = min(subdiv_max, max(1, ceil(Int, (alatt / rq) / theta_pix)))
         wsub = 1.0 / (ns * ns * ns)
         for c3 in 1:ns, c2i in 1:ns, c1 in 1:ns
@@ -3445,6 +3451,7 @@ function _fieldmap_paint_kernel!(maps, p1x, p1y, p1z, p2x, p2y, p2z, rt,
             for ik in 1:nk
                 w = (rt[ii, 3+ik] * (1.0 - tt) + rt[ii+1, 3+ik] * tt) * wsub
                 (vwmask >> (ik - 1)) & UInt32(1) == UInt32(1) && (w *= vr)
+                (pwmask >> (ik - 1)) & UInt32(1) == UInt32(1) && (w *= pv)
                 CUDA.@atomic maps[pix, ik] += w
             end
         end
@@ -3475,16 +3482,20 @@ function PeakPatch.paint_tile_field_gpu!(maps_d::CuArray{Float64,2},
         xbx::Float64, ybx::Float64, zbx::Float64, obs::NTuple{3,Float64},
         rmin::Float64, chimax::Float64, inv_dr::Float64, nrt::Int,
         theta_pix::Float64, subdiv_max::Int, nside::Int, nk::Int, has2::Bool,
-        vwmask::UInt32=UInt32(0), excl::Union{Nothing,Array{Bool,3}}=nothing)
+        vwmask::UInt32=UInt32(0), excl::Union{Nothing,Array{Bool,3}}=nothing,
+        pot::Union{Nothing,CuArray{Float32,3}}=nothing, pwmask::UInt32=UInt32(0))
     ncore = nmesh - 2 * nbuff
     ntot = ncore^3
     has_excl = excl !== nothing
     excl_d = has_excl ? CuArray(excl) : CUDA.zeros(Bool, 1, 1, 1)
+    has_pot = pot !== nothing
+    pot_d = has_pot ? pot : p1x          # placeholder when unused (never read)
     threads = 256
     @cuda threads=threads blocks=cld(ntot, threads) _fieldmap_paint_kernel!(
         maps_d, p1x, p1y, p1z, p2x, p2y, p2z, rt_d, nmesh, nbuff, alatt,
         xbx, ybx, zbx, obs[1], obs[2], obs[3], rmin, chimax, inv_dr, nrt,
-        theta_pix, subdiv_max, nside, nk, has2, vwmask, excl_d, has_excl)
+        theta_pix, subdiv_max, nside, nk, has2, vwmask, excl_d, has_excl,
+        pot_d, has_pot, pwmask)
     CUDA.synchronize()
     return nothing
 end
