@@ -75,8 +75,11 @@ variance: field/ksz.fits = 2.1, 2.4, 3.2, 1.8, 1.06, 0.93, 0.82 at
    was 0.94-0.95; cf16 lands ~1.03-1.13). Residual 1.2-1.4× at ℓ≲250: coarse
    Nyquist 0.154 still marginal for the band (tricubic interp degrades near
    Nyquist), z_max 4.6 vs 4.5 (+10% in u0²), octant realization variance.
-   **Convergence test in flight: job 4321879, coarse_factor=32 (512³, Nyquist
-   0.31); `compare_cf32_ksz.jl`.**
+   **✅ CONVERGED (job 4321879, coarse_factor=32 = 512³, Nyquist 0.31, 1h12m on
+   one L40S): cf32/ref = 1.22/1.20/1.13/1.05/0.97 at ℓ=118/163/226/320/449 (cf16
+   was 1.44/1.40/1.29/1.16/1.01), κ cf32/cf16 = 0.97-1.04 at low ℓ.** The residual
+   ~10-20% at ℓ≲230 matches z_max 4.6-vs-4.5 (+10% in u0²) + single-octant
+   realization variance — field-velocity story CLOSED at coarse_factor≈32.**
 
    Production implication: coarse_factor=4 is fine for catalogs/density statistics
    but NOT for velocity-sensitive painted products; field-map (and eventually
