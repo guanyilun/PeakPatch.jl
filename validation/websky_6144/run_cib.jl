@@ -23,6 +23,17 @@ const MMIN_MSUN = 1.0e12          # CIB model min_mass
 freq_ghz = length(ARGS) >= 1 ? parse(Float64, ARGS[1]) : 545.0
 nside = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 4096
 nmax = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 0
+const COMPLETENESS_CUT = length(ARGS) >= 4 && ARGS[4] == "wcut"
+
+# Websky completeness: z, M_min(M200m, Msun/h)
+using DelimitedFiles
+_mc = readdlm(joinpath(WREF, "halo_mass_completion.txt"); comments=true, comment_char='#')
+const MC_Z = Float64.(_mc[:, 1]); const MC_M = Float64.(_mc[:, 2])
+function mmin_of_z(z)
+    i = clamp(searchsortedlast(MC_Z, z), 1, length(MC_Z) - 1)
+    t = clamp((z - MC_Z[i]) / (MC_Z[i+1] - MC_Z[i]), 0.0, 1.0)
+    MC_M[i] * (1 - t) + MC_M[i+1] * t
+end
 
 cosmo = get_cosmology(Float32; h=Float32(hub), OmegaM=0.31f0)
 
@@ -53,6 +64,7 @@ function load_halos(path, nmax)
                 M = 4 / 3 * π * rho_mh * R^3 / hub          # Msun (M200m proxy)
                 M > MMIN_MSUN || continue
                 q1 = Float64(buf[b+1]); q2 = Float64(buf[b+2]); q3 = Float64(buf[b+3])
+                # (websky completeness cut applied below, needs z)
                 rq = sqrt((q1 - OBS)^2 + (q2 - OBS)^2 + (q3 - OBS)^2)
                 a = chi2a(rq)
                 x = (q1 + Float64(buf[b+4]) * a - Float64(buf[b+8]) * a^2 - OBS) / hub
@@ -60,6 +72,13 @@ function load_halos(path, nmax)
                 z = (q3 + Float64(buf[b+6]) * a - Float64(buf[b+10]) * a^2 - OBS) / hub
                 r = sqrt(x^2 + y^2 + z^2)
                 (40.0 <= r <= 7600.0) || continue           # Mpc; z<~4.6
+                if COMPLETENESS_CUT
+                    # match Websky's z-dependent incompleteness (halo_mass_completion.txt,
+                    # M_min is M200m in Msun/h): our Tinker-complete catalog has ~2.2x
+                    # their count at 1-3e12 Msun -> 1.5x CIB without this cut
+                    zh = 1.0 / chi2a(rq) - 1.0
+                    M * hub > mmin_of_z(zh) || continue
+                end
                 push!(px, Float32(x)); push!(py, Float32(y)); push!(pz, Float32(z))
                 push!(mm, Float32(M))
             end
@@ -88,9 +107,10 @@ t0 = time()
 paint!(m, Float32(freq_ghz * 1e9), model, sources)
 @info "painted" min = round((time() - t0) / 60; digits=1)
 
-# XGPaint healpix paint adds source FLUXES (Jy) per pixel -> intensity MJy/sr
-omega_pix = 4π / nside2npix(nside)
-m.pixels ./= Float32(omega_pix * 1e6)
+# XGPaint's HEALPix paint! already divides by pixel area: map is MJy/sr directly
+# (fluxes are MJy; verified sum(map)*Omega_pix == sum(fluxes), and the 10x10
+# websky-patch test matches cib_nu0545 at 1.18 with NO further conversion).
+# (The earlier /(Omega_pix*1e6) was a no-op at nside 1024 only by coincidence.)
 
 out = joinpath(OUTD, "cib_nu$(lpad(Int(freq_ghz),4,'0'))_websky_6144_oct000_AM_nside$(nside).fits")
 Healpix.saveToFITS(m, "!" * out, typechar="E")

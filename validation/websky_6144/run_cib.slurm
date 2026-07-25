@@ -19,4 +19,4 @@ export JULIA_DEPOT_PATH="/home/yguan/scratch/julia_depot_killarney:${HOME}/.juli
 cd /home/yguan/work/PeakPatch.jl
 FREQ="${1:-545}"
 julia --project=/home/yguan/work/XGPaint.jl --threads=${JULIA_NUM_THREADS} \
-    validation/websky_6144/run_cib.jl "${FREQ}" 4096 0
+    validation/websky_6144/run_cib.jl "${FREQ}" 4096 0 wcut

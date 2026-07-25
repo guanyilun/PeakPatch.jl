@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=pp-cat-cf32
 #SBATCH --account=aip-aspuru-ab
-#SBATCH --partition=gpubase_l40s_b1
+#SBATCH --partition=gpubase_l40s_b2
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=4
 #SBATCH --cpus-per-task=32
 #SBATCH --mem=480G
-#SBATCH --time=3:00:00
+#SBATCH --time=10:00:00
 #SBATCH --output=/home/yguan/scratch/websky_6144/logs/finecell_oct000_cf32_%j.out
 #SBATCH --error=/home/yguan/scratch/websky_6144/logs/finecell_oct000_cf32_%j.err
 
