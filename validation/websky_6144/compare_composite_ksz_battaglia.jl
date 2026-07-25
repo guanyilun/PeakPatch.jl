@@ -216,15 +216,29 @@ function select_cap_halos(path, chi2z, gt, axes, s)
                 b = (k - 1) * nf
                 R = Float64(buf[b+7])
                 q1 = Float64(buf[b+1]); q2 = Float64(buf[b+2]); q3 = Float64(buf[b+3])
-                rq = sqrt((q1 - OBS)^2 + (q2 - OBS)^2 + (q3 - OBS)^2)
-                a = 1.0 / (1.0 + chi_to_z(chi2z, rq))
-                d11 = Float64(buf[b+4]) * a;  d12 = Float64(buf[b+5]) * a;  d13 = Float64(buf[b+6]) * a
-                d21 = -Float64(buf[b+8]) * a^2; d22 = -Float64(buf[b+9]) * a^2; d23 = -Float64(buf[b+10]) * a^2
-                vx = q1 + d11 + d21 - OBS
-                vy = q2 + d12 + d22 - OBS
-                vz = q3 + d13 + d23 - OBS
-                r = sqrt(vx^2 + vy^2 + vz^2)
-                (30.0 <= r <= 5170.0) || continue
+                local vx, vy, vz, r, vr
+                if NEWCONV
+                    # finalize_eulerian catalog: positions Eulerian, velocities km/s
+                    vx = q1 - OBS; vy = q2 - OBS; vz = q3 - OBS
+                    r = sqrt(vx^2 + vy^2 + vz^2)
+                    (30.0 <= r <= 5170.0) || continue
+                    vr = (Float64(buf[b+4]) * vx + Float64(buf[b+5]) * vy +
+                          Float64(buf[b+6]) * vz) / r
+                else
+                    rq = sqrt((q1 - OBS)^2 + (q2 - OBS)^2 + (q3 - OBS)^2)
+                    a = 1.0 / (1.0 + chi_to_z(chi2z, rq))
+                    d11 = Float64(buf[b+4]) * a;  d12 = Float64(buf[b+5]) * a;  d13 = Float64(buf[b+6]) * a
+                    d21 = -Float64(buf[b+8]) * a^2; d22 = -Float64(buf[b+9]) * a^2; d23 = -Float64(buf[b+10]) * a^2
+                    vx = q1 + d11 + d21 - OBS
+                    vy = q2 + d12 + d22 - OBS
+                    vz = q3 + d13 + d23 - OBS
+                    r = sqrt(vx^2 + vy^2 + vz^2)
+                    (30.0 <= r <= 5170.0) || continue
+                    aE0 = 1.0 / (1.0 + chi_to_z(chi2z, r))
+                    fE = Dlinear_ab(aE0, gt)[2]
+                    vfac = aE0 * 100.0 * sqrt(Om * aE0^-3 + OL) * fE
+                    vr = vfac * ((d11 + 2d21) * vx + (d12 + 2d22) * vy + (d13 + 2d23) * vz) / r
+                end
                 z = chi_to_z(chi2z, r)
                 # Fortran mass pipeline: M_RTH[Msun] (our Msun/h ÷ h) → SIS M200c proxy
                 M_RTH = 4 / 3 * π * rho_mh * R^3 / hub
@@ -233,10 +247,6 @@ function select_cap_halos(path, chi2z, gt, axes, s)
                 # Websky's second cut (§4.4.2): r200c must subtend > 0.5 arcmin;
                 # smaller-angle halos live in the field component
                 rvir_com_mpc(mh, z) * hub / r > 1.4544e-4 || continue
-                aE = 1.0 / (1.0 + z)
-                fE = Dlinear_ab(aE, gt)[2]
-                vfac = aE * 100.0 * sqrt(Om * aE^-3 + OL) * fE
-                vr = vfac * ((d11 + 2d21) * vx + (d12 + 2d22) * vy + (d13 + 2d23) * vz) / r
                 for c in 1:ncap
                     ax = axes[c]
                     na = (vx*ax[1] + vy*ax[2] + vz*ax[3]) / r
@@ -322,6 +332,10 @@ end
 # ---------- run ----------
 field_all_path = ARGS[1]
 ref_path = length(ARGS) >= 2 && !startswith(ARGS[2], "--") ? ARGS[2] : joinpath(WREF, "ksz.fits")
+# optional: 3rd arg = catalog override; 4th arg "newconv" = finalize_eulerian output
+# (fields 1-3 Eulerian Mpc/h, 4-6 velocity km/s — no displacement reconstruction)
+CATUSE = length(ARGS) >= 3 && !startswith(ARGS[3], "--") ? ARGS[3] : CAT
+NEWCONV = length(ARGS) >= 4 && ARGS[4] == "newconv" 
 
 s = tan(deg2rad(CAPDEG)) / sqrt(2)
 L = 2s
@@ -341,8 +355,8 @@ PFA, ns_fa = patches_of(field_all_path, axes, s; scale=TCMB_UK)
 PK,  ns_k  = patches_of(ref_path, axes, s)
 @info "maps" field=field_all_path ref=ref_path ns_field=ns_fa ns_ref=ns_k
 
-@info "streaming catalog (mh>1e13 Msun cut)..." CAT
-caphalos = select_cap_halos(CAT, chi2z, gt, axes, s)
+@info "streaming catalog (mh>1e13 Msun cut)..." CATUSE NEWCONV
+caphalos = select_cap_halos(CATUSE, chi2z, gt, axes, s)
 @info "selected" nper=[length(h.mh) for h in caphalos]
 
 nb = length(lc)
