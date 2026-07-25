@@ -3442,6 +3442,7 @@ function _fieldmap_paint_kernel!(maps, p1x, p1y, p1z, p2x, p2y, p2z, rt,
             ey = qsy + D * s1y + c2 * s2y - oy
             ez = qsz + D * s1z + c2 * s2z - oz
             pix = ang2pix_ring(nside, ex, ey, ez)
+            pixq = pwmask != UInt32(0) ? ang2pix_ring(nside, dsx, dsy, dsz) : pix
             vr = 0.0
             if vwmask != UInt32(0)
                 vf = rt[ii, 3] * (1.0 - tt) + rt[ii+1, 3] * tt
@@ -3451,8 +3452,12 @@ function _fieldmap_paint_kernel!(maps, p1x, p1y, p1z, p2x, p2y, p2z, rt,
             for ik in 1:nk
                 w = (rt[ii, 3+ik] * (1.0 - tt) + rt[ii+1, 3+ik] * tt) * wsub
                 (vwmask >> (ik - 1)) & UInt32(1) == UInt32(1) && (w *= vr)
-                (pwmask >> (ik - 1)) & UInt32(1) == UInt32(1) && (w *= pv)
-                CUDA.@atomic maps[pix, ik] += w
+                if (pwmask >> (ik - 1)) & UInt32(1) == UInt32(1)
+                    # Lagrangian deposit for potential-weighted kernels (see FieldMap.jl)
+                    CUDA.@atomic maps[pixq, ik] += w * pv
+                else
+                    CUDA.@atomic maps[pix, ik] += w
+                end
             end
         end
     end

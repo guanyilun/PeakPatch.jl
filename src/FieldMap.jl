@@ -104,6 +104,7 @@ function _paint_tile_field!(maps::Vector{Vector{Float64}},
                     ey = qy + D*s1y + c2*s2y - obs[2]
                     ez = qz + D*s1z + c2*s2z - obs[3]
                     pix = vec2pix(ex, ey, ez)
+                    pixq = need_p ? vec2pix(dqx, dqy, dqz) : pix
                     vr = 0.0
                     if need_v
                         vf = _rt_lerp(rt_vf, rq, inv_dr, nrt)
@@ -113,8 +114,9 @@ function _paint_tile_field!(maps::Vector{Vector{Float64}},
                     for ik in 1:nk
                         w = _rt_lerp(rt_w[ik], rq, inv_dr, nrt)
                         vw[ik] && (w *= vr)
-                        pw[ik] && (w *= pv)
-                        maps[ik][pix] += w
+                        # pw kernels: LAGRANGIAN deposit (uniform lattice) — Eulerian
+                        # painting imprints spurious delta*phi power on the smooth value
+                        pw[ik] ? (maps[ik][pixq] += w * pv) : (maps[ik][pix] += w)
                     end
                 else
                     wsub = 1.0 / (ns * ns * ns)
@@ -131,6 +133,7 @@ function _paint_tile_field!(maps::Vector{Vector{Float64}},
                         ey = qsy + D*s1y + c2*s2y - obs[2]
                         ez = qsz + D*s1z + c2*s2z - obs[3]
                         pix = vec2pix(ex, ey, ez)
+                        pixq = need_p ? vec2pix(dsx, dsy, dsz) : pix
                         vr = 0.0
                         if need_v
                             vf = _rt_lerp(rt_vf, rqs, inv_dr, nrt)
@@ -140,8 +143,7 @@ function _paint_tile_field!(maps::Vector{Vector{Float64}},
                         for ik in 1:nk
                             w = wsub * _rt_lerp(rt_w[ik], rqs, inv_dr, nrt)
                             vw[ik] && (w *= vr)
-                            pw[ik] && (w *= pv)
-                            maps[ik][pix] += w
+                            pw[ik] ? (maps[ik][pixq] += w * pv) : (maps[ik][pix] += w)
                         end
                     end
                 end
