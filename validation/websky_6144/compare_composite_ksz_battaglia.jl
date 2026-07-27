@@ -355,7 +355,11 @@ ref_path = length(ARGS) >= 2 && !startswith(ARGS[2], "--") ? ARGS[2] : joinpath(
 # optional: 3rd arg = catalog override; 4th arg "newconv" = finalize_eulerian output
 # (fields 1-3 Eulerian Mpc/h, 4-6 velocity km/s — no displacement reconstruction)
 CATUSE = length(ARGS) >= 3 && !startswith(ARGS[3], "--") ? ARGS[3] : CAT
-NEWCONV = length(ARGS) >= 4 && ARGS[4] == "newconv" 
+NEWCONV = length(ARGS) >= 4 && ARGS[4] == "newconv"
+# 5th arg "shufflev": randomize the halo v_r assignment (emulates the pks2map
+# velocity-index misalignment bug: pos/rth compacted after the z-cut, vrad NOT)
+SHUFFLEV = length(ARGS) >= 5 && ARGS[5] == "shufflev"
+using Random
 
 s = tan(deg2rad(CAPDEG)) / sqrt(2)
 L = 2s
@@ -377,6 +381,13 @@ PK,  ns_k  = patches_of(ref_path, axes, s)
 
 @info "streaming catalog (mh>1e13 Msun cut)..." CATUSE NEWCONV
 caphalos = select_cap_halos(CATUSE, chi2z, gt, axes, s)
+if SHUFFLEV
+    Random.seed!(4242)
+    for h in caphalos
+        shuffle!(h.vr)
+    end
+    @info "halo v_r SHUFFLED (emulating the pks2map index-misalignment bug)"
+end
 @info "selected" nper=[length(h.mh) for h in caphalos]
 
 nb = length(lc)
