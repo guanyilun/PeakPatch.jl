@@ -201,3 +201,27 @@ undocumented production filtering. Remaining open PHYSICS question (not a
 reproduction question): the exact 1-halo/field double-count treatment at mid-ℓ —
 bracketed by field-only (low) and Wc (high); best settled against hydro kSZ
 templates, not ksz.fits.
+
+## Battaglia-τ implementation audit across codes (2026-07-27)
+
+Comparing Battaglia-2016 gas-density τ across the three implementations:
+
+| | outer exponent | truncation | amplitude convention |
+|---|---|---|---|
+| B16 paper (eq A1) | −(β−γ)/α = **−4.58** | — | ρ̄fit·(ref. density; fb convention TBD) |
+| Fortran/Websky | plain −β = **−3.83** (B16 form COMMENTED OUT in bbps_profile.f90) | x≤4 sphere | ×fb, ρ̄m-referenced, mean-Δ radius in amplitude |
+| XGPaint | (β−γ)/α (neg-β storage) = **−4.13** (γ sign slip; should be (β+γ)/α) | NONE (∫ to ∞) | no fb, ρ_crit-comoving; measured 2.3-2.8× Fortran τ at z≤0.5 center, ×4-8 in outskirts |
+
+Point-wise measurement (xgp_tau_check): XGPaint/ours = 1.0-2.8 at x_b=0.25
+(z-dependent, tracks ρcr/ρ̄m), growing to 2.3-8 at x_b=3.5, ∞ beyond x=4.
+**Arbitration anchor**: B16's own τ scaling (ln τ0 = −6.23, z=0.3, Θ=1.3′ →
+τ̄≈2e-3) ≈ Fortran-convention amplitudes (ours ~2-3e-3 for matching clusters);
+XGPaint would sit ~2.5× above. TENTATIVE: B16 shape + Fortran-anchored amplitude
+= intended physics; both public codes deviate (differently). Worth reporting
+upstream to XGPaint (slope sign + amplitude) alongside the pks2map velocity bug.
+
+**Fork plan (next)**: `WebskyTauProfile` in the XGPaint fork with (a) convention
+flag: `:websky` (plain −β, x≤4, Fortran amplitude — for reproducing websky) vs
+`:b16` (−(β−γ)/α, B16-anchored — production default); (b) delta_comp compensation
+(as NFWKappaProfile); (c) per-halo v/c kSZ painting; (d) anchor tests: B16 τ0
+scaling relation, gas-mass ledger, τ(3e14, z=0.55) range.
