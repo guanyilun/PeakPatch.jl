@@ -125,3 +125,41 @@ Bottom line: painter faithful; residual = catalog high-z abundance (real, ours-v
 theirs difference) × compensation scheme (their production detail). ksz.fits total
 remains matched at 1.09-1.26 for ℓ≥2419 (Wc) and the field at ℓ≤450; mid-ℓ is the
 convolution of these two identified factors.
+
+## Careful re-check (2026-07-26, job 4419407 + audits): corrections and final state
+
+**CORRECTION to the patch test**: the 10×10 patch is NOT centered on its mean halo
+direction (corner near origin; spans [0,10°]×[−7.5°,2.6°]) — the centered square
+caught only 16.6% of halos instead of 32.1% → the 0.26-0.43 ratio was a ×1.93
+geometry undercount. RECENTERED: websky's own halos through our painter =
+**1.16-1.75× OUR halo term** (single-patch realization variance; consistent).
+
+**Abundance question CLOSED**: cf32_AM catalog matches websky N(mh>1e13, z) at
+**1.00 total, 0.93-1.05 per Δz=0.25 bin** (with and without the 0.5′ cut; the
+"2×" CIB-era count excess was the old finecell_AM's mass calibration + the same
+patch-geometry error). Catalog, painter amplitude, and velocities are now ALL
+cross-validated between the two pipelines.
+
+**We variant (Websky-exact literal: Δ=3-mean sphere, gas mass fb·mh)**:
+W/ref = 1.84, Wc/ref = 1.38, **We/ref = 1.58** band mean — between W and Wc, does
+NOT close mid-ℓ. Audit findings on the literal reading:
+- gasr(mh,z) = painted-gas/(fb·mh) < 1 at high z (0.56 at 1e13, z=2): the "same
+  mass" sphere OVER-compensates high-z halos (net negative) — either their real
+  behavior (would help explain their tiny halo term) or the prescription differs.
+- Their maptable rt-axis caps transverse radius at 4 Mpc COMOVING (not 4·rvir):
+  drops 10-29% of cluster τ (M≥2e14) — a production-side suppression we don't have.
+- Sphere-mass ambiguity (SIS mh vs M_RTH): ≤20% in comp amount.
+
+**Honest final state of kSZ mid-ℓ**: with catalog+painter+velocities verified
+equivalent, a faithful Battaglia painting of EITHER catalog produces a halo term
+~5-10× larger at ℓ~500-1000 than the released map's own decomposition
+(kszcomp.pdf), and no uniform-sphere compensation variant (We/Wc/W) reaches
+their ~5-10% halo fraction there. The remaining gap is a websky-production detail
+not recoverable from the paper, the released Fortran, or websky_model (which is
+only a number-density projector): plausibly a much higher effective production
+mmin, a stronger compensation than documented, and/or the fixed-4-Mpc + table/
+pixel truncations stacking. Composite scorecard vs ksz.fits (Wc, physically
+consistent zero-net): 1.09-1.17 at ℓ≥2400, 1.31-1.54 at ℓ=450-1750, 1.32-1.41
+at ℓ≤330 (low-ℓ dominated by known zmax-4.6 + octant-realization effects).
+For OUR production maps this is a documented model choice, not an open bug:
+painter, catalog, and field are each independently validated.
