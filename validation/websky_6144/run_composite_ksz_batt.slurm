@@ -23,6 +23,7 @@ FIELD="${1:-${FMAPS}/ksz_websky_6144_oct000_finecell_cf32_nside4096.fits}"
 REF="${2:-/home/yguan/scratch/websky_6144/websky_ref/ksz.fits}"
 CATA="${3:-}"
 CONV="${4:-}"
+SHUF="${5:-}"
 julia --project=. --threads=${JULIA_NUM_THREADS} \
     validation/websky_6144/compare_composite_ksz_battaglia.jl \
-    "${FIELD}" "${REF}" ${CATA:+"${CATA}"} ${CONV:+"${CONV}"}
+    "${FIELD}" "${REF}" ${CATA:+"${CATA}"} ${CONV:+"${CONV}"} ${SHUF:+"${SHUF}"}
