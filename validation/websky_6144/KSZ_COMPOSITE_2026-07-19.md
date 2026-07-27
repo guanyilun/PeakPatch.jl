@@ -163,3 +163,41 @@ consistent zero-net): 1.09-1.17 at ℓ≥2400, 1.31-1.54 at ℓ=450-1750, 1.32-1
 at ℓ≤330 (low-ℓ dominated by known zmax-4.6 + octant-realization effects).
 For OUR production maps this is a documented model choice, not an open bug:
 painter, catalog, and field are each independently validated.
+
+## THE BOTTOM (2026-07-27): their code run, their bug found, the excess identified
+
+We compiled and ran WEBSKY'S OWN pks2map (repo Fortran + bundled HEALPix + their
+bbps table; cosmology set to websky values) on their halos_10x10 catalog:
+
+1. **Repo code ≠ paper ≠ released map**: mmin = 2.5e10 HARDCODED (no 1e13 cut, no
+   0.5′ cut anywhere); cosmology hardcoded Planck18 (not websky). Their own binary
+   (all halos, uncompensated) produces a halo map **~25× the released halo
+   component** at ℓ~900 — the released production applied cuts + compensation not
+   present in this source.
+2. **REAL BUG in their pks2map**: the redshift-cut compaction (pks2map.f90:182-186)
+   copies posxyz/rth but NOT vrad (computed at load, pksc.f90:79) → for every halo
+   past the first cut index, positions pair with the WRONG halo's velocity. ksz.fits
+   is documented z<4.5 from a z≤4.6 catalog → cut active in production. DEMONSTRATED
+   with their binary: zmax=4.5 vs 6.0 on identical input → map RMS 5.90e-8 vs
+   9.87e-8 (**40% RMS loss**), C_ℓ suppressed 20-33% at ℓ≤1237.
+3. **Checkmate test (job 4419750)**: our composite with velocities deliberately
+   shuffled (emulating their bug): W 1.84→1.58 (cross term killed) but
+   **Wc 1.383→1.373 — unchanged**. So our Wc mid-ℓ excess is NOT the halo-field
+   cross and NOT 2-halo velocity coherence: it is the **1-halo (shot) power of the
+   compensated Battaglia halos** — velocity-shuffle-insensitive (⟨v²⟩ preserved).
+   Patch shuffle test confirms: cut-sample halo C_ℓ at ℓ≥632 is shot-dominated.
+
+**Physical adjudication**: at ℓ~900 our Wc gives D̃ℓ ≈ 1.3-1.4 μK² — at the level
+of the hydro-simulation band (Shaw ~1.2, Battaglia ~1.1-1.3 per their own fig 6)
+— while ksz.fits sits at ~0.95. The released map's tiny mid-ℓ halo term requires
+suppression (cuts ÷3.4 × strong compensation × velocity bug) that their available
+code does not document. The truth for the Battaglia gas model plausibly lies at or
+near OUR composite; ksz.fits is LOW at mid-ℓ.
+
+**Production disposition**: our kSZ construction (cf32 field + Battaglia halos,
+Wc zero-net compensation) is defensible and likely MORE correct than ksz.fits at
+mid-ℓ; the reference itself carries a demonstrated velocity-association bug and
+undocumented production filtering. Remaining open PHYSICS question (not a
+reproduction question): the exact 1-halo/field double-count treatment at mid-ℓ —
+bracketed by field-only (low) and Wc (high); best settled against hydro kSZ
+templates, not ksz.fits.
