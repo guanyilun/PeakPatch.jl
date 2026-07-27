@@ -220,8 +220,22 @@ XGPaint would sit ~2.5× above. TENTATIVE: B16 shape + Fortran-anchored amplitud
 = intended physics; both public codes deviate (differently). Worth reporting
 upstream to XGPaint (slope sign + amplitude) alongside the pks2map velocity bug.
 
-**Fork plan (next)**: `WebskyTauProfile` in the XGPaint fork with (a) convention
-flag: `:websky` (plain −β, x≤4, Fortran amplitude — for reproducing websky) vs
-`:b16` (−(β−γ)/α, B16-anchored — production default); (b) delta_comp compensation
-(as NFWKappaProfile); (c) per-halo v/c kSZ painting; (d) anchor tests: B16 τ0
-scaling relation, gas-mass ledger, τ(3e14, z=0.55) range.
+**Fork port ✅ DONE (2026-07-27, XGPaint fork commit 2059a6d, branch
+lensing-kappa)**: `WebskyTauProfile` with (a) convention flag `:websky` (plain −β,
+x≤4, Fortran amplitude) vs `:b16` (−(β−γ)/α paper bracket — production default);
+(b) delta_comp zero-net compensation (uniform sphere of the FULL painted gas mass
+at Δ×fb·ρ̄m, mirroring NFWKappaProfile); (c) kSZ via the existing velocity-aware
+`paint!` with proj_v_over_c = −v_rad/c; (d) 20 anchor tests (test_websky_tau.jl),
+all passing.
+
+**AMPLITUDE ARBITRATION SETTLED by the τ0 anchor test**: aperture τ̄(Θ<1.3′,
+z=0.3, M200c=3e14) vs B16's own ln τ0 = −6.23 → 1.97e-3:
+  :b16 = 2.28e-3 (**1.16× — excellent**); :websky = 3.25e-3 (1.65×, the fat −3.83
+  tail); XGPaint BattagliaTauProfile ≈ 2.5× (fails). So Fortran amplitude
+  bookkeeping + B16 paper shape reproduces B16's own scaling relation — the
+  TENTATIVE verdict above is now CONFIRMED. Gas ledger Mgas/(fb·M200c):
+  :b16 = 1.09 (1e13) / 1.29 (1e15) (sane); :websky = 1.25 / 2.84.
+  Central τ(3e14, z=0.55): 6.9e-3 (:websky) / 6.0e-3 (:b16);
+  kSZ(1e14, z=0.5, 300 km/s) = 10.0 μK.
+Implementation gotcha for reuse: quadgk on the compensated (zero-net) profile
+needs an atol — pure rtol on a ≈0 integral never converges (caused a silent hang).
