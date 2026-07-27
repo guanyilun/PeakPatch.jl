@@ -128,6 +128,16 @@ end
 # per-halo kSZ amplitude (pks2map.f90:270): ΔT/T per unit Σ̃, × v_r/c separately
 tau_amp(mh, z) = TAU0PERSIGMA * (Om * hub^2)^(2 / 3) * (1 + z)^2 * (mh / 200)^(1 / 3) * fb
 rvir_com_mpc(mh, z) = cbrt(3 * mh / (4π * 200 * rhocrit_com(z)))   # Mpc comoving
+# Websky-exact compensation (§3.2.1): uniform sphere, SAME MASS as the halo (gas
+# fb·mh, i.e. PARTIAL compensation since painted gas = 1.2-2.8×fb·mh), radius at
+# overdensity Δ=3 vs the comoving MEAN matter density ("somewhat smaller than the
+# Lagrangian radius"): Rc = (3mh/(4π·3·ρ̄m))^(1/3) ≈ 4-6·rvir.
+const RHOM_COM = Om * 2.775e11 * hub^2                     # Msun/Mpc^3 comoving
+rcomp_com_mpc(mh) = cbrt(3 * mh / (4π * 3.0 * RHOM_COM))   # Mpc comoving
+const KGAS = MUE * MP_G / SIGMAT * (3.0857e24)^2 / MSUN_G  # tau-column -> Msun/Mpc^2
+# painted gas mass / (fb·mh): the "mass ledger" for partial compensation
+gasr(mh, z) = tau_amp(mh, z) * itot_interp(mh, z) * rvir_com_mpc(mh, z)^2 /
+              (1 + z)^2 * KGAS / (fb * mh)
 
 @info "building Battaglia Σ̃ table ($(XB_N)x$(MH_N)x$(ZT_N))..."
 build_sigma_table!()
@@ -251,9 +261,10 @@ function select_cap_halos(path, chi2z, gt, axes, s)
                     ax = axes[c]
                     na = (vx*ax[1] + vy*ax[2] + vz*ax[3]) / r
                     na > 0.9 || continue
-                    # paint window: 4·asin(rh/χ), rh = mean-density-200 radius (Fortran)
+                    # window: max of Fortran 4·rh (rh = mean-200 radius) and the
+                    # Δ=3-mean compensation sphere radius
                     rh = cbrt(3 * mh / (4π * 200 * 2.775e11 * hub^2 * Om)) * hub  # Mpc/h
-                    gmax = 4 * rh / r * 1.3
+                    gmax = max(4 * rh, rcomp_com_mpc(mh) * hub) / r * 1.3
                     e1 = E1[c]; e2 = E2[c]
                     gxh = (vx*e1[1] + vy*e1[2] + vz*e1[3]) / (r * na)
                     gyh = (vx*e2[1] + vy*e2[2] + vz*e2[3]) / (r * na)
@@ -269,10 +280,11 @@ function select_cap_halos(path, chi2z, gt, axes, s)
     return out
 end
 
-# paint one cap: W (plain, Fortran-literal) and Wc (uniform-sphere compensated, R=4rvir)
+# paint one cap: W (plain, Fortran-literal), Wc (full-τ sphere, R=4rvir, zero net),
+# We (Websky-exact: Δ=3-mean sphere, mass = fb·mh -> partial comp, net (1-1/gasr))
 function paint_halos_cap(h, chi2z, ax, s, npixf)
     e1, e2 = ortho_basis(ax)
-    hw = zeros(npixf, npixf); hc = zeros(npixf, npixf)
+    hw = zeros(npixf, npixf); hc = zeros(npixf, npixf); he = zeros(npixf, npixf)
     dpix = 2s / npixf
     npaint = 0
     @inbounds for n in eachindex(h.mh)
@@ -284,11 +296,13 @@ function paint_halos_cap(h, chi2z, ax, s, npixf)
         rvir_h = rvir_com_mpc(mh, z) * hub          # Mpc/h comoving (catalog units)
         θv = rvir_h / r
         θmax = 4 * θv
+        θc = rcomp_com_mpc(mh) * hub / r            # Δ=3-mean sphere angular radius
+        θpaint = max(θmax, θc)
         vx = ax[1] + gxh*e1[1] + gyh*e2[1]
         vy = ax[2] + gxh*e1[2] + gyh*e2[2]
         vz = ax[3] + gxh*e1[3] + gyh*e2[3]
         vn = sqrt(vx^2 + vy^2 + vz^2)
-        gmax = θmax * 1.3 * vn
+        gmax = θpaint * 1.3 * vn
         ilo = max(1, floor(Int, (gxh - gmax + s) / dpix) + 1)
         ihi = min(npixf, ceil(Int, (gxh + gmax + s) / dpix))
         jlo = max(1, floor(Int, (gyh - gmax + s) / dpix) + 1)
@@ -296,8 +310,12 @@ function paint_halos_cap(h, chi2z, ax, s, npixf)
         (ilo <= ihi && jlo <= jhi) || continue
         npaint += 1
         itot = itot_interp(mh, z)
-        ucomp = itot * 3 / (256π)                   # uniform sphere: Σc = ucomp·2√(16-xb²)
-        sumw = 0.0; sumc = 0.0
+        ucomp = itot * 3 / (256π)                   # full-τ sphere: Σc = ucomp·2√(16-xb²)
+        # Websky-exact sphere: total τ = painted/gasr, uniform sphere radius θc:
+        # Σe(θ) = τtot_e·(3/(2π θc³))·√(θc²-θ²)
+        τtot_e = amp * itot * θv^2 / gasr(mh, z)
+        ce = τtot_e * 3 / (2π * θc^3)
+        sumw = 0.0; sumc = 0.0; sume = 0.0
         for j in jlo:jhi
             gy = -s + (j - 0.5) * dpix
             for i in ilo:ihi
@@ -307,16 +325,17 @@ function paint_halos_cap(h, chi2z, ax, s, npixf)
                 pz = ax[3] + gx*e1[3] + gy*e2[3]
                 cosang = (px*vx + py*vy + pz*vz) / (sqrt(px^2 + py^2 + pz^2) * vn)
                 θ = acos(clamp(cosang, -1.0, 1.0))
-                θ > θmax && continue
+                θ > θpaint && continue
                 xb = θ / θv
-                Σ = sigma_interp(xb, mh, z)
+                Σ = θ <= θmax ? sigma_interp(xb, mh, z) : 0.0
                 w = kfac * amp * Σ
-                wc = kfac * amp * (Σ - ucomp * 2 * sqrt(max(16.0 - xb^2, 0.0)))
-                hw[i, j] += w; hc[i, j] += wc
-                sumw += w; sumc += wc
+                wc = kfac * amp * (Σ - (θ <= θmax ? ucomp * 2 * sqrt(max(16.0 - xb^2, 0.0)) : 0.0))
+                we = w - kfac * (θ < θc ? ce * sqrt(max(θc^2 - θ^2, 0.0)) : 0.0)
+                hw[i, j] += w; hc[i, j] += wc; he[i, j] += we
+                sumw += w; sumc += wc; sume += we
             end
         end
-        # per-halo exactness deposits (plain: analytic total; comp: zero)
+        # per-halo exactness deposits (plain: analytic; Wc: zero; We: (1-1/gasr)·plain)
         icen = floor(Int, (gxh + s) / dpix) + 1
         jcen = floor(Int, (gyh + s) / dpix) + 1
         if 1 <= icen <= npixf && 1 <= jcen <= npixf &&
@@ -324,9 +343,10 @@ function paint_halos_cap(h, chi2z, ax, s, npixf)
             ki = kfac * amp * itot * θv^2 / dpix^2
             hw[icen, jcen] += ki - sumw
             hc[icen, jcen] += -sumc
+            he[icen, jcen] += ki * (1 - 1 / gasr(mh, z)) - sume
         end
     end
-    (hw, hc, npaint)
+    (hw, hc, he, npaint)
 end
 
 # ---------- run ----------
@@ -360,29 +380,36 @@ caphalos = select_cap_halos(CATUSE, chi2z, gt, axes, s)
 @info "selected" nper=[length(h.mh) for h in caphalos]
 
 nb = length(lc)
-cW = zeros(nb, NCAPS); cWc = zeros(nb, NCAPS); cK = zeros(nb, NCAPS)
-cFA = zeros(nb, NCAPS); cH = zeros(nb, NCAPS)
+cW = zeros(nb, NCAPS); cWc = zeros(nb, NCAPS); cWe = zeros(nb, NCAPS); cK = zeros(nb, NCAPS)
+cFA = zeros(nb, NCAPS); cH = zeros(nb, NCAPS); cHe = zeros(nb, NCAPS)
 for (ic, ax) in enumerate(axes)
-    hw, hc, npaint = paint_halos_cap(caphalos[ic], chi2z, ax, s, NPIXFLAT)
+    hw, hc, he, npaint = paint_halos_cap(caphalos[ic], chi2z, ax, s, NPIXFLAT)
     pW = PFA[ic] .+ hw
     pWc = PFA[ic] .+ hc
+    pWe = PFA[ic] .+ he
     cW[:, ic] = cl_flat(pW, L, ledges); cWc[:, ic] = cl_flat(pWc, L, ledges)
+    cWe[:, ic] = cl_flat(pWe, L, ledges)
     cK[:, ic] = cl_flat(PK[ic], L, ledges)
     cFA[:, ic] = cl_flat(PFA[ic], L, ledges); cH[:, ic] = cl_flat(hw, L, ledges)
-    @info "cap $ic done" npaint std_W=round(std(pW); digits=3) std_ref=round(std(PK[ic]); digits=3)
+    cHe[:, ic] = cl_flat(he, L, ledges)
+    @info "cap $ic done" npaint std_We=round(std(pWe); digits=3) std_ref=round(std(PK[ic]); digits=3)
 end
 
-@printf("\n%-7s %-11s %-8s %-8s %-8s %-8s %-9s %-9s\n",
-        "ell", "Cl_ref[uK2]", "W/ref", "+-", "Wc/ref", "+-", "fld/ref", "halo/ref")
+@printf("\n%-7s %-11s %-8s %-8s %-8s %-8s %-8s %-9s %-9s %-9s\n",
+        "ell", "Cl_ref[uK2]", "W/ref", "Wc/ref", "We/ref", "+-", "fld/ref", "halo/ref", "haloWe/rf", "")
 for i in eachindex(lc)
     rW = [cW[i, c] / cK[i, c] for c in 1:NCAPS]
     rWc = [cWc[i, c] / cK[i, c] for c in 1:NCAPS]
-    @printf("%-7.0f %-11.3e %-8.3f %-8.3f %-8.3f %-8.3f %-9.3f %-9.3f\n",
-            lc[i], mean(cK[i, :]), mean(rW), std(rW), mean(rWc), std(rWc),
-            mean(cFA[i, :]) / mean(cK[i, :]), mean(cH[i, :]) / mean(cK[i, :]))
+    rWe = [cWe[i, c] / cK[i, c] for c in 1:NCAPS]
+    @printf("%-7.0f %-11.3e %-8.3f %-8.3f %-8.3f %-8.3f %-8.3f %-9.3f %-9.3f\n",
+            lc[i], mean(cK[i, :]), mean(rW), mean(rWc), mean(rWe), std(rWe),
+            mean(cFA[i, :]) / mean(cK[i, :]), mean(cH[i, :]) / mean(cK[i, :]),
+            mean(cHe[i, :]) / mean(cK[i, :]))
 end
 sel = findall(l -> 150 <= l <= 2500, lc)
 mW = mean([mean(cW[i, :]) / mean(cK[i, :]) for i in sel])
 mWc = mean([mean(cWc[i, :]) / mean(cK[i, :]) for i in sel])
-@printf("\nband mean 150<=ell<=2500:  W/ref = %.3f   Wc/ref = %.3f\n", mW, mWc)
-@printf("W = Fortran-literal (uncompensated) Battaglia halos; Wc = zero-net compensated.\n")
+mWe = mean([mean(cWe[i, :]) / mean(cK[i, :]) for i in sel])
+@printf("\nband mean 150<=ell<=2500:  W/ref = %.3f   Wc/ref = %.3f   We/ref = %.3f\n", mW, mWc, mWe)
+@printf("W = uncompensated; Wc = full-tau sphere R=4rvir (zero net); We = Websky-exact\n")
+@printf("(Delta=3-MEAN sphere, mass fb*mh -> partial comp, net (1-1/gasr) per halo).\n")
