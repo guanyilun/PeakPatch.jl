@@ -94,3 +94,34 @@ variance: field/ksz.fits = 2.1, 2.4, 3.2, 1.8, 1.06, 0.93, 0.82 at
   term anti-correlates with the field at low ℓ.
 - If (2) confirms, the coarse_factor choice affects any velocity-sensitive Tier-B
   product (kSZ, ISW/moving-lens); κ/density products are unaffected.
+
+## cf32-catalog composite (2026-07-26, job 4418280): velocity attribution REFUTED
+
+The coherent-velocity (cf32) catalog did NOT shrink the mid-ℓ excess — halo/ref
+rose slightly (0.69/0.77/0.77 at ℓ=323/452/632 vs 0.63/0.70/0.71); W = 1.83,
+Wc = 1.38 band mean. Catalog-velocity decoherence was NOT the mid-ℓ driver.
+
+**Decisive patch test** (websky's OWN 10×10 halos — their pos+masses+velocities —
+through our verbatim painter): their-catalog halo kSZ C_ℓ = 0.26-0.43× OURS at
+ℓ=632-3383. So the excess halo term splits into:
+1. **Catalog abundance (~2×in count → ~2.5-3.8× in C_ℓ)**: our selected
+   (mh>1e13 + 0.5′) surface density is 2.04× websky's (1090 vs 535 per deg²);
+   the dN/dz diag shows the excess concentrated at z≳2 (2.3-3.8×) — our per-shell
+   Tinker AM vs websky's real high-z abundance. NEXT: measure ours-vs-websky
+   N(M>1e13, z) directly; consider whether websky's high-z M>1e13 halos are
+   incomplete (their completeness file only covers the low-mass floor) or whether
+   our AM overproduces at high z.
+2. **Compensation (~2-4×)**: even their halos give halo/total ≈ 23% at ℓ~900 vs
+   ~5-10% in kszcomp.pdf — their released halo map is evidently COMPENSATED
+   (§3.2.1 Δ=3 mean-density sphere of the halo mass), suppressing mid-ℓ halo
+   power; our W is uncompensated (verbatim per-halo painting has no compensation
+   in the Fortran path we read — production must apply it elsewhere, e.g. via the
+   table like κ's gas+DM−1). Our Wc (full-τ sphere, R=4rvir) is the right class:
+   Wc = 1.38 vs W = 1.83. NEXT: implement their exact compensation (Δ=3 MEAN
+   density sphere, mass = halo mass → Rc = (3M/(4π·3·ρ̄m))^{1/3} ≈ 4-6·rvir).
+   Also verified: Fortran vrad = v·r̂/c, same as ours.
+
+Bottom line: painter faithful; residual = catalog high-z abundance (real, ours-vs-
+theirs difference) × compensation scheme (their production detail). ksz.fits total
+remains matched at 1.09-1.26 for ℓ≥2419 (Wc) and the field at ℓ≤450; mid-ℓ is the
+convolution of these two identified factors.
