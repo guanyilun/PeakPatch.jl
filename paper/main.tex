@@ -1,0 +1,93 @@
+% PeakPatch.jl methods paper — skeleton per docs/paper_plan.md (2026-07-27)
+% Build: latexmk -pdf main.tex   (mnras.cls/bst vendored in this directory)
+\documentclass[fleqn,usenatbib]{mnras}
+
+\usepackage[T1]{fontenc}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs}
+\usepackage{xcolor}
+
+% draft helpers — remove before submission
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\needcheck}[1]{\textcolor{orange}{[CHECK: #1]}}
+
+% notation
+\newcommand{\Mpch}{\ensuremath{\,h^{-1}\,\mathrm{Mpc}}}
+\newcommand{\Msun}{\ensuremath{\,\mathrm{M}_\odot}}
+\newcommand{\pkg}[1]{\textsc{#1}}
+\newcommand{\ppjl}{\pkg{PeakPatch.jl}}
+
+\title[GPU peak-patch simulations in Julia]{\ppjl: GPU-accelerated peak-patch
+simulations and CMB secondary-anisotropy maps in Julia}
+
+\author[Y. Guan et al.]{
+Yilun Guan$^{1}$\thanks{E-mail: \todo{email}}
+\todo{author list and affiliations}
+\\
+$^{1}$\todo{affiliation}
+}
+
+\date{Accepted XXX. Received YYY; in original form ZZZ}
+\pubyear{2026}
+
+\begin{document}
+\label{firstpage}
+\pagerange{\pageref{firstpage}--\pageref{lastpage}}
+\maketitle
+
+\begin{abstract}
+We present \ppjl, a GPU-accelerated reimplementation of the mass-peak-patch
+algorithm for generating full-sky halo catalogues and maps of CMB secondary
+anisotropies. A multi-resolution decomposition of the initial Gaussian random
+field --- a global coarse grid supplemented by independently synthesized fine
+tiles with exact, tiling-independent noise --- removes the need for a global
+fine-grid FFT, so that a $6144^3$-equivalent lightcone octant to $z=4.5$ runs
+on a single multi-GPU node in hours. The pipeline produces abundance-matched
+halo catalogues with second-order Lagrangian displacements and velocities, and
+paints lensing convergence, kinetic and thermal Sunyaev--Zel'dovich, cosmic
+infrared background, and integrated Sachs--Wolfe maps through a combination of
+line-of-sight field kernels and halo-profile painting. We validate the pipeline
+against the released Websky simulation products at both the catalogue level
+(mass function, redshift distribution, clustering, halo bias, velocities, and
+pairwise momentum, each at the few-per-cent level) and the map level
+(angular power spectra of $\kappa$, kSZ, tSZ, CIB, and ISW maps within
+$\sim$10--20\% of the released maps over the well-measured multipole ranges),
+and we derive a coarse-grid resolution criterion for velocity-weighted
+observables. \todo{performance numbers; data release statement}
+\end{abstract}
+
+\begin{keywords}
+large-scale structure of Universe -- methods: numerical -- cosmic background
+radiation -- galaxies: haloes
+\end{keywords}
+
+\input{sections/intro}
+\input{sections/algorithm}
+\input{sections/multires}
+\input{sections/implementation}
+\input{sections/lightcone}
+\input{sections/maps}
+\input{sections/validation_catalogs}
+\input{sections/validation_maps}
+\input{sections/performance}
+\input{sections/summary}
+
+\section*{Acknowledgements}
+\todo{Killarney/SciNet/NVIDIA acknowledgement text; CITA; funding}
+
+\section*{Data Availability}
+\todo{GitHub + Zenodo DOI; catalogue/map release location}
+
+\bibliographystyle{mnras}
+\bibliography{refs}
+
+% \appendix
+% \input{sections/app_collapse}
+% \input{sections/app_filters}
+% \input{sections/app_kernels}
+% \input{sections/app_configs}
+
+\bsp
+\label{lastpage}
+\end{document}

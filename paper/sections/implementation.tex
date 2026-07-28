@@ -1,0 +1,61 @@
+\section{Implementation}
+\label{sec:implementation}
+
+\ppjl\ is written in Julia; GPU support is provided through \pkg{CUDA.jl}
+\citep{Besard2018} as a package extension, so the same source runs CPU-only,
+multi-threaded, on one or several GPUs, or under MPI. This section records the
+design decisions that matter for performance and reproducibility.
+\todo{flesh out with code-level numbers once the benchmark runs
+(Section~\ref{sec:performance}) are in}
+
+\subsection{Per-tile GPU pipeline}
+\label{sec:impl-gpu}
+
+Each tile is processed end-to-end on one GPU: noise synthesis (the Threefry
+stream is evaluated in-kernel), the isolated $\sqrt{P(k)}$ convolution
+(zero-padded batched FFTs via \pkg{cuFFT}), the filter-bank loop, strain
+eigenvalue and homogeneous-ellipsoid table walks for candidate peaks, and the
+2LPT component convolutions. Only the accepted-peak lists and (in the
+map-making pass) the accumulated HEALPix maps return to the host, keeping
+PCIe traffic negligible. Peak candidates are reduced on-device; the
+exclusion-and-merging step runs on the host over the concatenated candidate
+list, since it is a sequential sort-and-sweep over a list many orders of
+magnitude smaller than the grid.
+
+Multi-GPU parallelism is task-based: a Julia task per device consumes tiles
+from a shared queue, with per-worker state created inside each task. Two
+Julia-specific pitfalls are worth recording for other implementers: (i)
+Julia~1.12 enforces task-local array ownership, so per-worker buffers must be
+allocated inside the worker task; and (ii) closure variable capture is
+function-scoped --- reusing a worker-local variable name anywhere else in the
+enclosing function silently aliases all workers to one boxed variable. The
+latter produced an exactly $2^{n_{\rm workers}-1}$ map overcount in an early
+map-making run, caught by an analytic mass-conservation check
+(Section~\ref{sec:maps}); we now require every painted product to pass an
+independent integral anchor before use.
+
+\subsection{Distributed-memory alternative}
+\label{sec:impl-mpi}
+
+An MPI extension provides the conventional distributed global-FFT path
+(pencil-decomposed transforms), retained for CPU clusters and for
+cross-checking the multi-resolution decomposition against a monolithic field
+at moderate $N$. All validation in this paper uses the tile decomposition;
+the two paths agree on identical seeds at the level of the isolated-FFT
+truncation error. \needcheck{quantify agreement level from the
+compare\_fields\_split diagnostics before submission}
+
+\subsection{Catalogue output and conventions}
+\label{sec:impl-io}
+
+Catalogues are written in the Websky \texttt{pksc} binary layout (33 fields
+per halo in the extended format) with Eulerian comoving positions in Mpc$/h$
+and proper peculiar velocities in km\,s$^{-1}$, evaluated at each halo's
+lightcone epoch. We document this because unit conventions are the dominant
+practical failure mode in cross-code comparisons: the Fortran peak patch and
+the released Websky catalogue use Mpc (no $h$), while \ppjl\ uses Mpc$/h$
+throughout, and mixing the two rescales the box by $1/h\simeq1.47$ --- enough
+to masquerade as a resolution or mass-floor discrepancy
+(Section~\ref{sec:valcat}). Configuration is a single TOML file (cosmology,
+grid geometry, run options, file paths); every run logs cell size and box
+size in both unit systems.

@@ -1,0 +1,55 @@
+\section{Validation II: maps}
+\label{sec:valmaps}
+
+\todo{P3 section --- neutral-framing pass over TIER\_B\_SUMMARY; regenerate
+figures from the frozen campaign. Scorecard and framing below.}
+
+We compare angular power spectra against the released Websky v0.0 maps
+(Nside 4096) on matched octant footprints, using gnomonic-cap flat-sky
+spectra (cap-to-cap scatter as the error bar) and whole-octant pseudo-$C_\ell$
+with an apodized mask. The simulations are different realizations of the same
+configuration, so ratios consistent with unity at the realization scatter are
+the pass criterion.
+
+\begin{table*}
+  \centering
+  \caption{Map-level validation scorecard (to be regenerated from the frozen
+  production campaign; current numbers from the validation octant).}
+  \label{tab:scorecard}
+  \begin{tabular}{llll}
+    \toprule
+    Product & Construction & Ratio vs.\ released map & Range \\
+    \midrule
+    $\kappa$ & field + compensated NFW ($\Delta{=}3$, full painted mass) &
+      0.99--1.12 & $\ell=165$--884 (vs.\ $z<4.5$ component) \\
+    kSZ (field, low $\ell$) & full-matter momentum kernel, $f_c=32$ &
+      1.05--1.22 & $\ell\le320$ \\
+    kSZ (composite, high $\ell$) & + Battaglia gas haloes, $M>10^{13}\Msun$ &
+      1.09--1.17 & $\ell\ge2400$ \\
+    kSZ (composite, mid $\ell$) & same & 1.3--1.5 & $\ell=450$--1750
+      (see text) \\
+    tSZ & Battaglia pressure, all haloes & mean-$y$ 1.10 & --- \\
+    CIB 545\,GHz & \pkg{XGPaint} CIB model + completeness cut &
+      mean intensity 1.06$^{a}$ & --- \\
+    ISW & linear-potential kernel, Lagrangian deposit & 0.66--1.2 &
+      $\ell=11$--257 (same mask) \\
+    \bottomrule
+  \end{tabular}
+  \\ $^{a}$ relative to the same painter applied to the Websky catalogue,
+  which isolates the catalogue contribution.
+\end{table*}
+
+\todo{per-product subsections with figures F9--F12}
+
+\subsection{The kSZ intermediate-$\ell$ halo term}
+\label{sec:valmaps-kszmid}
+
+\todo{neutral framing, to be finalized: at $\ell\sim450$--1750 the halo-term
+amplitude depends on compensation and selection choices that are not fully
+specified by the released products. Present: (i) the inputs agree ---
+catalogue abundance $N(>10^{13},z)$ ratio 1.00, velocities validated,
+cross-painting consistent; (ii) our zero-net construction sits within the
+band spanned by hydro-simulation kSZ templates \citep{Shaw2012,
+Battaglia2010ksz}\needcheck{template refs}; (iii) the released map's halo
+component is lower than any compensation variant we constructed. Overlay
+hydro templates in Fig.~F10 (plan item 3.4).}

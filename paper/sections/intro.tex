@@ -1,0 +1,77 @@
+\section{Introduction}
+\label{sec:intro}
+
+Current and upcoming CMB experiments (Simons Observatory, CMB-S4, CCAT) and
+large-scale-structure surveys interpret their data through cross-correlations
+of lensing, the thermal and kinetic Sunyaev--Zel'dovich (tSZ/kSZ) effects, and
+the cosmic infrared background (CIB) with galaxy and cluster catalogues. These
+analyses need many-realization mock skies: correlated maps of all secondary
+anisotropies together with the halo catalogues that source them, for pipeline
+validation, covariance estimation, and foreground-model exploration. Full
+$N$-body lightcones with gas physics remain far too expensive for ensembles of
+hundreds of realizations, which motivates approximate methods calibrated
+against them.
+
+The mass-peak-patch algorithm \citep{BondMyers1996a, Stein2019} occupies a
+productive point on the accuracy--cost curve: haloes are identified as peaks of
+the smoothed initial density field using homogeneous-ellipsoid collapse,
+exclusion-and-merging resolves overlapping proto-haloes, and second-order
+Lagrangian perturbation theory (2LPT) moves them to their final positions and
+velocities. Its best-known product is the Websky simulation
+\citep{Stein2020}, whose full-sky halo catalogue and correlated
+$\kappa$/kSZ/tSZ/CIB maps have become a community standard for
+secondary-anisotropy work. Related mock-sky efforts include Sehgal et
+al.-style template skies \citep{Sehgal2010}, the \pkg{Agora} multi-component
+sky \citep{Omori2024}, and the HalfDome $N$-body lightcones
+\citep{HalfDome2024}; all such suites, like peak patch, calibrate their halo
+masses by abundance matching to a target mass function.
+
+Two practical constraints of the original Fortran implementation motivate this
+work. First, the peak-patch computation is dominated by large distributed FFTs
+of the initial conditions and by the per-filter collapse searches; on CPU
+clusters a Websky-resolution run occupies hundreds to thousands of cores, with
+the internode FFT transpose as the scaling bottleneck. Second, ensemble
+applications --- for example the planned $\gtrsim$1000-realization Backlight
+ensemble at CITA --- put a premium on time-to-solution \emph{per node}, where
+modern GPU nodes offer an order of magnitude more arithmetic throughput than
+the CPU nodes the original code targets.
+
+\ppjl\ is a from-scratch Julia implementation of the algorithm designed around
+these constraints. Its central algorithmic ingredient
+(Section~\ref{sec:multires}) is a multi-resolution decomposition of the
+initial Gaussian random field, in the spirit of the multi-scale initial
+conditions of \pkg{MUSIC} \citep{HahnAbel2011}: a global coarse grid carries
+the long-wavelength modes, and each spatial tile synthesizes its own fine
+modes from a counter-based random number generator keyed to the global lattice
+site, so that the union of tiles reproduces a single global realization
+exactly, with no global fine-grid FFT and no internode communication. Each
+tile then runs the full peak-patch pipeline independently on a GPU
+(Section~\ref{sec:implementation}), which makes the cost embarrassingly
+parallel over tiles and lets a single node process a $6144^3$-equivalent
+volume.
+
+Beyond the halo-finding pipeline, \ppjl\ integrates map making
+(Section~\ref{sec:maps}): line-of-sight ``field'' kernels painted directly
+from the Lagrangian lattice (lensing convergence, electron-density-weighted
+momentum for kSZ, and the linear integrated Sachs--Wolfe effect), and
+halo-profile painting (NFW convergence, Battaglia-type gas density and
+pressure, CIB halo model) through the \pkg{XGPaint} package
+\citep{XGPaint}. The combination reproduces the construction of the released
+Websky maps, which we use as our end-to-end validation target
+(Sections~\ref{sec:valcat}--\ref{sec:valmaps}): six catalogue-level statistics
+match at the few-per-cent level, and the map-level angular power spectra match
+the released products over their well-measured multipole ranges. The
+validation campaign also surfaced a resolution criterion specific to
+velocity-weighted maps --- the coarse grid must resolve the velocity field to
+$k_{\rm Nyq}\gtrsim 0.3\,h\,{\rm Mpc}^{-1}$ --- which we derive and verify in
+Section~\ref{sec:multires-velocity}.
+
+This paper is organized as follows. Section~\ref{sec:algorithm} reviews the
+peak-patch algorithm and fixes conventions. Section~\ref{sec:multires}
+describes the multi-resolution field synthesis. Section~\ref{sec:implementation}
+details the GPU implementation and the MPI alternative.
+Section~\ref{sec:lightcone} describes lightcone construction and catalogue
+products. Section~\ref{sec:maps} presents the map-making machinery.
+Sections~\ref{sec:valcat} and \ref{sec:valmaps} validate catalogues and maps
+against Websky. Section~\ref{sec:performance} reports performance, and
+Section~\ref{sec:summary} concludes.
