@@ -11,11 +11,16 @@
 using PeakPatch, Printf
 const D = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"
 
-# ARGS: [1]=input catalog, [2]=output catalog, [3]=observer offset (Mpc/h, per axis).
+# ARGS: [1]=input catalog, [2]=output catalog, [3]=observer (Mpc/h): either a single
+#        value applied to all axes ("-2618") or comma-separated per-axis
+#        ("2618,-2618,2618" — REQUIRED for mixed-sign octants: the observer sets each
+#        halo's chi→z for the AM z-binning), [4]=z_max (default 4.6).
 # Defaults = old coarse pkfix octant (obs -3850). For finecell octant pass obs -2618.
 cat     = length(ARGS) >= 1 ? ARGS[1] : joinpath(D, "catalog_websky_6144_oct000_pkfix.pksc")
 out     = length(ARGS) >= 2 ? ARGS[2] : joinpath(D, "catalog_websky_6144_oct000_pkfix_AM.pksc")
-obs_off = length(ARGS) >= 3 ? parse(Float64, ARGS[3]) : -3850.0
+obs_v   = length(ARGS) >= 3 ? parse.(Float64, split(ARGS[3], ",")) : [-3850.0]
+length(obs_v) in (1, 3) || error("observer must be 1 or 3 comma-separated values")
+z_max_am = length(ARGS) >= 4 ? parse(Float64, ARGS[4]) : 4.6
 @info "reading catalog..." cat
 halos, RTHLmax, z_out = read_pksc(cat)
 @info "read" n=length(halos)
@@ -24,7 +29,7 @@ halos, RTHLmax, z_out = read_pksc(cat)
 # (Was previously 0.31+0.049=0.359 — wrong; double-counted baryons, corrupting rho_mean/D(z)/volumes.)
 cosmo = CosmologyParams(0.31, 0.049, 0.69, 0.68, 0.965, 0.81)
 pk = PeakPatch.PowerSpectrum.load_pk(joinpath(@__DIR__, "data", "pk_websky_RAW_unnormalized.dat"))
-obs = (obs_off, obs_off, obs_off)
+obs = length(obs_v) == 3 ? (obs_v[1], obs_v[2], obs_v[3]) : (obs_v[1], obs_v[1], obs_v[1])
 rho_m = 2.775e11 * 0.31
 
 NgtM(hs, M0) = count(h -> (4π/3)*rho_m*Float64(h.RTHL)^3 > M0, hs)
@@ -35,8 +40,8 @@ end
 
 report("RAW (pre-AM)", halos)
 
-@info "building abundance table (Tinker, z_max=4.6)..."
-table = build_abundance_table(halos, cosmo, pk; hmf=:tinker, z_max=4.6, obs=obs,
+@info "building abundance table (Tinker)..." z_max_am obs
+table = build_abundance_table(halos, cosmo, pk; hmf=:tinker, z_max=z_max_am, obs=obs,
                               fsky=1/8, verbose=true)   # single octant = 1/8 sky
 @info "applying abundance match..."
 halos_am = abundance_match(halos, table, cosmo; obs=obs)
