@@ -16,8 +16,8 @@ volume (seed 12345), eight observer corners = full sky.
   Tinker, per-axis observer, z_max=4.5) in
   `/home/yguan/projects/aip-aspuru-ab/yguan/websky/`
 - Field maps (kappa/mass/tau/ksz/isw, Nside 4096, full matter, no exclusion) in
-  `/home/yguan/scratch/websky_6144/fieldmaps_prod/` — **move to /project when
-  complete; scratch is purged**
+  `/home/yguan/projects/aip-aspuru-ab/yguan/websky/fieldmaps_prod/` (copied from
+  scratch `fieldmaps_prod/` 2026-09-23, cmp-verified; scratch copy still present)
 
 **Jobs**: `bash submit_all.sh` → per octant one catalog+AM job (b2, 4×L40S,
 ≤10 h; anchor 7h13m) + one independent fieldmap job (b1, 1×L40S, ≤2h55; anchor
@@ -26,3 +26,22 @@ after, per the TIER_B_SUMMARY recipes.
 
 Downstream (not in these jobs): per-octant composite κ/kSZ maps, tSZ/CIB halo
 maps, map gallery, benchmarks (paper_plan.md §3).
+
+## Campaign status (2026-09-23)
+
+| Product | Status |
+|---|---|
+| Fieldmaps, 8 octants × 5 maps | ✅ all 40 done (jobs 4438183…97 odd, ~1.3 h each); on /project |
+| Raw catalogs, 8 octants | ✅ all done, ~195.5M halos each (~25.8 GB) |
+| AM catalogs | ✅ 7/8; ⚠️ **oct100_AM truncated** (16.3 GB) — rerun pending |
+
+**oct100 incident**: job 4438190 (node kn103) hit the 10 h limit. Halo finding
+took ~9.75 h wall vs ~6.9 h for other octants (the timed `run_multitile` part was
+normal, 126 vs 121.5 min — slowdown was outside it, likely node/filesystem), so
+AM was killed mid-write. Raw `catalog_websky_6144_prod_oct100.pksc` is intact
+(clean "Wrote catalog", bytes/halo consistent with other octants).
+Fix: AM-only rerun, job **5627673** (b1, 1 GPU, 2 h), script
+`/home/yguan/scratch/websky_6144/slurm_prod/run_am_oct100.slurm`, observer
+(−2618, −2618, +2618), z_max=4.5. Expect `_AM.pksc` ≈ 25.81 GB (= raw size).
+Lesson: 10 h wall for catalog+AM has only ~3 h headroom; split AM into its own
+job (or use b3) for future campaigns.
