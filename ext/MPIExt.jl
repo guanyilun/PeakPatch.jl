@@ -457,6 +457,27 @@ function _apply_2lpt_kernel!(output_k, src2_k_pencil, dim::Int, N::Int, boxsize:
     end
 end
 
+"""Copy delta_k into output_k with the k=0 mode zeroed: the exact k-space form of
+-Σ_i phi_ii given `_apply_phi_ij_kernel!` (which, like serial LPT.jl, zeroes only
+k=0). The 2LPT trace identity needs (Σ phi_ii)²; until 2026-09-24 the phi_ij kernel
+also zeroed the Nyquist planes while δ² kept them, so the identity failed (5-800%
+ψ₂ error vs LPT.jl on a 32³ test). NOTE: the GPU tile-local 2LPT in CUDAExt /
+MultiResolution still carries that Nyquist mismatch (frozen campaign; see
+validation/NOTES_2LPT_NYQUIST_2026-09-24.md)."""
+function _apply_trace_kernel!(output_k, delta_k_pencil, N::Int)
+    pen = PencilArrays.pencil(output_k)
+    ranges = PencilArrays.range_local(pen)
+    gv_out = PencilArrays.global_view(output_k)
+    gv_in = PencilArrays.global_view(delta_k_pencil)
+    for giz in ranges[3], giy in ranges[2], gix in ranges[1]
+        if gix == 1 && giy == 1 && giz == 1
+            gv_out[gix, giy, giz] = 0
+        else
+            gv_out[gix, giy, giz] = gv_in[gix, giy, giz]
+        end
+    end
+end
+
 """Apply phi_ij kernel -ki*kj/k² to delta_k, writing result into output_k."""
 function _apply_phi_ij_kernel!(output_k, delta_k_pencil, di::Int, dj::Int,
                                N::Int, boxsize::Float64)
@@ -474,7 +495,7 @@ function _apply_phi_ij_kernel!(output_k, delta_k_pencil, di::Int, dj::Int,
     for giz in ranges[3], giy in ranges[2], gix in ranges[1]
         kx = kx_arr[gix]; ky = ky_arr[giy]; kz = kz_arr[giz]
         k2 = kx^2 + ky^2 + kz^2
-        if k2 == 0.0 || gix == nk || giy == nyq + 1 || giz == nyq + 1
+        if k2 == 0.0   # k=0 only, as serial LPT.jl: Nyquist kept so Σ phi_ii = -δ exactly
             gv_out[gix, giy, giz] = 0
             continue
         end
@@ -575,7 +596,7 @@ function _analyse_tile_shells!(halos_basic, halos_ext,
 
         if result.RTHL > 0
             a_pk = 1.0 / ZZon_pk
-            _, _, D_pk = PeakPatch.Dlinear_ab(a_pk, growth_tables)
+            D_pk, _, _ = PeakPatch.Dlinear_ab(a_pk, growth_tables)   # 1st return = D; was D/a (3rd) — bug (same fix as MultiTile.jl)
 
             RTHL_phys = Float32(result.RTHL * alatt)
             Sbar_vel = result.Sbar .* D_pk
@@ -583,7 +604,7 @@ function _analyse_tile_shells!(halos_basic, halos_ext,
             Sbar2_vel = zeros(3)
             if ilpt >= 2
                 Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
-                Sbar2_vel = -result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)
+                Sbar2_vel = result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)   # -3/7 matches Fortran; was +3/7 (sign bug, same fix as MultiTile.jl)
             end
 
             if ioutshear >= 1
@@ -774,8 +795,8 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
             src2_pencil = PencilArray{Float32}(undef, PencilArrays.pencil(first(A)))
             parent(src2_pencil) .= 0.0f0
 
-            # delta² / 2  (trace squared = delta²)
-            last(A) .= delta_k_saved
+            # (Σ phi_ii)² / 2 = δ² / 2 — with δ's k=0/Nyquist modes zeroed to match phi_ij
+            _apply_trace_kernel!(last(A), delta_k_saved, N)
             plan \ A
             parent(src2_pencil) .+= parent(first(A)) .^ 2 .* 0.5f0
 
@@ -834,8 +855,8 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
             src2_pencil = PencilArray{Float32}(undef, PencilArrays.pencil(first(A)))
             parent(src2_pencil) .= 0.0f0
 
-            # Trace identity (same as standard path)
-            last(A) .= delta_k_saved
+            # Trace identity (same as standard path, incl. k=0/Nyquist zeroing of δ)
+            _apply_trace_kernel!(last(A), delta_k_saved, N)
             plan \ A
             parent(src2_pencil) .+= parent(first(A)) .^ 2 .* 0.5f0
 

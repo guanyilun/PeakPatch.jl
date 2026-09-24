@@ -110,6 +110,39 @@ if nranks == 1
 
         rm(tmpdir; recursive=true)
     end
+
+    # Displacements at z>0 with 2LPT: z=0/1LPT hides the D-vs-D/a growth bug (D/a = D
+    # at a=1), the 2LPT -3/7 sign bug and the 2LPT trace-identity Nyquist mismatch, all
+    # carried by the MPI path until 2026-09-24 (validation/NOTES_2LPT_NYQUIST_2026-09-24.md).
+    @testset "MPI np=1 displacements ≈ serial (z=1, 2LPT)" begin
+        tmpdir = mktempdir()
+        cfg_serial = _make_config(tmpdir; n=32, boxsize=100.0, z=1.0, ilpt=2, nbuff=3)
+        halos_serial = PeakPatch.MultiTile.run_multitile(cfg_serial; ntile=1, seed=42, verbose=false)
+        cfg_mpi = PipelineConfig(
+            Omx = cfg_serial.Omx, OmB = cfg_serial.OmB, Omvac = cfg_serial.Omvac, h = cfg_serial.h,
+            n = cfg_serial.n, boxsize = cfg_serial.boxsize, nbuff = cfg_serial.nbuff,
+            z_out = cfg_serial.z_out, z_max = cfg_serial.z_max, ilpt = cfg_serial.ilpt,
+            rmax2rs = cfg_serial.rmax2rs, pkfile = cfg_serial.pkfile,
+            filterfile = cfg_serial.filterfile,
+            fileout = joinpath(tmpdir, "test_out_mpi_z1.pksc"), tabfile = cfg_serial.tabfile,
+        )
+        halos_mpi = PeakPatch.run_multitile_mpi(cfg_mpi; ntile=1, seed=42, verbose=false, comm=comm)
+
+        @test !isempty(halos_serial)          # guard against a vacuous pass
+        @test length(halos_serial) == length(halos_mpi)
+        if !isempty(halos_serial) && length(halos_serial) == length(halos_mpi)
+            sort!(halos_serial; by=h -> (h.x, h.y, h.z))
+            sort!(halos_mpi; by=h -> (h.x, h.y, h.z))
+            for f in (:vx, :vy, :vz, :vx2, :vy2, :vz2)
+                s = Float64[getfield(h, f) for h in halos_serial]
+                m = Float64[getfield(h, f) for h in halos_mpi]
+                # Float64 distributed FFT vs Float32 serial FFT: agree to a few %;
+                # a D/a slip is a factor 1+z = 2, a sign slip flips the 2LPT field.
+                @test isapprox(m, s; rtol=0.05)
+            end
+        end
+        rm(tmpdir; recursive=true)
+    end
 end
 
 # ============================================================
