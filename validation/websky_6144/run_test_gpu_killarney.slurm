@@ -26,7 +26,7 @@ echo "GPU:     $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null |
 echo "Threads: ${JULIA_NUM_THREADS}"
 echo "Start:   $(date)"
 
-julia --project=. --threads=${JULIA_NUM_THREADS} \
+julia --project=validation --threads=${JULIA_NUM_THREADS} \
     validation/websky_6144/run_test_gpu.jl
 
 echo "End: $(date)"

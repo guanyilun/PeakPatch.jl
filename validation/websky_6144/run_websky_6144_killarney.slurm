@@ -56,7 +56,7 @@ echo "GPUs:    ${SLURM_GPUS_PER_NODE:-?}"
 echo "Threads: ${JULIA_NUM_THREADS}"
 echo "Start:   $(date)"
 
-julia --project=. --threads=${JULIA_NUM_THREADS} \
+julia --project=validation --threads=${JULIA_NUM_THREADS} \
     validation/websky_6144/run_gpu_octant.jl "${CONFIG}"
 
 echo "End: $(date)"

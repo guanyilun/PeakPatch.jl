@@ -153,7 +153,8 @@ using Test
         # Create synthetic halos:
         # H1: large halo at origin
         # H2: small halo inside H1 → should be excluded
-        # H3: halo overlapping H1 but not center-inside → survives with reduced radius
+        # H3: halo overlapping H1 but not center-inside → survives (radius unchanged:
+        #     volume reduction is disabled in merge_catalog to match Fortran, c9d3df9)
         # H4: isolated halo → survives unchanged
         halos = [
             HaloRecord(0f0, 0f0, 0f0, 0f0, 0f0, 0f0, 5.0f0, 0f0, 0f0, 0f0, 1.0f0),   # H1: r=5
@@ -171,10 +172,11 @@ using Test
         # H4 should be unchanged
         h4 = merged[findfirst(h -> h.x == 50f0, merged)]
         @test h4.RTHL == 2.0f0
-        # H1 should have reduced radius (overlap with H3)
+        # H1/H3 overlap but keep their radii (no volume reduction; see c9d3df9)
         h1 = merged[findfirst(h -> h.x == 0f0, merged)]
-        @test h1.RTHL < 5.0f0
-        @test h1.RTHL > 4.0f0  # not drastically reduced
+        @test h1.RTHL == 5.0f0
+        h3 = merged[findfirst(h -> h.x == 7f0, merged)]
+        @test h3.RTHL == 3.0f0
     end
 
     @testset "merge_catalog — empty input" begin

@@ -4,7 +4,7 @@
 # Runs a 120^3 box (ntile=2, nmesh=68) on a single GPU.
 #
 # Usage:
-#   julia --project=. -t 8 validation/websky_6144/run_test_gpu.jl
+#   julia --project=validation -t 8 validation/websky_6144/run_test_gpu.jl
 
 using TOML
 using PeakPatch

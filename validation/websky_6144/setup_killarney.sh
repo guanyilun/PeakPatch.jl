@@ -14,12 +14,13 @@
 
 set -euo pipefail
 
-echo "=== Step 1: Add CUDA.jl and instantiate ==="
-julia --project=. -e 'using Pkg; Pkg.add("CUDA"); Pkg.instantiate()'
+echo "=== Step 1: Instantiate the validation/ script env (PeakPatch + CUDA + Healpix) ==="
+# CUDA stays a weak dep of the package; never Pkg.add it into the root env.
+julia --project=validation -e 'using Pkg; Pkg.instantiate()'
 
 echo ""
 echo "=== Step 2: Generate data files (filters + collapse table) ==="
-julia --project=. validation/websky_6144/generate_data_files.jl
+julia --project=validation validation/websky_6144/generate_data_files.jl
 
 echo ""
 echo "=== Step 3: Generate CAMB P(k) ==="

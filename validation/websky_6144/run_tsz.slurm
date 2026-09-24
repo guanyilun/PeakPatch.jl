@@ -17,4 +17,4 @@ export JULIA_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export JULIA_DEPOT_PATH="/home/yguan/scratch/julia_depot_killarney:${HOME}/.julia"
 
 cd /home/yguan/work/PeakPatch.jl
-julia --project=. --threads=${JULIA_NUM_THREADS} validation/websky_6144/compare_tsz.jl
+julia --project=validation --threads=${JULIA_NUM_THREADS} validation/websky_6144/compare_tsz.jl

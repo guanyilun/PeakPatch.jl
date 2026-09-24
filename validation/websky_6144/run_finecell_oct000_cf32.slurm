@@ -27,11 +27,11 @@ RAW=${D}/catalog_websky_6144_oct000_finecell_cf32.pksc
 AM=${D}/catalog_websky_6144_oct000_finecell_cf32_AM.pksc
 
 echo "=== [1/2] halo finding, coarse_factor=32 ==="
-julia --project=. --threads=${JULIA_NUM_THREADS} \
+julia --project=validation --threads=${JULIA_NUM_THREADS} \
     validation/websky_6144/run_gpu_octant.jl "${CONFIG}"
 
 echo "=== [2/2] abundance matching ==="
-julia --project=. -t ${SLURM_CPUS_PER_TASK} \
+julia --project=validation -t ${SLURM_CPUS_PER_TASK} \
     validation/websky_6144/apply_abundance_match.jl "${RAW}" "${AM}" -2618
 
 echo "End: $(date)"

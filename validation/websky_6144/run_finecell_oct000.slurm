@@ -25,11 +25,11 @@ CONFIG="validation/websky_6144/config_websky_6144_oct000_finecell.toml"
 echo "=== Websky 6144^3 finecell (factor-h corrected) — octant 000 ==="
 echo "Config: ${CONFIG}"; echo "Node: $(hostname)"; echo "Start: $(date)"
 
-julia --project=. --threads=${JULIA_NUM_THREADS} \
+julia --project=validation --threads=${JULIA_NUM_THREADS} \
     validation/websky_6144/run_gpu_octant.jl "${CONFIG}"
 
 echo "=== raw low-mass MF check (floor should reach ~1e12) ==="
-julia --project=. validation/websky_6144/compare_lowmass_mf.jl \
+julia --project=validation validation/websky_6144/compare_lowmass_mf.jl \
     /home/yguan/projects/aip-aspuru-ab/yguan/websky/catalog_websky_6144_oct000_finecell.pksc 0.85221
 
 echo "End: $(date)"

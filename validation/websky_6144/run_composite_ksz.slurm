@@ -22,7 +22,7 @@ FMAPS=/home/yguan/scratch/websky_6144/fieldmaps
 FIELD="${1:-${FMAPS}/ksz_websky_6144_oct000_finecell_field_nside4096.fits}"
 FIELDALL="${2:-${FMAPS}/ksz_websky_6144_oct000_finecell_nside4096.fits}"
 REF="${3:-/home/yguan/scratch/websky_6144/websky_ref/ksz.fits}"
-julia --project=. --threads=${JULIA_NUM_THREADS} \
+julia --project=validation --threads=${JULIA_NUM_THREADS} \
     validation/websky_6144/compare_composite_ksz.jl \
     "${FIELD}" \
     "${FIELDALL}" \

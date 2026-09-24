@@ -25,7 +25,7 @@ cd /home/yguan/work/PeakPatch.jl
 CONFIG="validation/websky_6144/config_websky_6144_oct000_finecell_cf32.toml"
 
 echo "Node: $(hostname)"; echo "Start: $(date)"
-julia --project=. --threads=${JULIA_NUM_THREADS} \
+julia --project=validation --threads=${JULIA_NUM_THREADS} \
     validation/websky_6144/run_fieldmap_octant.jl "${CONFIG}" 4096 \
     /home/yguan/scratch/websky_6144/fieldmaps gpu_paint
 

@@ -3,7 +3,7 @@
 # divided by candidate factors and compare field sigma(R) to the THEORY sigma(R)
 # (standard integral of the raw physical P(k)). The divisor giving ratio ~1.0 wins.
 #
-# Usage: julia --project=. -t 8 validation/websky_6144/probe_pk_norm.jl
+# Usage: julia --project=validation -t 8 validation/websky_6144/probe_pk_norm.jl
 
 using PeakPatch, FFTW, Statistics, Printf, QuadGK
 

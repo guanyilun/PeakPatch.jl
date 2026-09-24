@@ -2,7 +2,7 @@
 # Phase-A exit test (docs/field_lightcone_plan.md): compare the full-matter lightcone κ map
 # painted by run_multitile_fieldmap (job output FITS) against Websky's released kap.fits.
 #
-# Usage: julia --project=. -t 8 compare_fieldmap_kappa.jl <kappa_fieldmap.fits>
+# Usage: julia --project=validation -t 8 compare_fieldmap_kappa.jl <kappa_fieldmap.fits>
 #
 # Geometry: our octant covers the +++ octant of sky seen from the corner observer; kap.fits
 # is full-sky. These are DIFFERENT realizations, so we compare C_ℓ band levels, not maps.

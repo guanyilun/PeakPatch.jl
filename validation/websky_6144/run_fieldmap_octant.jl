@@ -3,7 +3,7 @@
 # docs/field_lightcone_plan.md). Paints ALL lattice cells (full matter — halo + field in
 # one map) of one octant onto HEALPix maps via run_multitile_fieldmap.
 #
-# Usage: julia --project=. -t 32 run_fieldmap_octant.jl <config.toml> [nside] [outdir] [gpu_paint|-] [exclude=<catalog.pksc>]
+# Usage: julia --project=validation -t 32 run_fieldmap_octant.jl <config.toml> [nside] [outdir] [gpu_paint|-] [exclude=<catalog.pksc>]
 # Optional 4th arg "gpu_paint" switches to Phase-B on-device pixelization (own RING
 # ang2pix + device atomics; enables Nside 4096 / subdiv 5 at low cost); "-" skips.
 # Optional 5th arg "exclude=<path>" masks the Lagrangian spheres of the catalog halos

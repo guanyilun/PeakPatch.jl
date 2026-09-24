@@ -21,11 +21,11 @@ unset CUDA_VISIBLE_DEVICES
 
 cd /home/yguan/work/PeakPatch.jl
 echo "=== GPU smoke test (incl. new :isw kernel) ==="
-julia --project=. --threads=8 validation/websky_6144/test_fieldmap_smoke.jl --gpu
+julia --project=validation --threads=8 validation/websky_6144/test_fieldmap_smoke.jl --gpu
 
 echo "=== ISW octant, cf32, Nside 1024 ==="
 CONFIG="validation/websky_6144/config_websky_6144_oct000_finecell_cf32.toml"
-julia --project=. --threads=${JULIA_NUM_THREADS} \
+julia --project=validation --threads=${JULIA_NUM_THREADS} \
     validation/websky_6144/run_fieldmap_octant.jl "${CONFIG}" 1024 \
     /home/yguan/scratch/websky_6144/fieldmaps gpu_paint
 echo "End: $(date)"

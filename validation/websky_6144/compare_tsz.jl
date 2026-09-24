@@ -18,7 +18,7 @@
 # REPLACED 2022 (7% normalization + high-mass center fixes) — the local Fortran clone
 # postdates those fixes, so ratios should be ~1 if our catalog+painter are right.
 #
-# Usage: julia --project=. -t N compare_tsz.jl [ref] [--selftest]
+# Usage: julia --project=validation -t N compare_tsz.jl [ref] [--selftest]
 using Healpix, FFTW, Printf, Statistics, LinearAlgebra
 import PeakPatch.Cosmology: CosmologyParams, build_chi_to_z, chi_to_z
 

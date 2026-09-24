@@ -7,7 +7,7 @@
 #   N(>5e11)=220889 1e12=218002 1.69e12=212806 3e12=199604 1e13=128920
 #   3e13=50252 1e14=11294 3e14=1969   (total 224181)
 #
-# Usage: julia --project=. -t 8 validation/websky_6144/run_floor_compare.jl
+# Usage: julia --project=validation -t 8 validation/websky_6144/run_floor_compare.jl
 using TOML, PeakPatch, Printf
 
 cfg_path = joinpath(@__DIR__, "config_ab_test.toml")

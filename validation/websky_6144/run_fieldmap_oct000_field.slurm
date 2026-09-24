@@ -24,11 +24,11 @@ CONFIG="validation/websky_6144/config_websky_6144_oct000_finecell.toml"
 EXCL="/home/yguan/projects/aip-aspuru-ab/yguan/websky/catalog_websky_6144_oct000_finecell_AM.pksc"
 
 echo "=== fieldmap GPU smoke test (incl. tau/ksz + exclusion + multi-worker) ==="
-julia --project=. --threads=8 validation/websky_6144/test_fieldmap_smoke.jl --gpu
+julia --project=validation --threads=8 validation/websky_6144/test_fieldmap_smoke.jl --gpu
 
 echo "=== fieldmap octant 000, field-only (Nside 2048) ==="
 echo "Node: $(hostname)"; echo "Start: $(date)"
-julia --project=. --threads=${JULIA_NUM_THREADS} \
+julia --project=validation --threads=${JULIA_NUM_THREADS} \
     validation/websky_6144/run_fieldmap_octant.jl "${CONFIG}" 2048 \
     /home/yguan/scratch/websky_6144/fieldmaps - "exclude=${EXCL}"
 

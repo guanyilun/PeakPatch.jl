@@ -39,7 +39,7 @@ const NSUB = SMOKE ? 32 : 256
 const SHELLS = [(0.30, 0.50), (0.50, 0.75), (0.75, 1.00), (0.30, 1.00)]  # r / L
 const LBINS = [(2, 5), (6, 10), (11, 20), (21, 40), (41, 80)]
 const LAGS = [1, 2, 3, 4, 6, 8, 16, 32, 64, 128, 256]
-const PART = get(ENV, "RNG_PART", "AB")            # "A", "B" or "AB"
+const PART = get(ENV, "RNG_PART", "AB")            # any of "A", "B", "C"
 mkpath(OUT)
 # Threaded FFTW segfaulted (spawn_apply) on 512^3 under Julia 1.12, job 5635142;
 # RNG_FFTW_THREADS=1 avoids it at a few s per transform.
@@ -56,9 +56,10 @@ function stats3d(A::Array{Float32,3})
     kf(i) = i - 1 <= n ÷ 2 ? i - 1 : i - 1 - n
     edges = [0.5, 1.5, 2.5, 4.5, 8.5, 16.5, 32.5, 64.5, 128.5, 256.5]
     nb = count(<=(n ÷ 2), edges) - 1
-    psum = zeros(nb); pcnt = zeros(nb)
+    psum = zeros(nb); pcnt = zeros(nb); pmax = 0.0
     for k in 1:n, j in 1:n, i in 1:size(P, 1)
         kk = sqrt((i - 1)^2 + kf(j)^2 + kf(k)^2)
+        0 < kk <= 32 && (pmax = max(pmax, P[i, j, k]))
         b = searchsortedlast(edges, kk)
         (1 <= b <= nb) || continue
         psum[b] += P[i, j, k]; pcnt[b] += 1
@@ -66,7 +67,9 @@ function stats3d(A::Array{Float32,3})
     for b in 1:nb
         push!(out, @sprintf("P(|k| %g-%g)", edges[b] + 0.5, edges[b+1] - 0.5) => psum[b] / pcnt[b])
     end
+    push!(out, "max P(0<|k|<=32)" => pmax)
     na = min(32, n ÷ 2)
+    push!(out, "n axis modes P>6 (|k|<=$na)" => count(>(6), vcat(P[2:na+1, 1, 1], P[1, 2:na+1, 1], P[1, 1, 2:na+1])))
     push!(out, "P kx-axis 1-$na" => mean(P[2:na+1, 1, 1]), "P ky-axis 1-$na" => mean(P[1, 2:na+1, 1]),
                "P kz-axis 1-$na" => mean(P[1, 1, 2:na+1]))
     xi = irfft(abs2.(F), n) ./ n3; xi ./= xi[1, 1, 1]
@@ -193,6 +196,7 @@ pr("(fine ensemble: $(tsec(tF)))\n")
 end  # part A
 
 # ---- B. production realization ---------------------------------------------
+if occursin("B", PART)
 pr("## B. Production realization: `_downsample_noise($NP, $MP, $SEEDP)` ranked in K = $K Xoshiro $(MP)³ fields (Nside $NSIDE_P)\n")
 coarse_path = joinpath(OUT, "coarse_threefry_N$(NP)_M$(MP)_seed$(SEEDP).f32")
 tP = @elapsed begin
@@ -219,5 +223,31 @@ end
 pr(@sprintf("\n**Production summary**: %d / %d statistics with rank p < 0.05 (≈ %.1f expected by chance; ",
             nflag, length(stP), 0.05 * length(stP)),
    "rank p floor with K = $K is $(round(2 / (K + 1), digits = 3))). (analysis: $(tsec(tB)))")
+end  # part B
+
+# ---- C. production-scale ensemble -------------------------------------------
+# B found seed 12345 ~1-in-40 on two statistics (ky-axis power, max mode). A ran
+# its coarse ensemble at N=1536, so a defect appearing only when all 2.3e11
+# production counters feed the large-scale modes was untested: KC seeds at the
+# full production N=6144 → M=512 vs the same Xoshiro 512³ ensemble as B.
+if occursin("C", PART)
+    KC = parse(Int, get(ENV, "RNG_KC", "12"))
+    pr("## C. Production-scale ensemble: $KC Threefry seeds at N = $NP → M = $MP vs K = $K Xoshiro $(MP)³ (Nside $NSIDE_P)\n")
+    function coarse_cached(seed)
+        f = joinpath(OUT, "coarse_threefry_N$(NP)_M$(MP)_seed$(seed).f32")
+        isfile(f) && (A = Array{Float32,3}(undef, MP, MP, MP); read!(f, A); return A)
+        A = PeakPatch.MultiResolution._downsample_noise(NP, MP, seed); write(f, A); return A
+    end
+    tC = @elapsed begin
+        stC = analyze(coarse_cached(1), NSIDE_P)
+        ctf = [vals(stC)]
+        for s in 2:KC
+            push!(ctf, vals(analyze(coarse_cached(s), NSIDE_P))); @info "C: Threefry seed $s/$KC"
+        end
+        cxo = [vals(analyze(randn(Xoshiro(40_000 + s), Float32, MP, MP, MP), NSIDE_P)) for s in 1:K]
+    end
+    ensemble_table(first.(stC), ctf, cxo, "production_scale")
+    pr("(production-scale ensemble: $(tsec(tC)))\n")
+end
 close(io)
 @info "done" OUT

@@ -11,7 +11,7 @@
 # Both conserve mass by construction; they differ in how the collapsed-region power is
 # split between components. kap.fits decides empirically which reproduces Websky.
 #
-# Usage: julia --project=. -t 8 compare_composite_kappa.jl <kappa_field_excl.fits> <kappa_field_all.fits>
+# Usage: julia --project=validation -t 8 compare_composite_kappa.jl <kappa_field_excl.fits> <kappa_field_all.fits>
 #
 # The halo κ is painted here standalone (same truncated-NFW c=7/xmax=2 as the XGPaint
 # fork, validated in-script against the analytic mass integral) on the SAME gnomonic

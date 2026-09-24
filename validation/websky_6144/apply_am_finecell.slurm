@@ -25,13 +25,13 @@ FINE=${D}/catalog_websky_6144_oct000_finecell.pksc
 FINE_AM=${D}/catalog_websky_6144_oct000_finecell_AM.pksc
 
 echo "=== [1/3] apply AM to finecell octant (obs -2618) ==="
-julia --project=. -t ${SLURM_CPUS_PER_TASK} \
+julia --project=validation -t ${SLURM_CPUS_PER_TASK} \
     validation/websky_6144/apply_abundance_match.jl "${FINE}" "${FINE_AM}" -2618
 
 echo ""; echo "=== [2/3] cumulative N(>M) per deg²: finecell RAW + AM vs Websky ==="
-julia --project=. validation/websky_6144/compare_am_vs_websky.jl "${FINE}" "${FINE_AM}"
+julia --project=validation validation/websky_6144/compare_am_vs_websky.jl "${FINE}" "${FINE_AM}"
 
 echo ""; echo "=== [3/3] low-mass MF shape of the AM'd finecell catalog ==="
-julia --project=. validation/websky_6144/compare_lowmass_mf.jl "${FINE_AM}" 0.85221
+julia --project=validation validation/websky_6144/compare_lowmass_mf.jl "${FINE_AM}" 0.85221
 
 echo ""; echo "=== DONE ==="

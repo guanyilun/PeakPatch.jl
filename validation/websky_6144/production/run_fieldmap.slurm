@@ -27,7 +27,7 @@ CONFIG="validation/websky_6144/production/config_prod_oct${OCT}.toml"
 OUTDIR=/home/yguan/scratch/websky_6144/fieldmaps_prod
 
 echo "Node: $(hostname)  Octant: ${OCT}  Start: $(date)"
-julia --project=. --threads=${JULIA_NUM_THREADS} \
+julia --project=validation --threads=${JULIA_NUM_THREADS} \
     validation/websky_6144/run_fieldmap_octant.jl "${CONFIG}" 4096 "${OUTDIR}" gpu_paint
 
 echo "End: $(date)"

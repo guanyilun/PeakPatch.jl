@@ -6,7 +6,7 @@
 # NOTE: build_abundance_table needs the PHYSICAL P(k) (σ8=0.81) for σ(M)/Tinker —
 # use the RAW (un-normalized) pk file, NOT the ÷(2π)³ field-gen one.
 #
-# Usage: julia --project=. -t 8 validation/websky_6144/apply_abundance_match.jl
+# Usage: julia --project=validation -t 8 validation/websky_6144/apply_abundance_match.jl
 
 using PeakPatch, Printf
 const D = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"

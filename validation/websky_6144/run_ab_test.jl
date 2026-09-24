@@ -5,7 +5,7 @@
 # Same cfg/seed/filters. Prints mass function + smoothed-peak-amplitude vs Rf
 # for both, to see whether the multi-res field produces the fake-giant tail.
 #
-# Usage: julia --project=. -t 8 validation/websky_6144/run_ab_test.jl
+# Usage: julia --project=validation -t 8 validation/websky_6144/run_ab_test.jl
 
 using TOML, PeakPatch, Printf
 

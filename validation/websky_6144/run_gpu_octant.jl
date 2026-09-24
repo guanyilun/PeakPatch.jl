@@ -4,7 +4,7 @@
 # Reads a TOML config and calls run_multitile_split with GPU acceleration.
 #
 # Usage:
-#   julia --project=. -t 32 validation/websky_6144/run_gpu_octant.jl \
+#   julia --project=validation -t 32 validation/websky_6144/run_gpu_octant.jl \
 #       validation/websky_6144/config_websky_6144_oct000.toml
 #
 # On SLURM: invoked by run_websky_6144_killarney.slurm
@@ -15,7 +15,7 @@ using CUDA
 
 function main()
     if isempty(ARGS)
-        println(stderr, "Usage: julia --project=. run_gpu_octant.jl <config.toml>")
+        println(stderr, "Usage: julia --project=validation run_gpu_octant.jl <config.toml>")
         exit(1)
     end
 

@@ -6,7 +6,7 @@
 #   3. Power spectrum (placeholder — needs CAMB/CLASS for accurate P(k))
 #
 # Usage:
-#   julia --project=. validation/websky_6144/generate_data_files.jl
+#   julia --project=validation validation/websky_6144/generate_data_files.jl
 
 using PeakPatch
 

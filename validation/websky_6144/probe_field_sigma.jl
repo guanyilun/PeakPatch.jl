@@ -6,7 +6,7 @@
 #   global = generate_grf(N) (full FFT, Fortran-equivalent, correct)
 #   split  = interpolate(coarse_field) + isolated_conv(residual)  for a central tile
 #
-# Usage: julia --project=. -t 8 validation/websky_6144/probe_field_sigma.jl
+# Usage: julia --project=validation -t 8 validation/websky_6144/probe_field_sigma.jl
 
 using PeakPatch, FFTW, Statistics, Printf
 const MR = PeakPatch.MultiResolution

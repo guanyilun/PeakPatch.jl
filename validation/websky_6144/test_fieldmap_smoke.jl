@@ -3,7 +3,7 @@
 # Checks (1) mass conservation: Σ :mass map == ρ̄·a³latt·N_cells(rmin ≤ r ≤ χmax),
 #        (2) mean κ: map mean == (Ω_octant/4π)·∫W_κ dχ analytically (grid-quantized),
 #        (3) pixel bookkeeping sanity (all mass lands in the observer's octant of sky).
-# Usage: julia --project=. -t 4 validation/websky_6144/test_fieldmap_smoke.jl [--gpu]
+# Usage: julia --project=validation -t 4 validation/websky_6144/test_fieldmap_smoke.jl [--gpu]
 using PeakPatch, Healpix, Printf, Statistics, Random
 import PeakPatch.Cosmology: CosmologyParams, build_chi_to_z, chi_to_z, chi
 

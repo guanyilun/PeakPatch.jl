@@ -19,8 +19,8 @@
 # true d1 = stored·a, d2 = −stored·a²; x_E = q + d1 + d2;
 # v = a_E·100·E(a_E)·f(a_E)·(d1 + 2·d2) km/s (finalize_eulerian, f₂≈2f).
 #
-# Usage: julia --project=. -t N compare_composite_ksz.jl <ksz_field_excl.fits> <ksz_field_all.fits> [ref]
-#        julia --project=. compare_composite_ksz.jl --selftest
+# Usage: julia --project=validation -t N compare_composite_ksz.jl <ksz_field_excl.fits> <ksz_field_all.fits> [ref]
+#        julia --project=validation compare_composite_ksz.jl --selftest
 using Healpix, FFTW, Printf, Statistics, LinearAlgebra
 import PeakPatch.Cosmology: CosmologyParams, build_chi_to_z, chi_to_z, chi,
                             Dlinear_tables, Dlinear_ab

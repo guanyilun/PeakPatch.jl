@@ -24,7 +24,7 @@
 # Field component: FULL-matter kSZ map (compensated construction), coarse_factor=32
 # (velocity-coherence fix, KSZ_COMPOSITE_2026-07-19.md).
 #
-# Usage: julia --project=. -t N compare_composite_ksz_battaglia.jl <ksz_field_all.fits> [ref] [--selftest]
+# Usage: julia --project=validation -t N compare_composite_ksz_battaglia.jl <ksz_field_all.fits> [ref] [--selftest]
 using Healpix, FFTW, Printf, Statistics, LinearAlgebra
 import PeakPatch.Cosmology: CosmologyParams, build_chi_to_z, chi_to_z, chi,
                             Dlinear_tables, Dlinear_ab

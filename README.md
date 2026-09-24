@@ -38,6 +38,19 @@ Pkg.add(url="https://github.com/guanyilun/PeakPatch.jl")
 
 Requires Julia 1.11+.
 
+### GPU (CUDA)
+
+GPU support lives in a package extension (`ext/CUDAExt.jl`) that activates when
+`CUDA` is loaded; CUDA is a *weak* dependency, so never `Pkg.add("CUDA")` into the
+package environment. The production drivers under `validation/` run from the
+script environment `validation/Project.toml` (PeakPatch from this repo + CUDA +
+Healpix):
+
+```sh
+julia --project=validation -e 'using Pkg; Pkg.instantiate()'
+julia --project=validation -t 32 validation/websky_6144/run_gpu_octant.jl config.toml
+```
+
 ## Quick Start
 
 ### From TOML config (recommended)

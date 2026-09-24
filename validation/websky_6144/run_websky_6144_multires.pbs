@@ -34,7 +34,7 @@ export JULIA_DEPOT_PATH="/fs/lustre/scratch/yguan/julia_depot/multires_${PBS_JOB
 
 # Precompile on head node
 echo "Precompiling..."
-julia --project=. -e 'using PeakPatch; println("OK")' 2>&1 | tail -1
+julia --project=validation -e 'using PeakPatch; println("OK")' 2>&1 | tail -1
 
 # Run multi-resolution on each node in parallel.
 # Each node processes its share of the 729 tiles (ntile=9).
@@ -48,7 +48,7 @@ julia --project=. -e 'using PeakPatch; println("OK")' 2>&1 | tail -1
 
 echo "Running multi-resolution pipeline on ${NODES[0]}..."
 ssh ${NODES[0]} "cd /home/yguan/work/cita/PeakPatch.jl && \
-    JULIA_NUM_THREADS=32 /cita/modules/julia/1.11.5/bin/julia --project=. -t 32 -e '
+    JULIA_NUM_THREADS=32 /cita/modules/julia/1.11.5/bin/julia --project=validation -t 32 -e '
 using PeakPatch, TOML
 
 config = TOML.parsefile(\"${CONFIG}\")
