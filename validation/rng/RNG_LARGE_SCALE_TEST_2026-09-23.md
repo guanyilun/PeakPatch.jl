@@ -51,17 +51,31 @@ including replication).
 pattern. Low-ℓ C_ℓ ratio Threefry/Xoshiro at ℓ 2–10: 0.91–1.12 across shells, no
 systematic excess. Full tables: `results/REPORT_A_job5635142.md`, `results/ensemble_*.csv`.
 
-### B — pending (job 5637544)
-First attempt (5635142) generated the production coarse noise (529 s, cached at
-`scratch/websky_6144/rng_test/coarse_threefry_N6144_M512_seed12345.f32`) then segfaulted in
-threaded FFTW (`spawn_apply`) on the 512³ transform under Julia 1.12; rerun with
-`RNG_PART=B RNG_FFTW_THREADS=1`.
+### B — production seed (job 5637544): typical, two ~1-in-40 statistics
+3/69 statistics at rank p < 0.05 (≈3.5 expected). Seed 12345 sits beyond all 40 nulls on
+ky-axis power (1.65 vs 0.99 ± 0.19; spread over modes k = 8, 5, 29, 32, not one mode) and
+on the largest mode below |k| = 32 (P = 14.9). Part A showed no ky-axis effect over 40
+seeds (z = +0.78). First attempt (5635142) segfaulted in threaded FFTW on 512³ under
+Julia 1.12 → `RNG_FFTW_THREADS=1`.
 
-## Conclusion
-No detectable difference between the production Threefry noise and an independent
-generator on any tested scale, including large angular scales in the replicated
-full-sky geometry. The concern that motivated the Fortran stream partitioning does not
-apply to a counter-based generator.
+### C — production-scale ensemble (job 5638894): BORDERLINE, confirmation pending
+12 Threefry seeds at the full N = 6144 → M = 512 (every one of the 2.3e11 counters feeds
+the large-scale modes) vs 40 Xoshiro 512³. The part-B statistics are clean here (ky-axis
+z = −0.30, max mode z = +0.15, axis modes > 6 z = +0.99) → seed 12345 was an ordinary
+draw. But 71 statistics give max |z| = 2.59 and **Bonferroni p = 0.049**, driven by ONE
+statistic: `Cl shell 0.30-0.50 l41-80`, Threefry 1.7% low (t = −2.36, asymptotic KS
+p = 0.0007). Not interpretable as is: KS asymptotics are poor at K = 12; ≈5% of null
+experiments reach Bonferroni p ≤ 0.05; the overlapping full shell (0.30–1.00) shows
+nothing at those ℓ. Settling it properly: job 5641162 — (1) exact permutation
+re-analysis of these seeds (per-statistic + family-wise max-|t|), and (2) OUT-OF-SAMPLE
+confirmation with fresh seeds (Threefry 13–28, Xoshiro 50001–50040) and that statistic
+PRE-REGISTERED. Results → `rng_test/REPORT_C_orig.md`, `REPORT_C_confirm.md`.
+
+## Conclusion (provisional until job 5641162)
+A and B: no detectable difference between the production Threefry noise and an
+independent generator, including large angular scales in the replicated full-sky
+geometry. C: one borderline statistic at production scale, under out-of-sample
+confirmation — do NOT quote "passed at production scale" until it reports.
 
 ## Lessons / caveats
 - A first single-realization-vs-4-nulls smoke run showed a 1.47× low-ℓ "excess" in one
