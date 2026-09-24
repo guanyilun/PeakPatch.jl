@@ -33,15 +33,23 @@ maps, map gallery, benchmarks (paper_plan.md §3).
 |---|---|
 | Fieldmaps, 8 octants × 5 maps | ✅ all 40 done (jobs 4438183…97 odd, ~1.3 h each); on /project |
 | Raw catalogs, 8 octants | ✅ all done, ~195.5M halos each (~25.8 GB) |
-| AM catalogs | ✅ 7/8; ⚠️ **oct100_AM truncated** (16.3 GB) — rerun pending |
+| AM catalogs | ✅ 8/8 (oct100 redone 2026-09-23, job 5627673, 16 min; size = raw) |
 
 **oct100 incident**: job 4438190 (node kn103) hit the 10 h limit. Halo finding
 took ~9.75 h wall vs ~6.9 h for other octants (the timed `run_multitile` part was
 normal, 126 vs 121.5 min — slowdown was outside it, likely node/filesystem), so
 AM was killed mid-write. Raw `catalog_websky_6144_prod_oct100.pksc` is intact
 (clean "Wrote catalog", bytes/halo consistent with other octants).
-Fix: AM-only rerun, job **5627673** (b1, 1 GPU, 2 h), script
+Fixed: AM-only rerun, job **5627673** (completed, 16 min on kn132) (b1, 1 GPU, 2 h), script
 `/home/yguan/scratch/websky_6144/slurm_prod/run_am_oct100.slurm`, observer
 (−2618, −2618, +2618), z_max=4.5. Expect `_AM.pksc` ≈ 25.81 GB (= raw size).
 Lesson: 10 h wall for catalog+AM has only ~3 h headroom; split AM into its own
 job (or use b3) for future campaigns.
+
+**AM results (all 8 octants, from the job logs):** RAW N(>1.7e12) = 4.032–4.037e7,
+AM N(>1.7e12) = 5.076–5.078e7 (Websky measured ≈5.09e7/octant; June finecell+AM
+validation 5.08e7 — reproduced to 0.3%), AM N(>1e13) = 4.188e6, AM N(>1e14) =
+6.251–6.255e4. AM counts are identical across octants by construction (same Tinker
+target, same volume); octant-to-octant scatter shows only in RAW (~0.1%). The
+"1.1e8/octant" reference once printed by `apply_abundance_match.jl` was stale
+(total vs >1.69e12 conflation) and has been corrected.

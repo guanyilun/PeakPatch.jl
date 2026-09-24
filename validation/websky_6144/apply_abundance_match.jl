@@ -1,6 +1,6 @@
 #!/usr/bin/env julia
 # Apply abundance matching to the corrected production octant catalog and measure
-# how much it closes the gap to Websky (N(>1.7e12): ours 26.5M, Websky 110M).
+# how much it closes the gap to Websky (N(>1.69e12): Websky ≈5.09e7/octant; the old "110M" conflated total vs >1.69e12).
 # AM remaps raw peak-patch top-hat masses to Tinker M200 in z-bins (Websky's step).
 #
 # NOTE: build_abundance_table needs the PHYSICAL P(k) (σ8=0.81) for σ(M)/Tinker —
@@ -47,7 +47,7 @@ table = build_abundance_table(halos, cosmo, pk; hmf=:tinker, z_max=z_max_am, obs
 halos_am = abundance_match(halos, table, cosmo; obs=obs)
 
 report("AFTER AM (Tinker)", halos_am)
-@printf("\nReference: Websky N(>1.7e12) = 1.1e8/octant ; ST theory = 5.6e7 ; Tinker theory ~1.1e8\n")
+@printf("\nReference: Websky measured N(>1.69e12) ≈ 5.09e7/octant (finecell+AM validation job 4033130: 5.08e7; see LOW_MASS_COMPLETENESS_2026-06-15.md)\n")
 
 # write the AM'd catalog
 Rmax = isempty(halos_am) ? 0f0 : maximum(h.RTHL for h in halos_am)
