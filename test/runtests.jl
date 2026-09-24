@@ -16,5 +16,9 @@ using Test
     include("test_pipeline.jl")
     include("test_merger.jl")
     include("test_multitile.jl")
+    include("test_multiresolution.jl")
+    include("test_lcg.jl")
+    include("test_finalize_am.jl")
+    include("test_fieldmap.jl")
     include("test_shell_gpu.jl")
 end

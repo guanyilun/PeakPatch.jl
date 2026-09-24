@@ -54,6 +54,7 @@ function build_abundance_table(halos::AbstractVector, cosmo::CosmologyParams, pk
         nsub_integral::Int=10,
         verbose::Bool=false)
 
+    nzbins >= 2 || throw(ArgumentError("build_abundance_table: nzbins=$nzbins; need ≥ 2 (the table is interpolated linearly in z)"))
     Om = cosmo.Om
 
     # ---- Mass bins (log-spaced) ----
@@ -203,11 +204,18 @@ function build_abundance_table(halos::AbstractVector, cosmo::CosmologyParams, pk
         end
 
         # For each mass bin where PP has halos, find the matched mass
+        itop = 0
         for iM in 1:nMbins
             npp = ngtm_pp[iM]
             npp > 0 || continue
             M_target[iM, iz] = M_of_N(npp)
+            itop = iM
         end
+        # Above this z-bin's most massive halo N_PP(>M) = 0: extend the last matched
+        # value instead of leaving the identity default, which the linear lookup would
+        # blend into the top halo's mass and rank it BELOW the next ones (found by
+        # test_finalize_am.jl; affected the 1-2 most massive halos of each z-bin).
+        itop > 0 && (M_target[itop+1:end, iz] .= M_target[itop, iz])
     end
 
     # ---- Build 2D interpolator ----

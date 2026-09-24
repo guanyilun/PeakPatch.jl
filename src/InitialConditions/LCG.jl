@@ -60,7 +60,9 @@ function rans(N::Int, startval::Int = 0)
     for i in 2:nn
         seeds[i] = modmult(seeds[i-1], atothek)
     end
-    return seeds
+    # Streams are spaced by 2^46/nn (nn odd, as Fortran); like the Fortran callers,
+    # hand back the N requested.
+    return seeds[1:N]
 end
 
 # ---------- helper: compute K = floor(2^46 / nn) ----------

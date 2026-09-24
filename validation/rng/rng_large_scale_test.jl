@@ -137,7 +137,7 @@ function ks2(a, b)
     return d, clamp(p, 0.0, 1.0)
 end
 
-io = open(joinpath(OUT, PART == "AB" ? "REPORT.md" : "REPORT_$(PART).md"), "w")
+io = open(joinpath(OUT, PART == "AB" ? "REPORT.md" : "REPORT_$(PART)$(get(ENV, "RNG_CLABEL", "")).md"), "w")
 pr(a...) = (println(io, a...); println(a...); flush(io))
 tsec(t) = @sprintf("%.0f s", t)
 
@@ -160,6 +160,30 @@ function ensemble_table(names, tf, xo, label)
                 label, nstat, zmax, nstat, sqrt(2 * log(nstat))),
        @sprintf("min KS p = %.4f → Bonferroni p = %.3f (> 0.05 ⇒ no detectable difference).\n", pmin,
                 min(1.0, pmin * nstat)))
+    # Per-sample values (rows = statistics) for re-analysis / permutation tests
+    writedlm(joinpath(OUT, "samples_$(label)_threefry.csv"), hcat(names, T), ',')
+    writedlm(joinpath(OUT, "samples_$(label)_xoshiro.csv"), hcat(names, X), ',')
+    # Exact-in-the-limit permutation tests on |Δmean|/SE (KS asymptotics are poor at
+    # small K): per-statistic p, and a family-wise p from the max over statistics
+    # (accounts for their correlations, unlike Bonferroni).
+    nperm = 20_000; prng = Xoshiro(99); Z = hcat(T, X); na = size(T, 2)
+    tstat(A, B) = abs.((vec(mean(A; dims=2)) .- vec(mean(B; dims=2))) ./
+                       sqrt.(vec(var(A; dims=2)) ./ size(A, 2) .+ vec(var(B; dims=2)) ./ size(B, 2)))
+    t0 = tstat(T, X); ge = zeros(Int, nstat); gemax = 0
+    for _ in 1:nperm
+        pm = randperm(prng, size(Z, 2)); tp = tstat(Z[:, pm[1:na]], Z[:, pm[na+1:end]])
+        ge .+= tp .>= t0; gemax += maximum(tp) >= maximum(t0)
+    end
+    pperm = (ge .+ 1) ./ (nperm + 1); ifam = argmax(t0)
+    pr(@sprintf("**%s permutation test** (%d perms): min per-stat p = %.4f (%s); family-wise p (max-|t|) = %.3f\n",
+                label, nperm, minimum(pperm), names[argmin(pperm)], (gemax + 1) / (nperm + 1)))
+    for nm in split(get(ENV, "RNG_PREREG", ""), ';'; keepempty=false)
+        i = findfirst(==(nm), names)
+        i === nothing && (pr("pre-registered statistic not found: $nm"); continue)
+        pr(@sprintf("**pre-registered** `%s`: Threefry %.5g vs Xoshiro %.5g (Δ = %+.2f%%), t = %+.2f, permutation p = %.4f\n",
+                    nm, mean(T[i, :]), mean(X[i, :]), 100 * (mean(T[i, :]) / mean(X[i, :]) - 1),
+                    (mean(T[i, :]) - mean(X[i, :])) / sqrt(var(T[i, :]) / size(T, 2) + var(X[i, :]) / size(X, 2)), pperm[i]))
+    end
     writedlm(joinpath(OUT, "ensemble_$(label).csv"),
              vcat(permutedims(["stat", "tf_mean", "tf_std", "xo_mean", "xo_std", "z", "ks_p"]),
                   reduce(vcat, [permutedims(collect(r)) for r in rows])), ',')
@@ -232,21 +256,24 @@ end  # part B
 # full production N=6144 → M=512 vs the same Xoshiro 512³ ensemble as B.
 if occursin("C", PART)
     KC = parse(Int, get(ENV, "RNG_KC", "12"))
-    pr("## C. Production-scale ensemble: $KC Threefry seeds at N = $NP → M = $MP vs K = $K Xoshiro $(MP)³ (Nside $NSIDE_P)\n")
+    S0 = parse(Int, get(ENV, "RNG_SEED0", "1"))            # first Threefry seed
+    X0 = parse(Int, get(ENV, "RNG_XSEED0", "40000"))       # Xoshiro seed base
+    LBL = get(ENV, "RNG_CLABEL", "production_scale")
+    pr("## C ($LBL). Production-scale ensemble: Threefry seeds $(S0)–$(S0+KC-1) at N = $NP → M = $MP vs K = $K Xoshiro $(MP)³ (seeds $(X0+1)–$(X0+K); Nside $NSIDE_P)\n")
     function coarse_cached(seed)
         f = joinpath(OUT, "coarse_threefry_N$(NP)_M$(MP)_seed$(seed).f32")
         isfile(f) && (A = Array{Float32,3}(undef, MP, MP, MP); read!(f, A); return A)
         A = PeakPatch.MultiResolution._downsample_noise(NP, MP, seed); write(f, A); return A
     end
     tC = @elapsed begin
-        stC = analyze(coarse_cached(1), NSIDE_P)
+        stC = analyze(coarse_cached(S0), NSIDE_P)
         ctf = [vals(stC)]
-        for s in 2:KC
-            push!(ctf, vals(analyze(coarse_cached(s), NSIDE_P))); @info "C: Threefry seed $s/$KC"
+        for s in S0+1:S0+KC-1
+            push!(ctf, vals(analyze(coarse_cached(s), NSIDE_P))); @info "C: Threefry seed $s ($(s-S0+1)/$KC)"
         end
-        cxo = [vals(analyze(randn(Xoshiro(40_000 + s), Float32, MP, MP, MP), NSIDE_P)) for s in 1:K]
+        cxo = [vals(analyze(randn(Xoshiro(X0 + s), Float32, MP, MP, MP), NSIDE_P)) for s in 1:K]
     end
-    ensemble_table(first.(stC), ctf, cxo, "production_scale")
+    ensemble_table(first.(stC), ctf, cxo, LBL)
     pr("(production-scale ensemble: $(tsec(tC)))\n")
 end
 close(io)

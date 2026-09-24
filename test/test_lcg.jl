@@ -1,8 +1,7 @@
 using Test
-
-# We include the LCG module directly for testing
-include("../src/InitialConditions/LCG.jl")
-using .LCG
+using Printf
+using PeakPatch
+const LCG = PeakPatch.LCG   # test the package's module (not a second copy of its source)
 
 @testset "LCG — exact Fortran reproducibility" begin
 

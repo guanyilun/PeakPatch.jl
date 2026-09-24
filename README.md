@@ -60,6 +60,18 @@ julia --project=. bin/peakpatch.jl config.toml --verbose
 ```
 
 See [`examples/config.toml`](examples/config.toml) for all available options.
+The driver runs field + peaks → merge → **finalize** (Eulerian positions [Mpc/h] and
+km/s peculiar velocities, the Fortran `merge_pkvd` step; `[run] finalize = false`
+keeps the raw Lagrangian positions/displacements) → optional abundance matching.
+
+**GPU lightcone (production recipe):** [`examples/config_gpu_octant.toml`](examples/config_gpu_octant.toml)
+is the Websky-6144 physics and resolution in a 682 Mpc/h octant that runs in minutes
+on one GPU, including abundance matching (`[abundance_match] enabled = true` writes
+`*_AM.pksc` next to the raw catalog):
+
+```sh
+julia --project=validation -t 8 bin/peakpatch.jl examples/config_gpu_octant.toml --verbose
+```
 
 ### From Julia
 

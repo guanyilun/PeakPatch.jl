@@ -1,0 +1,61 @@
+# Small GPU lightcone octant — the production recipe (Websky-6144 physics, resolution
+# and pipeline) in a 682 Mpc/h box that runs in minutes on ONE GPU.
+#
+#   julia --project=validation -e 'using Pkg; Pkg.instantiate()'     # once
+#   julia --project=validation -t 8 bin/peakpatch.jl examples/config_gpu_octant.toml --verbose
+#
+# Produces output/catalog_gpu_octant.pksc (Eulerian positions [Mpc/h], km/s velocities)
+# and output/catalog_gpu_octant_AM.pksc (Tinker abundance-matched masses).
+#
+# Geometry: ntile=4, n=224, nbuff=16 → nsub=192, N = 4·192 + 2·16 = 800 cells.
+# cellsize = 0.85221 Mpc/h (= Websky / the production campaign), so [grid] boxsize =
+# n·cellsize = 190.895 (the TILE size) and the full box is 800·0.85221 = 681.8 Mpc/h.
+# Observer at a grid corner → one octant (abundance matching infers fsky = 1/8);
+# z_max = 0.23 keeps the lightcone inside the box along the axes.
+# coarse_factor = 25 → coarse grid M = 100 (must divide N), coarse cell 6.8 Mpc/h —
+# finer than production's 10.2, satisfying the velocity-coherence criterion
+# (coarse k_Nyq ≳ 0.3 h/Mpc) for kSZ/velocity products.
+# UNITS: every length is Mpc/h (CONVENTIONS.md).
+
+[cosmology]
+Om   = 0.31
+OB   = 0.049
+OL   = 0.69
+h    = 0.68
+
+[grid]
+n       = 224
+boxsize = 190.895
+nbuff   = 16
+cenx    = -340.884
+ceny    = -340.884
+cenz    = -340.884
+
+[run]
+z_out     = 0.0
+z_max     = 0.23
+ievol     = 1          # lightcone: each peak collapses at its own redshift
+ilpt      = 2
+ioutshear = 0
+wsmooth   = 1
+rmax2rs   = 0.0
+seed      = 12345
+ntile     = 4
+use_gpu   = true       # multi-resolution path on all visible GPUs
+coarse_factor = 25
+merge     = true
+finalize  = true       # Eulerian positions + km/s velocities (default)
+
+[abundance_match]
+enabled  = true        # writes *_AM.pksc alongside the raw catalog
+hmf      = "tinker"
+
+[files]
+pk         = "validation/websky_6144/data/pk_websky.dat"
+filterbank = "validation/websky_6144/data/filters_websky_finecell.dat"
+homeltab   = "validation/websky_6144/data/HomelTab_websky.dat"
+output     = "catalog_gpu_octant.pksc"
+
+[output]
+format = "pksc"
+path   = "output"
