@@ -58,26 +58,37 @@ on the largest mode below |k| = 32 (P = 14.9). Part A showed no ky-axis effect o
 seeds (z = +0.78). First attempt (5635142) segfaulted in threaded FFTW on 512³ under
 Julia 1.12 → `RNG_FFTW_THREADS=1`.
 
-### C — production-scale ensemble (job 5638894): BORDERLINE, confirmation pending
-12 Threefry seeds at the full N = 6144 → M = 512 (every one of the 2.3e11 counters feeds
-the large-scale modes) vs 40 Xoshiro 512³. The part-B statistics are clean here (ky-axis
-z = −0.30, max mode z = +0.15, axis modes > 6 z = +0.99) → seed 12345 was an ordinary
-draw. But 71 statistics give max |z| = 2.59 and **Bonferroni p = 0.049**, driven by ONE
-statistic: `Cl shell 0.30-0.50 l41-80`, Threefry 1.7% low (t = −2.36, asymptotic KS
-p = 0.0007). Not interpretable as is: KS asymptotics are poor at K = 12; ≈5% of null
-experiments reach Bonferroni p ≤ 0.05; the overlapping full shell (0.30–1.00) shows
-nothing at those ℓ. Settling it properly: job 5641162 — (1) exact permutation
-re-analysis of these seeds (per-statistic + family-wise max-|t|), and (2) OUT-OF-SAMPLE
-confirmation with fresh seeds (Threefry 13–28, Xoshiro 50001–50040) and that statistic
-PRE-REGISTERED. Results → `rng_test/REPORT_C_orig.md`, `REPORT_C_confirm.md`.
+### C — production-scale ensemble: PASSED after out-of-sample confirmation
+**C (job 5638894):** 12 Threefry seeds at the full N = 6144 → M = 512 (every one of the
+2.3e11 counters feeds the large-scale modes) vs 40 Xoshiro 512³. Part-B statistics clean
+(ky-axis z = −0.30, max mode z = +0.15, axis modes > 6 z = +0.99) → seed 12345 is an
+ordinary draw. Asymptotic tests looked borderline: Bonferroni p = 0.049 from one statistic,
+`Cl shell 0.30-0.50 l41-80` (Threefry −1.7%, asymptotic KS p = 0.0007).
 
-## Conclusion (provisional until job 5641162)
-A and B: no detectable difference between the production Threefry noise and an
-independent generator, including large angular scales in the replicated full-sky
-geometry. C: one borderline statistic at production scale, under out-of-sample
-confirmation — do NOT quote "passed at production scale" until it reports.
+**Settled (job 5641162):**
+| analysis | family-wise p (max-\|t\| permutation) | `Cl shell 0.30-0.50 l41-80` |
+|---|---|---|
+| C_orig: same 12+40 fields, exact permutation | **0.70** | −1.68%, permutation p = 0.027 |
+| C_confirm: FRESH Threefry 13–28 vs FRESH Xoshiro 50001–50040, statistic pre-registered | **0.11** | **+0.41%, p = 0.59 — does not replicate** |
+
+The borderline Bonferroni came from KS asymptotics at K = 12 (the exact permutation
+family-wise p is 0.70). Post hoc: both runs' smallest per-statistic p was an x-axis lag
+(ξₓ(3), then ξₓ(6); Box–Muller pairs run along x) but not at the same lag; pooled 28 vs 80
+permutation χ² over all lags: x p = 0.57, y p = 0.37, z p = 0.65 (`posthoc_lag_pooled.jl`).
+Box–Muller pairs never straddle a 12³ coarse block anyway.
+
+## Conclusion
+No detectable difference between the production Threefry noise and an independent
+generator (Xoshiro) at any tested scale — fine-grid, coarse-grid, and angular C_ℓ at
+ℓ = 2–80 in the replicated 8-octant full-sky geometry — including at full production
+scale (N = 6144, 2.3e11 deviates) with 28 seeds, exact permutation tests, and an
+out-of-sample confirmation of the one borderline statistic. The concern that motivated
+the Fortran LCG's stream partitioning does not arise for a counter-based generator.
 
 ## Lessons / caveats
+- Asymptotic KS p-values at K ≈ 12 are unreliable (0.0007 asymptotic vs 0.027 exact
+  permutation for the same statistic); use permutation tests, family-wise via max-|t|,
+  and confirm any flag out of sample with the statistic pre-registered.
 - A first single-realization-vs-4-nulls smoke run showed a 1.47× low-ℓ "excess" in one
   shell — a test-design artifact: low-ℓ C_ℓ in a replicated box depends on a few
   fundamental 3D modes, so single-realization distributions are heavy-tailed. Generator
