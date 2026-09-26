@@ -53,3 +53,11 @@ validation 5.08e7 — reproduced to 0.3%), AM N(>1e13) = 4.188e6, AM N(>1e14) =
 target, same volume); octant-to-octant scatter shows only in RAW (~0.1%). The
 "1.1e8/octant" reference once printed by `apply_abundance_match.jl` was stale
 (total vs >1.69e12 conflation) and has been corrected.
+
+## AM v2 (2026-09-26): abundance matching re-run with the top-halo fix
+The original `_AM.pksc` catalogs were made with the pre-fix `build_abundance_table`,
+which pulled the top halos of each z-bin toward their raw masses (1-halo tSZ proxy
++5% overall, +8% at z < 0.5; see `../AM_TOPHALO_FIX_2026-09-25.md`). AM re-run
+(AM only; raw catalogs unchanged) with `bash submit_am_v2.sh` → jobs 5692696–5692703
+→ `catalog_websky_6144_prod_octZYX_AMv2.pksc`. **Use `_AMv2` for all downstream
+products**; the original `_AM` files are kept, unmodified, for provenance.
