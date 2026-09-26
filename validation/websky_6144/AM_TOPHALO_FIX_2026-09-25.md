@@ -12,7 +12,7 @@ value upward.
 scratch only: `scratch/websky_6144/catalog_prod_oct000_AMfix.pksc`) and compared with the
 committed `_AM` catalog:
 - 319 of 195,490,586 halos change (|ΔM/M| > 1e-4), all massive (2e13–8e14); median
-  ΔM/M = −8.4%, range −… to +22%. N(>1e14) 62,540 → 62,538; N(>5e14) 764 → 764.
+  ΔM/M = −8.4%, maximum +22%. N(>1e14) 62,540 → 62,538; N(>5e14) 764 → 764.
 - In production the raw top masses sit ABOVE the Tinker target, so the identity node
   pulled top halos UP; the fix lowers them (the synthetic test had the opposite sign).
 
