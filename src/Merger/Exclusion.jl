@@ -1,6 +1,6 @@
 module Exclusion
 
-export SpatialHash, build_hash, sphere_overlap,
+export SpatialHash, build_hash, auto_hash_nc, sphere_overlap,
        lagrangian_exclusion!, volume_reduction!
 
 """
@@ -22,33 +22,46 @@ end
 const NC = 256  # cells per dimension, matching Fortran
 
 """
-    build_hash(x, y, z, nhalo; domain_min, domain_max) -> SpatialHash
+    build_hash(x, y, z, nhalo; domain_min, domain_max, nc=NC) -> SpatialHash
 
 Build a spatial hash for `nhalo` halos with positions `x[1:nhalo]`, etc.
-Domain is divided into NC³ cells spanning [domain_min, domain_max] per axis.
+Domain is divided into nc³ cells spanning [domain_min, domain_max] per axis.
+The exclusion searches are exhaustive within their radius, so `nc` changes only
+the cost, never the survivors (see `auto_hash_nc`).
 """
 function build_hash(x::AbstractVector{<:Real}, y::AbstractVector{<:Real},
                     z::AbstractVector{<:Real}, nhalo::Int;
-                    domain_min::NTuple{3,Float64}, domain_max::NTuple{3,Float64})
+                    domain_min::NTuple{3,Float64}, domain_max::NTuple{3,Float64},
+                    nc::Int=NC)
     Lx = domain_max[1] - domain_min[1]
     Ly = domain_max[2] - domain_min[2]
     Lz = domain_max[3] - domain_min[3]
     L = max(Lx, Ly, Lz)
-    cell_size = L / NC
+    cell_size = L / nc
 
-    hoc = zeros(Int32, NC, NC, NC)
+    hoc = zeros(Int32, nc, nc, nc)
     ll = zeros(Int32, nhalo)
 
     for m in 1:nhalo
-        ix = clamp(floor(Int, (Float64(x[m]) - domain_min[1]) / cell_size) + 1, 1, NC)
-        iy = clamp(floor(Int, (Float64(y[m]) - domain_min[2]) / cell_size) + 1, 1, NC)
-        iz = clamp(floor(Int, (Float64(z[m]) - domain_min[3]) / cell_size) + 1, 1, NC)
+        ix = clamp(floor(Int, (Float64(x[m]) - domain_min[1]) / cell_size) + 1, 1, nc)
+        iy = clamp(floor(Int, (Float64(y[m]) - domain_min[2]) / cell_size) + 1, 1, nc)
+        iz = clamp(floor(Int, (Float64(z[m]) - domain_min[3]) / cell_size) + 1, 1, nc)
         ll[m] = hoc[ix, iy, iz]
         hoc[ix, iy, iz] = Int32(m)
     end
 
-    return SpatialHash(hoc, ll, NC, cell_size, domain_min)
+    return SpatialHash(hoc, ll, nc, cell_size, domain_min)
 end
+
+"""
+    auto_hash_nc(nhalo) -> Int
+
+Hash resolution of about one halo per cell, clamped to 16..1024 per axis (≤ 4.3 GB). The
+fixed Fortran NC=256 gives ~20 halos per 20.9 Mpc/h cell at Websky scale, and the
+linked-list walks dominate (validation/performance/PERFORMANCE_2026-09-26.md: 346 s →
+13 s on 9.8M halos with 5 Mpc/h cells, identical survivors).
+"""
+auto_hash_nc(nhalo::Integer) = clamp(round(Int, cbrt(nhalo)), 16, 1024)
 
 """Cell indices for a position."""
 @inline function _cell_idx(sh::SpatialHash, px::Real, py::Real, pz::Real)

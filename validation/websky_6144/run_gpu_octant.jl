@@ -68,12 +68,11 @@ function main()
     # ---- Geometry summary ----
     nmesh = cfg.n
     nbuff = cfg.nbuff
-    nsub = nmesh - 2 * nbuff
-    N = nsub * ntile + 2 * nbuff
+    nsub, N = grid_layout(cfg, ntile)
     alatt = cfg.boxsize / nmesh
     boxsize_full = N * alatt
 
-    @info "Websky 6144^3 GPU multi-resolution" N=N ntile=ntile nmesh=nmesh nbuff=nbuff nsub=nsub boxsize_full=round(boxsize_full; digits=1) seed=seed coarse_factor=coarse_factor ievol=cfg.ievol z_max=cfg.z_max ilpt=cfg.ilpt ioutshear=cfg.ioutshear
+    @info "Websky 6144^3 GPU multi-resolution" N=N ntile=ntile nmesh=nmesh nbuff=nbuff nsub=nsub boxsize_full=round(boxsize_full; digits=1) periodic_cores=cfg.periodic_cores seed=seed coarse_factor=coarse_factor ievol=cfg.ievol z_max=cfg.z_max ilpt=cfg.ilpt ioutshear=cfg.ioutshear
 
     # ---- Run pipeline ----
     t0 = time()

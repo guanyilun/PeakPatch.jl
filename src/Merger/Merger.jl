@@ -1,7 +1,7 @@
 module Merger
 
 import ..Catalog: HaloRecord, ExtHaloRecord
-import ..Exclusion: SpatialHash, build_hash, lagrangian_exclusion!, volume_reduction!
+import ..Exclusion: SpatialHash, build_hash, auto_hash_nc, lagrangian_exclusion!, volume_reduction!
 import ..Cosmology: CosmologyParams, Dlinear_tables, Dlinear_ab, build_chi_to_z, chi_to_z
 
 export merge_catalog, finalize_eulerian
@@ -38,8 +38,12 @@ function _merge_impl(halos::Vector{T}, verbose::Bool) where T <: Union{HaloRecor
     z = Float64[h.z for h in halos]
     r = Float64[h.RTHL for h in halos]
 
-    # Sort order: descending by radius (largest first)
-    order = sortperm(r; rev=true)
+    # Sort order: descending by radius (largest first), ties broken by position. About a
+    # fifth of raw peaks tie exactly (discrete shell radii), and a stable sort on r alone
+    # made the survivors depend on input order, i.e. on tile completion order and GPU
+    # count (validation/tiling/TILING_INVARIANCE_2026-09-26.md). (−r, x, y, z) is a total
+    # order on distinct peaks, so the merged catalog is reproducible.
+    order = sortperm(eachindex(r); by=i -> (-r[i], x[i], y[i], z[i]))
 
     # Domain bounds (with padding of max radius)
     rmax = maximum(r)
@@ -51,7 +55,8 @@ function _merge_impl(halos::Vector{T}, verbose::Bool) where T <: Union{HaloRecor
     domain_max = (xmax + pad, ymax + pad, zmax + pad)
 
     # Build spatial hash
-    sh = build_hash(x, y, z, nhalo; domain_min=domain_min, domain_max=domain_max)
+    sh = build_hash(x, y, z, nhalo; domain_min=domain_min, domain_max=domain_max,
+                    nc=auto_hash_nc(nhalo))
 
     survived = fill(true, nhalo)
 

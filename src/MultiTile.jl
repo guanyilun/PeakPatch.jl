@@ -113,6 +113,8 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     nbuff = cfg.nbuff
     nsub = nmesh - 2 * nbuff
     N = nsub * ntile + 2 * nbuff
+    cfg.periodic_cores && error("periodic_cores=true is not supported by the CPU MultiTile " *
+        "path (tiles are sliced from global arrays without wrapping); use run_multitile_split")
     alatt = cfg.boxsize / nmesh
     boxsize_full = N * alatt
     dcore_box = nsub * alatt
@@ -454,6 +456,8 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     nbuff = cfg.nbuff
     nsub = nmesh - 2 * nbuff
     N = nsub * ntile + 2 * nbuff
+    cfg.periodic_cores && error("periodic_cores=true is not supported by the CPU MultiTile " *
+        "path (tiles are sliced from global arrays without wrapping); use run_multitile_split")
     alatt = cfg.boxsize / nmesh
     boxsize_full = N * alatt
     dcore_box = nsub * alatt

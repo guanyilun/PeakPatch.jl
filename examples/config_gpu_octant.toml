@@ -7,13 +7,14 @@
 # Produces output/catalog_gpu_octant.pksc (Eulerian positions [Mpc/h], km/s velocities)
 # and output/catalog_gpu_octant_AM.pksc (Tinker abundance-matched masses).
 #
-# Geometry: ntile=4, n=224, nbuff=16 → nsub=192, N = 4·192 + 2·16 = 800 cells.
-# cellsize = 0.85221 Mpc/h (= Websky / the production campaign), so [grid] boxsize =
-# n·cellsize = 190.895 (the TILE size) and the full box is 800·0.85221 = 681.8 Mpc/h.
-# Observer at a grid corner → one octant (abundance matching infers fsky = 1/8);
-# z_max = 0.23 keeps the lightcone inside the box along the axes.
-# coarse_factor = 25 → coarse grid M = 100 (must divide N), coarse cell 6.8 Mpc/h —
-# finer than production's 10.2, satisfying the velocity-coherence criterion
+# Geometry: ntile=4, n=224, nbuff=16 → nsub=192; periodic_cores → the tile cores tile
+# the whole periodic box, N = 4·192 = 768 cells (buffers wrap). cellsize = 0.85221 Mpc/h
+# (= Websky / the production campaign), so [grid] boxsize = n·cellsize = 190.895 (the
+# TILE size) and the full box is 768·0.85221 = 654.5 Mpc/h.
+# Observer at the box corner → one octant (abundance matching infers fsky = 1/8);
+# z_max = 0.23 (χ ≈ 646 Mpc/h) keeps the lightcone inside the box along the axes.
+# coarse_factor = 24 → coarse grid M = ntile·24 = 96 (must divide N), coarse cell
+# 6.8 Mpc/h — finer than production's 10.2, satisfying the velocity-coherence criterion
 # (coarse k_Nyq ≳ 0.3 h/Mpc) for kSZ/velocity products.
 # UNITS: every length is Mpc/h (CONVENTIONS.md).
 
@@ -27,9 +28,10 @@ h    = 0.68
 n       = 224
 boxsize = 190.895
 nbuff   = 16
-cenx    = -340.884
-ceny    = -340.884
-cenz    = -340.884
+periodic_cores = true  # required for a box-corner observer (no unsimulated slab)
+cenx    = -327.249
+ceny    = -327.249
+cenz    = -327.249
 
 [run]
 z_out     = 0.0
@@ -42,7 +44,8 @@ rmax2rs   = 0.0
 seed      = 12345
 ntile     = 4
 use_gpu   = true       # multi-resolution path on all visible GPUs
-coarse_factor = 25
+coarse_factor = 24
+coarse_compensation = true   # multires splice exact below the coarse Nyquist
 merge     = true
 finalize  = true       # Eulerian positions + km/s velocities (default)
 

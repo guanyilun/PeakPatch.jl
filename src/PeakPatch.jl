@@ -40,7 +40,7 @@ using .PeakFind: PeakCandidate, find_peaks
 using .RadialShell: ShellCell, PeakGrid, PeakResult, no_collapse,
     hRinteg, atab4, precompute_shells, analyse_peak, normalize_strain!, normalize_strain,
     fsc_of_z, get_evals, reset_dump_counters!, get_dump_counts
-using .Parameters: PipelineConfig, FortranParams, read_params_bin, write_params_bin
+using .Parameters: PipelineConfig, FortranParams, read_params_bin, write_params_bin, grid_layout
 using .Catalog: HaloRecord, ExtHaloRecord, write_pksc, read_pksc
 using .EllipsoidalCollapse: EllipsoidParams, evolve_ellipse_full,
     get_b_2, _elliptic_rd
@@ -407,7 +407,7 @@ export
     ShellCell, PeakGrid, PeakResult,
     hRinteg, atab4, precompute_shells, analyse_peak, normalize_strain!, normalize_strain,
     fsc_of_z, get_evals, reset_dump_counters!, get_dump_counts,
-    PipelineConfig, FortranParams, read_params_bin, write_params_bin,
+    PipelineConfig, FortranParams, read_params_bin, write_params_bin, grid_layout,
     HaloRecord, ExtHaloRecord, write_pksc, read_pksc,
     EllipsoidParams, evolve_ellipse_full, get_b_2,
     CollapseTableParams, CollapseTableInterp,

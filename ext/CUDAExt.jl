@@ -2870,8 +2870,12 @@ function _periodic_kernel!(arr_k, dk::Float64, n::Int32,
     kz = Float64(iz_signed) * dk
     k2 = kx * kx + ky * ky + kz * kz
 
-    # CPU zeroing: DC origin, Nyquist rows/plane
-    if k2 == 0.0 || ix == nk || iy == nyq + _I1 || iz == nyq + _I1
+    # CPU zeroing: DC origin, Nyquist rows/plane — except φ_ij (id 3), which zeroes only
+    # k=0 so the 2LPT trace identity src2 = δ²/2 − Σφii²/2 − Σφij² holds with the
+    # un-zeroed δ (serial convention; validation/NOTES_2LPT_NYQUIST_2026-09-24.md).
+    # −ki·kj/k² is real, so the Nyquist planes stay real.
+    if k2 == 0.0 || (kernel_fn_id != Int32(3) &&
+                     (ix == nk || iy == nyq + _I1 || iz == nyq + _I1))
         @inbounds arr_k[ix, iy, iz] = ComplexF32(0)
         return
     end

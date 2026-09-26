@@ -1,2 +1,6 @@
 *.pksc
 *.pksc.*
+
+# large binary test dumps / python caches (kept on disk, not versioned)
+validation/tiling/results/**/*.f32
+__pycache__/

@@ -107,6 +107,39 @@ import PeakPatch.Cosmology: CosmologyParams, build_chi_to_z, chi_to_z, chi
         @test sum(maps[:mass]) - sum(mex[:mass]) ≈ rho_m * alatt^3 * nex rtol=1e-6
     end
 
+    @testset "periodic_cores: a box-corner observer sees every cell" begin
+        # Legacy layout N = nsub*ntile + 2nbuff: the cores span ±Nc·a/2 but the periodic box
+        # is 2nbuff cells wider, so an observer at the BOX corner (the octant-lightcone
+        # geometry) misses a slab next to each plane (FULLSKY_COMPARISON_2026-09-26.md).
+        # periodic_cores=true (N = nsub*ntile) makes the box corner the core corner.
+        mkcfg(periodic, o) = PipelineConfig(merge(config, Dict{String,Any}(
+            "grid" => merge(config["grid"], Dict{String,Any}("periodic_cores" => periodic,
+                                                             "cenx" => o, "ceny" => o, "cenz" => o)))))
+        for periodic in (false, true)
+            c0 = mkcfg(periodic, 0.0)
+            nsub_, Nbox = grid_layout(c0, ntile)
+            @test nsub_ == nsub && Nbox == (periodic ? nsub * ntile : nsub * ntile + 2nbuff)
+            o = -Nbox * alatt / 2                                   # box corner
+            c = mkcfg(periodic, o)
+            run_fm() = run_multitile_fieldmap(c; ntile=ntile, seed=12345, npix=npix, vec2pix=v2p,
+                                              use_gpu=false, verbose=false, kernels=[:mass], subdiv_max=1)
+            m = periodic ? run_fm() :
+                (@test_logs (:warn, r"outside the tile-core") match_mode=:any run_fm())
+            bpos(i) = (i - (Nbox + 1) / 2) * alatt                  # every cell of the box
+            dist(x, y, z) = sqrt((x - o)^2 + (y - o)^2 + (z - o)^2)
+            nfull = count(rmin_eff <= dist(bpos(i), bpos(j), bpos(k)) <= chimax
+                          for k in 1:Nbox, j in 1:Nbox, i in 1:Nbox)
+            if periodic
+                @test sum(m[:mass]) ≈ rho_m * alatt^3 * nfull rtol=1e-6
+            else
+                @test sum(m[:mass]) < 0.97 * rho_m * alatt^3 * nfull   # the unsimulated slab
+            end
+        end
+        @test_throws ErrorException PeakPatch.MultiTile.run_multitile(
+            PipelineConfig(merge(config, Dict{String,Any}("grid" => merge(config["grid"],
+                Dict{String,Any}("periodic_cores" => true))))); ntile=ntile, seed=1)
+    end
+
     @testset "cross-tile exclusion mask == brute force" begin
         hb = (x=[0.0], y=[-200.0], z=[-200.0], R=[30.0])     # straddles the x=0 tile boundary
         dcore = nsub * alatt; x0 = -(ntile / 2) * dcore

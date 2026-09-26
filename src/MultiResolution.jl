@@ -22,7 +22,7 @@ using ..Filters: smooth_field, gaussian_window_fortran, tophat_window, read_filt
 using ..PeakFind: PeakCandidate, find_peaks
 using ..RadialShell: PeakGrid, precompute_shells, analyse_peak, fsc_of_z
 using ..ShellAnalysisGPU: build_shell_tables
-using ..Parameters: PipelineConfig
+using ..Parameters: PipelineConfig, grid_layout
 using ..Catalog: HaloRecord, ExtHaloRecord
 using ..CollapseTable: CollapseTableInterp, read_homeltab
 using ..MultiTile: tile_center, extract_tile
@@ -282,9 +282,45 @@ function _isolated_convolve(noise::Array{Float32,3}, pk, boxsize_local::Float64,
     return result[s1:s2, s1:s2, s1:s2]
 end
 
-"""Apply √P(k) convolution on a (small) periodic grid. Standard approach."""
+"""
+    _splice_compensation(M, block) -> Vector{Float64}
+
+Per-axis coarse-kernel factor D(k)/T(k) on the M-point coarse grid (fftfreq order;
+even in k). The tile field is interp_CR(coarse) + K*(n − spread_pc(block mean)); below
+the coarse Nyquist that equals K*n·[1 + D(T − D)] per axis product, with
+  D(θ) = sin(bθ/2)/(b sin(θ/2))   block-average (cell-centred) transfer, θ = k·dx_fine,
+  T(θ) = ⟨Σ_d w_d(t) e^{-ibθ(f−i−d)}⟩_fine   Catmull-Rom interpolation transfer
+         projected on the fine-grid mode (average over the b fine sub-positions).
+Multiplying the coarse kernels by Π D/T makes the stitched field exact there; the
+uncompensated split has P_split/P_exact = 1.02, 1.04, 1.09, 1.11 at 0.16, 0.24, 0.39,
+0.62 k_Nyq,coarse (measured and predicted, validation/tiling/). Aliased images above the
+coarse Nyquist are not diagonal in k and are unaffected.
+"""
+function _splice_compensation(M::Int, block::Int)
+    b = block
+    c = zeros(Float64, M)
+    for j in 0:M-1
+        js = j <= M ÷ 2 ? j : j - M                      # signed coarse wavenumber index
+        θ = 2π * js / (M * b)                             # k · dx_fine
+        D = js == 0 ? 1.0 : sin(b * θ / 2) / (b * sin(θ / 2))
+        T = 0.0 + 0.0im
+        for s in 0:b-1
+            f = (s + 0.5) / b + 0.5; i = floor(Int, f); t = f - i
+            w = _catmull_rom(Float32(t))
+            for (d, wd) in zip(-1:2, w)
+                T += Float64(wd) * cis(-b * θ * (f - (i + d)))
+            end
+        end
+        T /= b
+        c[j+1] = clamp(D / real(T), 0.0, 2.0)
+    end
+    c
+end
+
+"""Apply √P(k) convolution on a (small) periodic grid. Standard approach.
+`comp` (optional per-axis vector from `_splice_compensation`) multiplies by Π comp."""
 function _periodic_convolve!(noise_k, pk, n::Int, boxsize::Float64;
-                              kernel_fn=nothing)
+                              kernel_fn=nothing, comp=nothing)
     dk = 2π / boxsize
     kx_arr = FFTW.rfftfreq(n, n * dk)
     ky_arr = FFTW.fftfreq(n, n * dk)
@@ -299,6 +335,7 @@ function _periodic_convolve!(noise_k, pk, n::Int, boxsize::Float64;
         end
         k = sqrt(k2)
         amp = sqrt(pk(k) * dk^3 * n^3)
+        comp !== nothing && (amp *= comp[ix] * comp[iy] * comp[iz])
         if kernel_fn !== nothing
             noise_k[ix, iy, iz] *= amp * kernel_fn(kx, ky, kz, k2)
         else
@@ -504,6 +541,26 @@ end
 # ============================================================
 
 """
+Warn when a lightcone observer sits outside the region covered by tile cores. With the
+legacy layout (`periodic_cores=false`) the cores span ±ntile·nsub·a/2 while the periodic
+box is 2nbuff cells wider, so a box-corner observer sees an unsimulated slab of
+thickness (|obs| − ntile·nsub·a/2) next to each octant plane.
+"""
+function _warn_if_observer_outside_cores(cfg::PipelineConfig, ntile, nsub, nmesh)
+    cfg.ievol == 1 || return nothing
+    alatt = cfg.boxsize / nmesh
+    H = ntile * nsub * alatt / 2
+    gap = maximum(abs.((cfg.cenx, cfg.ceny, cfg.cenz))) - H
+    if gap > 0.01 * alatt                        # ignore config rounding (≪ one cell)
+        @warn "lightcone observer lies $(round(gap; digits=2)) Mpc/h outside the tile-core " *
+              "region (±$(round(H; digits=1)) Mpc/h): that slab next to each octant plane is " *
+              "never simulated. Set [grid] periodic_cores = true (N = nsub*ntile) for " *
+              "corner-observer lightcones." maxlog=1
+    end
+    nothing
+end
+
+"""
     run_multitile_split(cfg; ntile, seed, verbose, coarse_factor=4)
 
 Multi-resolution variant of `run_multitile` following the MUSIC approach
@@ -550,8 +607,8 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     # ---- Geometry ----
     nmesh = cfg.n
     nbuff = cfg.nbuff
-    nsub = nmesh - 2 * nbuff
-    N = nsub * ntile + 2 * nbuff
+    nsub, N = grid_layout(cfg, ntile)
+    _warn_if_observer_outside_cores(cfg, ntile, nsub, nmesh)
     alatt = cfg.boxsize / nmesh
     boxsize_full = N * alatt
     dcore_box = nsub * alatt
@@ -622,16 +679,20 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     coarse_noise = _downsample_noise(N, M, seed)
     coarse_k = rfft(coarse_noise)
 
+    # splice compensation for every coarse field that is interpolated into the tiles
+    comp = cfg.coarse_compensation ? _splice_compensation(M, block) : nothing
+    verbose && comp !== nothing && @info "coarse splice compensation D/T on" block
+
     # δ_coarse: convolve coarse noise with full T(k)
     delta_coarse_k = copy(coarse_k)
-    _periodic_convolve!(delta_coarse_k, pk, M, boxsize_full)
+    _periodic_convolve!(delta_coarse_k, pk, M, boxsize_full; comp=comp)
     delta_coarse = irfft(delta_coarse_k, M)
 
     # ψ_coarse: 1LPT displacements on coarse grid
     psi_coarse = Vector{Array{Float32,3}}(undef, 3)
     for dim in 1:3
         psi_k = copy(coarse_k)
-        _periodic_convolve!(psi_k, pk, M, boxsize_full; kernel_fn=_kernel_1lpt(dim))
+        _periodic_convolve!(psi_k, pk, M, boxsize_full; kernel_fn=_kernel_1lpt(dim), comp=comp)
         psi_coarse[dim] = irfft(psi_k, M)
     end
 
@@ -666,7 +727,7 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     lapd_coarse = nothing
     if ioutshear >= 1
         lapd_k = copy(coarse_k)
-        _periodic_convolve!(lapd_k, pk, M, boxsize_full; kernel_fn=_kernel_laplacian())
+        _periodic_convolve!(lapd_k, pk, M, boxsize_full; kernel_fn=_kernel_laplacian(), comp=comp)
         lapd_coarse = irfft(lapd_k, M)
     end
 
@@ -817,12 +878,12 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                 src2_local .+= delta_tile .^ 2 .* 0.5f0
                 for d in 1:3
                     phi_k = copy(delta_tile_k)
-                    _apply_kernel_inplace!(phi_k, nmesh, boxsize_local, _kernel_phi_ij(d, d))
+                    _apply_kernel_inplace!(phi_k, nmesh, boxsize_local, _kernel_phi_ij(d, d); zero_nyquist=false)
                     src2_local .-= irfft(phi_k, nmesh) .^ 2 .* 0.5f0
                 end
                 for (di, dj) in ((1,2), (1,3), (2,3))
                     phi_k = copy(delta_tile_k)
-                    _apply_kernel_inplace!(phi_k, nmesh, boxsize_local, _kernel_phi_ij(di, dj))
+                    _apply_kernel_inplace!(phi_k, nmesh, boxsize_local, _kernel_phi_ij(di, dj); zero_nyquist=false)
                     src2_local .-= irfft(phi_k, nmesh) .^ 2
                 end
                 src2_local_k = rfft(src2_local)
@@ -1239,7 +1300,10 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
 end
 
 """Apply a k-space kernel to an existing k-space array (no P(k), just the kernel)."""
-function _apply_kernel_inplace!(arr_k, n::Int, boxsize::Float64, kernel_fn)
+# zero_nyquist=false for φ_ij: the tile-local 2LPT trace identity uses the un-zeroed δ, so
+# φ_ij must zero only k=0 (serial convention; validation/NOTES_2LPT_NYQUIST_2026-09-24.md).
+function _apply_kernel_inplace!(arr_k, n::Int, boxsize::Float64, kernel_fn;
+                                zero_nyquist::Bool=true)
     dk = 2π / boxsize
     kx_arr = Float64.(FFTW.rfftfreq(n, n * dk))
     ky_arr = Float64.(FFTW.fftfreq(n, n * dk))
@@ -1249,7 +1313,7 @@ function _apply_kernel_inplace!(arr_k, n::Int, boxsize::Float64, kernel_fn)
     for iz in 1:n, iy in 1:n, ix in 1:nk
         kx = kx_arr[ix]; ky = ky_arr[iy]; kz = kz_arr[iz]
         k2 = kx^2 + ky^2 + kz^2
-        if k2 == 0.0 || ix == nk || iy == nyq + 1 || iz == nyq + 1
+        if k2 == 0.0 || (zero_nyquist && (ix == nk || iy == nyq + 1 || iz == nyq + 1))
             arr_k[ix, iy, iz] = 0
             continue
         end

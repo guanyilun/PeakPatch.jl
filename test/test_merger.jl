@@ -1,6 +1,7 @@
 using PeakPatch
 using PeakPatch: Exclusion, Merger, Catalog
 using Test
+using Random
 
 @testset "Merger" begin
 
@@ -246,6 +247,35 @@ using Test
         @test r2.vx == -1f0
         @test r2.vy == -2f0
         @test r2.overdensity == 0.8f0
+    end
+
+    @testset "merge_catalog — deterministic under input order and hash resolution" begin
+        # Many exact R_TH ties (the discrete shell radii of real catalogs): the survivors
+        # must not depend on input order (tile completion order, GPU count), and the hash
+        # resolution must change only the cost (TILING_INVARIANCE_2026-09-26.md).
+        rng = MersenneTwister(11)
+        radii = Float32[1.0, 1.4142135, 1.7320508, 2.0, 2.236068]      # tie-heavy
+        halos = [HaloRecord(Float32(60rand(rng)), Float32(60rand(rng)), Float32(60rand(rng)),
+                            0f0, 0f0, 0f0, rand(rng, radii), 0f0, 0f0, 0f0, Float32(k))
+                 for k in 1:4000]
+        key(c) = sort([(h.x, h.y, h.z, h.RTHL) for h in c])
+        ref = key(merge_catalog(halos))
+        @test length(ref) < length(halos)                                  # non-trivial
+        for s in 1:5
+            @test key(merge_catalog(shuffle(MersenneTwister(s), halos))) == ref
+        end
+        # hash resolution: survivors identical for coarse, legacy and auto grids
+        x = Float64[h.x for h in halos]; y = Float64[h.y for h in halos]
+        z = Float64[h.z for h in halos]; r = Float64[h.RTHL for h in halos]
+        order = sortperm(eachindex(r); by=i -> (-r[i], x[i], y[i], z[i]))
+        dmin = (-5.0, -5.0, -5.0); dmax = (65.0, 65.0, 65.0)
+        surv = map((4, 256, Exclusion.auto_hash_nc(length(halos)))) do nc
+            sv = fill(true, length(halos))
+            sh = Exclusion.build_hash(x, y, z, length(halos); domain_min=dmin, domain_max=dmax, nc=nc)
+            Exclusion.lagrangian_exclusion!(sv, x, y, z, r, order, sh)
+            sv
+        end
+        @test surv[1] == surv[2] == surv[3]
     end
 
 end

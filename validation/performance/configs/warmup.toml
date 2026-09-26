@@ -1,0 +1,33 @@
+# Benchmark config 'warmup' (gen_bench_configs.jl): n=96 ntile=2 nbuff=16 N=160 M=20 block=8; full box 136.4 Mpc/h; z_max=0.081 covers the box
+[cosmology]
+Om = 0.31
+OB = 0.049
+OL = 0.69
+h  = 0.68
+
+[grid]
+n       = 96
+boxsize = 81.8125
+nbuff   = 16
+cenx    = -68.177
+ceny    = -68.177
+cenz    = -68.177
+
+[run]
+z_out     = 0.0
+z_max     = 0.081
+ievol     = 1
+ilpt      = 2
+ioutshear = 1
+wsmooth   = 1
+rmax2rs   = 0.0
+seed      = 12345
+ntile     = 2
+coarse_factor = 10
+
+[files]
+pk         = "validation/websky_6144/data/pk_websky.dat"
+filterbank = "validation/websky_6144/data/filters_websky_finecell.dat"
+homeltab   = "validation/websky_6144/data/HomelTab_websky.dat"
+output     = "bench_warmup.pksc"
+

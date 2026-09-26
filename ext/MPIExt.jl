@@ -657,6 +657,8 @@ function PeakPatch.run_multitile_mpi(cfg::PeakPatch.PipelineConfig;
     nbuff  = cfg.nbuff
     nsub   = nmesh - 2 * nbuff
     N      = nsub * ntile + 2 * nbuff
+    cfg.periodic_cores && error("periodic_cores=true is not supported by the MPI path " *
+        "(tiles are sliced from pencils without wrapping); use run_multitile_split")
     alatt  = cfg.boxsize / nmesh
     boxsize_full = N * alatt
     dcore_box = nsub * alatt

@@ -38,8 +38,8 @@ end
 """Sky fraction covered by a lightcone catalog: an observer at a grid corner sees one
 octant (1/8), at the grid centre the full sky (1). Anything else must be explicit."""
 function _infer_fsky(cfg, ntile)
-    nsub = cfg.n - 2 * cfg.nbuff
-    half = (nsub * ntile + 2 * cfg.nbuff) * (cfg.boxsize / cfg.n) / 2   # boxsize_full / 2
+    _, N = grid_layout(cfg, ntile)
+    half = N * (cfg.boxsize / cfg.n) / 2                                # boxsize_full / 2
     obs = (cfg.cenx, cfg.ceny, cfg.cenz)
     all(o -> abs(o) < 1e-3 * half, obs) && return 1.0
     all(o -> isapprox(abs(o), half; rtol=0.02), obs) && return 1 / 8

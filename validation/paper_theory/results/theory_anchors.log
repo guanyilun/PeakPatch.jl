@@ -1,0 +1,10 @@
+09:53:09 CAMB 1.5.0  As=2.0792e-09  sigma8=0.8100
+09:53:10 P_camb/P_file: median 1.0000, range 0.9988-1.0014
+09:53:10 chi*(1089): no-radiation 9451.1, CAMB 9390.7 Mpc/h
+09:53:21 interpolator lin ready
+09:53:33 interpolator halofit ready
+09:55:18 interpolator hmcode ready
+09:55:30 kappa done
+10:01:31 Doppler boundary terms done
+10:01:34   full Doppler l=2: Dl=1.2102 uK^2
+10:02:04   full Doppler l=10: Dl=2.2764 uK^2

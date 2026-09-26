@@ -60,4 +60,13 @@ which pulled the top halos of each z-bin toward their raw masses (1-halo tSZ pro
 +5% overall, +8% at z < 0.5; see `../AM_TOPHALO_FIX_2026-09-25.md`). AM re-run
 (AM only; raw catalogs unchanged) with `bash submit_am_v2.sh` → jobs 5692696–5692703
 → `catalog_websky_6144_prod_octZYX_AMv2.pksc`. **Use `_AMv2` for all downstream
-products**; the original `_AM` files are kept, unmodified, for provenance.
+products.** The original `_AM` files were deleted on 2026-09-26 to free space for the v2
+rerun; they are superseded and can be regenerated from the raw catalogs.
+
+## ⚠️ Superseded by production-v2 (2026-09-26)
+This campaign has an unsimulated 13.6 Mpc/h slab next to each octant plane, because its
+tile cores cover 6112 of the 6144 cells per axis. Its fields also carry the multires
+splice P(k) bump. See `../../paper/FULLSKY_COMPARISON_2026-09-26.md` and
+`../../tiling/SPLICE_COMPENSATION_2026-09-26.md`. The paper dataset is
+`../production_v2/`. The raw and `_AMv2` catalogs here are kept for before/after
+comparisons until v2 is validated.

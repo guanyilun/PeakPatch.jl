@@ -288,8 +288,8 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
     # ---- Geometry (identical to run_multitile_split) ----
     nmesh = cfg.n
     nbuff = cfg.nbuff
-    nsub = nmesh - 2 * nbuff
-    N = nsub * ntile + 2 * nbuff
+    nsub, N = grid_layout(cfg, ntile)
+    _warn_if_observer_outside_cores(cfg, ntile, nsub, nmesh)
     alatt = cfg.boxsize / nmesh
     boxsize_full = N * alatt
     dcore_box = nsub * alatt
@@ -418,19 +418,20 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
 
     coarse_noise = _downsample_noise(N, M, seed)
     coarse_k = rfft(coarse_noise)
+    comp = cfg.coarse_compensation ? _splice_compensation(M, N ÷ M) : nothing   # see MultiResolution
     delta_coarse_k = copy(coarse_k)
-    _periodic_convolve!(delta_coarse_k, pk, M, boxsize_full)
+    _periodic_convolve!(delta_coarse_k, pk, M, boxsize_full; comp=comp)
     delta_coarse = irfft(delta_coarse_k, M)
     psi_coarse = Vector{Array{Float32,3}}(undef, 3)
     for dim in 1:3
         psi_k = copy(coarse_k)
-        _periodic_convolve!(psi_k, pk, M, boxsize_full; kernel_fn=_kernel_1lpt(dim))
+        _periodic_convolve!(psi_k, pk, M, boxsize_full; kernel_fn=_kernel_1lpt(dim), comp=comp)
         psi_coarse[dim] = irfft(psi_k, M)
     end
     pot_coarse = nothing
     if needs_pot
         pot_k = copy(coarse_k)
-        _periodic_convolve!(pot_k, pk, M, boxsize_full; kernel_fn=_kernel_pot())
+        _periodic_convolve!(pot_k, pk, M, boxsize_full; kernel_fn=_kernel_pot(), comp=comp)
         pot_coarse = irfft(pot_k, M)
     end
     coarse_k = nothing
@@ -537,12 +538,12 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
                 src2_local = delta_tile .^ 2 .* 0.5f0
                 for d in 1:3
                     phi_k = copy(delta_tile_k)
-                    _apply_kernel_inplace!(phi_k, nmesh, boxsize_local, _kernel_phi_ij(d, d))
+                    _apply_kernel_inplace!(phi_k, nmesh, boxsize_local, _kernel_phi_ij(d, d); zero_nyquist=false)
                     src2_local .-= irfft(phi_k, nmesh) .^ 2 .* 0.5f0
                 end
                 for (di, dj) in ((1,2), (1,3), (2,3))
                     phi_k = copy(delta_tile_k)
-                    _apply_kernel_inplace!(phi_k, nmesh, boxsize_local, _kernel_phi_ij(di, dj))
+                    _apply_kernel_inplace!(phi_k, nmesh, boxsize_local, _kernel_phi_ij(di, dj); zero_nyquist=false)
                     src2_local .-= irfft(phi_k, nmesh) .^ 2
                 end
                 src2_local_k = rfft(src2_local)
