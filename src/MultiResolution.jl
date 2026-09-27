@@ -12,7 +12,7 @@ module MultiResolution
 using FFTW
 using Printf: @sprintf
 
-using ..Cosmology: CosmologyParams, Dlinear_tables, Dlinear_ab, chi,
+using ..Cosmology: CosmologyParams, Dlinear_tables, Dlinear_ab, chi, omega_m_a,
     build_chi_to_z, peak_redshift
 using ..PowerSpectrum: load_pk
 using ..RandomField: _threefry_gaussian, generate_grf, fill_noise_threefry!
@@ -1114,7 +1114,7 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
 
                 Sbar2_1 = 0.0f0; Sbar2_2 = 0.0f0; Sbar2_3 = 0.0f0
                 if ilpt >= 2
-                    Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
+                    Om_a = omega_m_a(Omnr, cosmo.OL, a_pk)
                     coef = Float32(coef2_base * Om_a^(-1.0/143) * D_pk^2)   # -3/7 matches Fortran; was +3/7 (sign bug)
                     Sbar2_1 = r.Sbar2[1, idx] * coef
                     Sbar2_2 = r.Sbar2[2, idx] * coef
@@ -1181,7 +1181,7 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
 
                 Sbar2_vel = zeros(3)
                 if ilpt >= 2
-                    Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
+                    Om_a = omega_m_a(Omnr, cosmo.OL, a_pk)
                     Sbar2_vel = result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)   # -3/7 matches Fortran; was +3/7 (sign bug)
                 end
 

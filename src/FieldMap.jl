@@ -17,7 +17,7 @@
 # (residual → isolated FFT → ψ₁/ψ₂) is executed — no filters/peaks/shells/merge.
 # See docs/field_lightcone_plan.md.
 
-using ..Cosmology: chi_to_z
+using ..Cosmology: chi_to_z, omega_m_a
 
 export run_multitile_fieldmap
 
@@ -333,7 +333,7 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
         D, f, _ = Dlinear_ab(a, growth_tables)   # 1st return = D (growth factor); 3rd is D/a
         # 2LPT coefficient: FIXED convention (MultiTile.jl post-95f04a1): -3/7, true D.
         # (MultiResolution's packing carried the pre-fix +3/7 and D/a — do not copy it.)
-        Om_a = cosmo.Om * a^3 / (cosmo.Om * a^3 + cosmo.OL)
+        Om_a = omega_m_a(cosmo.Om, cosmo.OL, a)
         rt_D[irt]  = D
         rt_c2[irt] = ilpt >= 2 ? (-3.0 / 7.0) * Om_a^(-1.0 / 143) * D^2 : 0.0
         # velocity factor km/s per Mpc/h of displacement (finalize_eulerian convention)

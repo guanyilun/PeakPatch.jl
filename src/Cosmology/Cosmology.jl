@@ -38,6 +38,11 @@ function growth_factor(z, c::CosmologyParams)
     return _g(z) / (1.0 + z) / _g(0.0)
 end
 
+# Matter density parameter at scale factor a, flat matter+Λ (the Fortran
+# hpkvd 2LPT convention: (Omnr/a³)/(Omnr/a³+Omvac)). Used in the Bouchet et al. (1995)
+# 2LPT growth D₂ = -(3/7) Ω_m(a)^(-1/143) D².
+omega_m_a(Om, OL, a) = (Om / a^3) / (Om / a^3 + OL)
+
 # Linear growth rate f(z) = d ln D / d ln a
 function growth_rate(z, c::CosmologyParams)
     Omz = c.Om * (1 + z)^3 / E2(z, c)

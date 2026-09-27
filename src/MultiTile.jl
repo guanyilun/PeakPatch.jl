@@ -1,6 +1,6 @@
 module MultiTile
 
-import ..Cosmology: CosmologyParams, Dlinear_tables, Dlinear_ab, chi,
+import ..Cosmology: CosmologyParams, Dlinear_tables, Dlinear_ab, chi, omega_m_a,
     ChiToZTable, build_chi_to_z, chi_to_z, peak_redshift
 import ..PowerSpectrum: load_pk, load_pk_nongaussian
 import ..NonGaussian: apply_fnl_correlated!, apply_fnl_uncorrelated!
@@ -364,7 +364,7 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             RTHL_phys = Float32(result.RTHL * alatt)
             Sbar_vel = result.Sbar .* D_pk
             Sbar2_vel = if psi2_x_full !== nothing
-                Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
+                Om_a = omega_m_a(Omnr, cosmo.OL, a_pk)
                 result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)   # -3/7 matches Fortran; was +3/7 (sign bug)
             else
                 @SVector zeros(3)
@@ -716,7 +716,7 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             RTHL_phys = Float32(result.RTHL * alatt)
             Sbar_vel = result.Sbar .* D_pk
             Sbar2_vel = if src2_k !== nothing
-                Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
+                Om_a = omega_m_a(Omnr, cosmo.OL, a_pk)
                 result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)   # -3/7 matches Fortran; was +3/7 (sign bug)
             else
                 @SVector zeros(3)

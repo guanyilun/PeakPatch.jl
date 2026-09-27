@@ -123,4 +123,14 @@
         f_numerical = -(1 + z) / D_z * dDdz
         @test f_numerical ≈ growth_rate(z, c) rtol=0.05
     end
+
+    @testset "Ω_m(a) for the 2LPT coefficient" begin
+        om_a = PeakPatch.Cosmology.omega_m_a
+        @test om_a(c.Om, c.OL, 1.0) ≈ c.Om
+        # Ω_m(z) = Om(1+z)³/E²(z): matter domination at high z (was inverted: Om·a³)
+        for z in (0.5, 1.0, 4.5)
+            @test om_a(c.Om, c.OL, 1 / (1 + z)) ≈ c.Om * (1 + z)^3 / E2(z, c) rtol=1e-12
+        end
+        @test om_a(c.Om, c.OL, 1 / 5.5) > 0.98
+    end
 end
