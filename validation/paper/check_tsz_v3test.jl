@@ -7,10 +7,13 @@ const D = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"
 const WREF = "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref"
 ns = 2048; w = octant_mask(ns, "000"); w2 = mean(abs2, w.pixels); inoct = w.pixels .> 0.999
 edges = lbins(4000; lmin=20)
-spec(m) = (x = HealpixMap{Float64,RingOrder}(ns); x.pixels .= m.pixels .* w.pixels;
-           c, le, _ = binned(clof(almof(x, 4000)) ./ w2, edges); (c, le, mean(m.pixels[inoct])))
+function spec(m)
+    x = HealpixMap{Float64,RingOrder}(ns); x.pixels .= m.pixels .* w.pixels
+    c, le, _ = binned(clof(almof(x, 4000)) ./ w2, edges)
+    (c, le, mean(m.pixels[inoct]))
+end
 cr, le, mr = spec(loadmap(joinpath(WREF, "tsz_2048.fits")))
-c2, _, m2 = spec(loadmap(joinpath(D, "tsz_y_v2_oct000_AM_nside4096.fits"); nside=ns))
+c2, _, m2 = spec(loadmap(joinpath(D, "halomaps_v2", "tsz_y_v2_oct000_AM_nside4096.fits"); nside=ns))
 c3, _, m3 = spec(loadmap("/home/yguan/scratch/websky_6144/v3test_paint/tsz_y_v3test_oct000_AM_nside4096.fits"; nside=ns))
 @printf("mean y / websky: v2 %.4f  v3test %.4f\n", m2 / mr, m3 / mr)
 @printf("%-8s %-12s %-10s %-10s %-10s\n", "ell", "C_websky", "v2/wsky", "v3/wsky", "v3/v2")
