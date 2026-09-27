@@ -1,0 +1,29 @@
+\section{Lightcone construction}
+\label{sec:lightcone}
+
+Full-sky catalogues are built from a single simulation volume observed from a
+box corner: with the observer at a corner of the (periodic) box, one octant of
+the sky is covered out to the comoving distance of the far corner, and eight
+runs with the observer at the eight corners of the \emph{same realization}
+tile the full sky. For the Websky-configuration box ($L=5236\Mpch = 7.7$~Gpc,
+Section~\ref{sec:valcat}) an octant reaches $z_{\rm max}=4.5$ without
+replication. This is the construction of the original Websky release; the
+radial-shell tiling used by more recent efforts to reach higher redshift is
+not needed at this depth.
+
+In lightcone mode, the collapse condition is evaluated at the lookback epoch
+of each candidate: a proto-halo at comoving distance $\chi$ from the observer
+must collapse by $z(\chi)$ rather than $z=0$, which raises the effective
+linear threshold by the inverse growth factor. \ppjl\ evaluates the full
+ellipsoidal-collapse table at each candidate's epoch. Displacements and
+velocities (equation~\ref{eq:2lpt}) are likewise evaluated at $z(\chi)$, with
+the Eulerian position solved consistently with the lightcone crossing.
+\needcheck{one-paragraph description of the exact chi-iteration used in
+merge/finalize --- verify against current code path before submission (plan
+item 3.7)}
+
+Each halo record carries the Lagrangian centre, Eulerian position, velocity,
+$R_{\rm TH}$, and (optionally) the strain eigenvalues and second-order terms
+used by downstream painting (``extended'' output). Abundance matching
+(Section~\ref{sec:algorithm-2lpt}) is applied per octant with the observer's
+per-axis position defining $z(\chi)$ for the redshift binning.

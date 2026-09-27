@@ -1258,9 +1258,9 @@ end
 #
 # RTHL = -1.0f0 signals no_collapse (same convention as CPU).
 
-# Compile-time upper bound on shells per peak. rmax=30 gives ~30 shells;
-# this bound of 200 handles rmax up to ~70 comfortably.
-const _MAX_SHELLS_GPU = Int32(200)
+# Compile-time upper bound on distinct r² shells per peak.
+# nhunt=23 → 443 shells, nhunt=30 → ~700 shells.
+const _MAX_SHELLS_GPU = Int32(512)
 
 # Device helper: write `no_collapse` zeros across all PeakResult outputs.
 # Mirrors `RadialShell.no_collapse()` which zeros every field except
@@ -2062,17 +2062,16 @@ function PeakPatch.analyse_peak_gpu_cuda(
         X1::Real, X2::Real, Y1::Real, Y2::Real, Z1::Real, Z2::Real,
         alatt::Real, ir2min::Integer, ZZon::Real, Rfclvi::Real;
         fcrit_override::Union{Nothing, Real}=nothing,
-        growth_tables=nothing,
+        ct=nothing,
         rmax2rs::Real=0.0, threads::Int=128, ct_out_val::Real=-1.0,
         lapd::Union{Nothing, AbstractArray{<:Real,3}}=nothing,
         mask::Union{Nothing, AbstractArray{<:Integer,3}}=nothing,
         nbuff::Integer=0)
-    # Resolve fcrit using the same precedence as CPU analyse_peak_gpu:
-    #   explicit override → growth_tables → hard default 1.686
+    # Resolve fcrit: explicit override → collapse table walk → hard default 1.686
     fcrit = if fcrit_override !== nothing
         Float64(fcrit_override)
-    elseif growth_tables !== nothing
-        PeakPatch.RadialShell.fsc_of_z(Float64(ZZon) - 1.0, growth_tables)
+    elseif ct !== nothing
+        PeakPatch.RadialShell.fsc_of_z(Float64(ZZon) - 1.0, ct)
     else
         1.686
     end
@@ -2251,7 +2250,7 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
         X1::Real, X2::Real, Y1::Real, Y2::Real, Z1::Real, Z2::Real,
         alatt::Real, ZZon::Real;
         fcrit_override::Union{Nothing, Real}=nothing,
-        growth_tables=nothing,
+        ct=nothing,
         rmax2rs::Real=0.0, threads::Int=128, ct_out_val::Real=-1.0,
         lapd::Union{Nothing, AbstractArray{<:Real,3}}=nothing,
         mask::Union{Nothing, AbstractArray{<:Integer,3}}=nothing,
@@ -2259,8 +2258,8 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
 
     fcrit = if fcrit_override !== nothing
         Float64(fcrit_override)
-    elseif growth_tables !== nothing
-        PeakPatch.RadialShell.fsc_of_z(Float64(ZZon) - 1.0, growth_tables)
+    elseif ct !== nothing
+        PeakPatch.RadialShell.fsc_of_z(Float64(ZZon) - 1.0, ct)
     else
         1.686
     end
@@ -2320,6 +2319,13 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
 
     shmem_bytes = 17 * Int(_MAX_SHELLS_GPU) * sizeof(Float32)
 
+    # Compute max peaks per sub-batch to stay within GPU memory.
+    # Shell profile arrays dominate: 24 × sizeof(Float32) × nshells per peak.
+    # Target: use at most ~8 GB for shell profiles (leaves headroom for fields).
+    _shell_bytes_per_peak = 24 * sizeof(Float32) * nshells  # 96 * nshells
+    _gpu_shell_budget = 8 * 1024^3  # 8 GB
+    _max_peaks_per_chunk = max(1024, _gpu_shell_budget ÷ _shell_bytes_per_peak)
+
     results = Vector{NamedTuple}(undef, length(batches))
 
     # ---------------- Per-Rf batch work ----------------
@@ -2332,26 +2338,7 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
         has_pp_b = length(batch) >= 7
         ZZon_pp_b_h  = has_pp_b ? batch[6] : nothing
         fcrit_pp_b_h = has_pp_b ? batch[7] : nothing
-        npeaks = length(peaks_i)
-
-        pi_d = CuArray{Int32}(peaks_i)
-        pj_d = CuArray{Int32}(peaks_j)
-        pk_d = CuArray{Int32}(peaks_k)
-
-        Fshell_d    = CUDA.zeros(Float32, nshells, npeaks)
-        nshell_d    = CUDA.zeros(Int32,   nshells, npeaks)
-        Sshell_d    = CUDA.zeros(Float32, 3, nshells, npeaks)
-        S2shell_d   = CUDA.zeros(Float32, 3, nshells, npeaks)
-        Gshell_d    = CUDA.zeros(Float32, 3, nshells, npeaks)
-        Gfshell_d   = CUDA.zeros(Float32, 3, nshells, npeaks)
-        SRshell_d   = CUDA.zeros(Float32, 3, 3, nshells, npeaks)
-        lapdshell_d = CUDA.zeros(Float32, nshells, npeaks)
-
-        _launch_shell_gather_full!(
-            Fshell_d, nshell_d, Sshell_d, S2shell_d, Gshell_d, Gfshell_d, SRshell_d,
-            lapdshell_d,
-            delta_d, etax_d, etay_d, etaz_d, eta2x_d, eta2y_d, eta2z_d, lapd_d,
-            pi_d, pj_d, pk_d, stab_d; threads=threads)
+        npeaks_total = length(peaks_i)
 
         # Per-Rf nshells_max (match CPU: excludes last shell)
         nshells_max = nshells - 1
@@ -2365,83 +2352,148 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
             nshells_max = count
         end
 
-        RTHL_d          = CUDA.zeros(Float32, npeaks)
-        Fbarx_d         = CUDA.zeros(Float32, npeaks)
-        e_v_d           = CUDA.zeros(Float32, npeaks)
-        p_v_d           = CUDA.zeros(Float32, npeaks)
-        strain_final_d  = CUDA.zeros(Float32, 3, 3, npeaks)
-        eigs_d          = CUDA.zeros(Float32, 3, npeaks)
-        Srb_d           = CUDA.zeros(Float32, npeaks)
-        Sbar_d          = CUDA.zeros(Float32, 3, npeaks)
-        Sbar2_d         = CUDA.zeros(Float32, 3, npeaks)
-        gradpk_d        = CUDA.zeros(Float32, 3, npeaks)
-        gradpkf_d       = CUDA.zeros(Float32, 3, npeaks)
-        gradpkrf_d      = CUDA.zeros(Float32, 3, npeaks)
-        d2F_d           = CUDA.zeros(Float32, npeaks)
-        zvir_half_d     = CUDA.zeros(Float32, npeaks)
-
         Rfclvi_r2 = Float32((Rf / alatt)^2)
 
-        # Per-peak ZZon / fcrit vectors. If the batch carries per-peak host
-        # arrays (ievol==1 caller), upload those; otherwise broadcast the
-        # scalar ZZon / derived fcrit across npeaks (ievol==0 path).
-        ZZon_pp_d  = has_pp_b ? CuArray{Float32}(ZZon_pp_b_h)  :
-                                CUDA.fill(Float32(ZZon),  npeaks)
-        fcrit_pp_d = has_pp_b ? CuArray{Float32}(fcrit_pp_b_h) :
-                                CUDA.fill(Float32(fcrit), npeaks)
+        # Sub-batch peaks to limit GPU memory for shell profile arrays
+        nchunks = cld(npeaks_total, _max_peaks_per_chunk)
 
-        @cuda threads=threads blocks=npeaks shmem=shmem_bytes _post_process_kernel!(
-            RTHL_d, Fbarx_d, e_v_d, p_v_d, strain_final_d, eigs_d,
-            Srb_d, Sbar_d, Sbar2_d, gradpk_d, gradpkf_d, gradpkrf_d, d2F_d,
-            zvir_half_d, mask_d,
-            Fshell_d, nshell_d, Sshell_d, S2shell_d, Gshell_d, Gfshell_d, SRshell_d,
-            lapdshell_d,
-            pi_d, pj_d, pk_d,
-            stab_d.offsets_di, stab_d.offsets_dj, stab_d.offsets_dk,
-            stab_d.shell_start, stab_d.shell_count,
-            shell_r2_d,
-            ct_table_d,
-            Float32(X1), Float32(Y1), Float32(Z1),
-            dxi, dyi, dzi,
-            Int32(nx), Int32(ny), Int32(nz), Float32(ct_out_val),
-            _AKK_GPU[],
-            ZZon_pp_d, fcrit_pp_d, Rfclvi_r2,
-            Float32(wRnor), Float32(aRnor), Float32(hlatt_1), Float32(hlatt_2),
-            Int32(ir2min),
-            Int32(nshells), Int32(nshells_max),
-            Int32(n1_delta), Int32(n2_delta), Int32(n3_delta), Int32(nbuff), update_mask,
-        )
+        # Pre-allocate CPU result arrays for the full batch
+        RTHL_h          = Vector{Float32}(undef, npeaks_total)
+        Fbarx_h         = Vector{Float32}(undef, npeaks_total)
+        e_v_h           = Vector{Float32}(undef, npeaks_total)
+        p_v_h           = Vector{Float32}(undef, npeaks_total)
+        strain_final_h  = Array{Float32}(undef, 3, 3, npeaks_total)
+        eigs_h          = Array{Float32}(undef, 3, npeaks_total)
+        Srb_h           = Vector{Float32}(undef, npeaks_total)
+        Sbar_h          = Array{Float32}(undef, 3, npeaks_total)
+        Sbar2_h         = Array{Float32}(undef, 3, npeaks_total)
+        gradpk_h        = Array{Float32}(undef, 3, npeaks_total)
+        gradpkf_h       = Array{Float32}(undef, 3, npeaks_total)
+        gradpkrf_h      = Array{Float32}(undef, 3, npeaks_total)
+        d2F_h           = Vector{Float32}(undef, npeaks_total)
+        zvir_half_h     = Vector{Float32}(undef, npeaks_total)
+
+        for chunk in 1:nchunks
+            c_start = (chunk - 1) * _max_peaks_per_chunk + 1
+            c_end   = min(chunk * _max_peaks_per_chunk, npeaks_total)
+            npeaks  = c_end - c_start + 1
+            rng     = c_start:c_end
+
+            pi_d = CuArray{Int32}(view(peaks_i, rng))
+            pj_d = CuArray{Int32}(view(peaks_j, rng))
+            pk_d = CuArray{Int32}(view(peaks_k, rng))
+
+            Fshell_d    = CUDA.zeros(Float32, nshells, npeaks)
+            nshell_d    = CUDA.zeros(Int32,   nshells, npeaks)
+            Sshell_d    = CUDA.zeros(Float32, 3, nshells, npeaks)
+            S2shell_d   = CUDA.zeros(Float32, 3, nshells, npeaks)
+            Gshell_d    = CUDA.zeros(Float32, 3, nshells, npeaks)
+            Gfshell_d   = CUDA.zeros(Float32, 3, nshells, npeaks)
+            SRshell_d   = CUDA.zeros(Float32, 3, 3, nshells, npeaks)
+            lapdshell_d = CUDA.zeros(Float32, nshells, npeaks)
+
+            _launch_shell_gather_full!(
+                Fshell_d, nshell_d, Sshell_d, S2shell_d, Gshell_d, Gfshell_d, SRshell_d,
+                lapdshell_d,
+                delta_d, etax_d, etay_d, etaz_d, eta2x_d, eta2y_d, eta2z_d, lapd_d,
+                pi_d, pj_d, pk_d, stab_d; threads=threads)
+
+            RTHL_d          = CUDA.zeros(Float32, npeaks)
+            Fbarx_d         = CUDA.zeros(Float32, npeaks)
+            e_v_d           = CUDA.zeros(Float32, npeaks)
+            p_v_d           = CUDA.zeros(Float32, npeaks)
+            strain_final_d  = CUDA.zeros(Float32, 3, 3, npeaks)
+            eigs_d          = CUDA.zeros(Float32, 3, npeaks)
+            Srb_d           = CUDA.zeros(Float32, npeaks)
+            Sbar_d          = CUDA.zeros(Float32, 3, npeaks)
+            Sbar2_d         = CUDA.zeros(Float32, 3, npeaks)
+            gradpk_d        = CUDA.zeros(Float32, 3, npeaks)
+            gradpkf_d       = CUDA.zeros(Float32, 3, npeaks)
+            gradpkrf_d      = CUDA.zeros(Float32, 3, npeaks)
+            d2F_d           = CUDA.zeros(Float32, npeaks)
+            zvir_half_d     = CUDA.zeros(Float32, npeaks)
+
+            ZZon_pp_d  = has_pp_b ? CuArray{Float32}(view(ZZon_pp_b_h, rng))  :
+                                    CUDA.fill(Float32(ZZon),  npeaks)
+            fcrit_pp_d = has_pp_b ? CuArray{Float32}(view(fcrit_pp_b_h, rng)) :
+                                    CUDA.fill(Float32(fcrit), npeaks)
+
+            @cuda threads=threads blocks=npeaks shmem=shmem_bytes _post_process_kernel!(
+                RTHL_d, Fbarx_d, e_v_d, p_v_d, strain_final_d, eigs_d,
+                Srb_d, Sbar_d, Sbar2_d, gradpk_d, gradpkf_d, gradpkrf_d, d2F_d,
+                zvir_half_d, mask_d,
+                Fshell_d, nshell_d, Sshell_d, S2shell_d, Gshell_d, Gfshell_d, SRshell_d,
+                lapdshell_d,
+                pi_d, pj_d, pk_d,
+                stab_d.offsets_di, stab_d.offsets_dj, stab_d.offsets_dk,
+                stab_d.shell_start, stab_d.shell_count,
+                shell_r2_d,
+                ct_table_d,
+                Float32(X1), Float32(Y1), Float32(Z1),
+                dxi, dyi, dzi,
+                Int32(nx), Int32(ny), Int32(nz), Float32(ct_out_val),
+                _AKK_GPU[],
+                ZZon_pp_d, fcrit_pp_d, Rfclvi_r2,
+                Float32(wRnor), Float32(aRnor), Float32(hlatt_1), Float32(hlatt_2),
+                Int32(ir2min),
+                Int32(nshells), Int32(nshells_max),
+                Int32(n1_delta), Int32(n2_delta), Int32(n3_delta), Int32(nbuff), update_mask,
+            )
+
+            # Copy sub-batch results to pre-allocated CPU arrays
+            copyto!(RTHL_h, c_start, Array(RTHL_d), 1, npeaks)
+            copyto!(Fbarx_h, c_start, Array(Fbarx_d), 1, npeaks)
+            copyto!(e_v_h, c_start, Array(e_v_d), 1, npeaks)
+            copyto!(p_v_h, c_start, Array(p_v_d), 1, npeaks)
+            copyto!(Srb_h, c_start, Array(Srb_d), 1, npeaks)
+            copyto!(d2F_h, c_start, Array(d2F_d), 1, npeaks)
+            copyto!(zvir_half_h, c_start, Array(zvir_half_d), 1, npeaks)
+
+            strain_chunk = Array(strain_final_d)
+            eigs_chunk   = Array(eigs_d)
+            Sbar_chunk   = Array(Sbar_d)
+            Sbar2_chunk  = Array(Sbar2_d)
+            gradpk_chunk = Array(gradpk_d)
+            gradpkf_chunk = Array(gradpkf_d)
+            gradpkrf_chunk = Array(gradpkrf_d)
+            strain_final_h[:, :, rng] .= strain_chunk
+            eigs_h[:, rng]            .= eigs_chunk
+            Sbar_h[:, rng]            .= Sbar_chunk
+            Sbar2_h[:, rng]           .= Sbar2_chunk
+            gradpk_h[:, rng]          .= gradpk_chunk
+            gradpkf_h[:, rng]         .= gradpkf_chunk
+            gradpkrf_h[:, rng]        .= gradpkrf_chunk
+
+            # Release per-chunk GPU buffers
+            CUDA.unsafe_free!(Fshell_d); CUDA.unsafe_free!(nshell_d)
+            CUDA.unsafe_free!(Sshell_d); CUDA.unsafe_free!(S2shell_d)
+            CUDA.unsafe_free!(Gshell_d); CUDA.unsafe_free!(Gfshell_d)
+            CUDA.unsafe_free!(SRshell_d); CUDA.unsafe_free!(lapdshell_d)
+            CUDA.unsafe_free!(pi_d); CUDA.unsafe_free!(pj_d); CUDA.unsafe_free!(pk_d)
+            CUDA.unsafe_free!(RTHL_d); CUDA.unsafe_free!(Fbarx_d)
+            CUDA.unsafe_free!(e_v_d); CUDA.unsafe_free!(p_v_d)
+            CUDA.unsafe_free!(strain_final_d); CUDA.unsafe_free!(eigs_d)
+            CUDA.unsafe_free!(Srb_d); CUDA.unsafe_free!(Sbar_d); CUDA.unsafe_free!(Sbar2_d)
+            CUDA.unsafe_free!(gradpk_d); CUDA.unsafe_free!(gradpkf_d); CUDA.unsafe_free!(gradpkrf_d)
+            CUDA.unsafe_free!(d2F_d); CUDA.unsafe_free!(zvir_half_d)
+        end
 
         results[bi] = (
-            RTHL         = Array(RTHL_d),
-            Fbarx        = Array(Fbarx_d),
-            e_v          = Array(e_v_d),
-            p_v          = Array(p_v_d),
-            strain_final = Array(strain_final_d),
-            eigs         = Array(eigs_d),
-            Srb          = Array(Srb_d),
-            Sbar         = Array(Sbar_d),
-            Sbar2        = Array(Sbar2_d),
-            gradpk       = Array(gradpk_d),
-            gradpkf      = Array(gradpkf_d),
-            gradpkrf     = Array(gradpkrf_d),
-            d2F          = Array(d2F_d),
-            zvir_half    = Array(zvir_half_d),
+            RTHL         = RTHL_h,
+            Fbarx        = Fbarx_h,
+            e_v          = e_v_h,
+            p_v          = p_v_h,
+            strain_final = strain_final_h,
+            eigs         = eigs_h,
+            Srb          = Srb_h,
+            Sbar         = Sbar_h,
+            Sbar2        = Sbar2_h,
+            gradpk       = gradpk_h,
+            gradpkf      = gradpkf_h,
+            gradpkrf     = gradpkrf_h,
+            d2F          = d2F_h,
+            zvir_half    = zvir_half_h,
         )
-
-        # Release per-batch buffers immediately to keep memory pressure down
-        # across many Rfs / many tiles.
-        CUDA.unsafe_free!(Fshell_d); CUDA.unsafe_free!(nshell_d)
-        CUDA.unsafe_free!(Sshell_d); CUDA.unsafe_free!(S2shell_d)
-        CUDA.unsafe_free!(Gshell_d); CUDA.unsafe_free!(Gfshell_d)
-        CUDA.unsafe_free!(SRshell_d); CUDA.unsafe_free!(lapdshell_d)
-        CUDA.unsafe_free!(pi_d); CUDA.unsafe_free!(pj_d); CUDA.unsafe_free!(pk_d)
-        CUDA.unsafe_free!(RTHL_d); CUDA.unsafe_free!(Fbarx_d)
-        CUDA.unsafe_free!(e_v_d); CUDA.unsafe_free!(p_v_d)
-        CUDA.unsafe_free!(strain_final_d); CUDA.unsafe_free!(eigs_d)
-        CUDA.unsafe_free!(Srb_d); CUDA.unsafe_free!(Sbar_d); CUDA.unsafe_free!(Sbar2_d)
-        CUDA.unsafe_free!(gradpk_d); CUDA.unsafe_free!(gradpkf_d); CUDA.unsafe_free!(gradpkrf_d)
-        CUDA.unsafe_free!(d2F_d); CUDA.unsafe_free!(zvir_half_d)
     end
 
     # Free the one-time uploads (only the buffers we allocated — caller-owned
@@ -2554,6 +2606,10 @@ function _transfer_kernel!(padded_k, pk_table, log_k_min::Float32,
     elseif kernel_fn_id == Int32(4)
         # Laplacian: k² × √P(k)
         coeff = Float32(sqrt_pk * k2)
+        @inbounds padded_k[ix, iy, iz] = val * coeff
+    elseif kernel_fn_id == Int32(5)
+        # ∇⁻² (potential): -1/k² × √P(k)  (real coefficient)
+        coeff = Float32(-sqrt_pk / k2)
         @inbounds padded_k[ix, iy, iz] = val * coeff
     end
     return
@@ -2814,8 +2870,12 @@ function _periodic_kernel!(arr_k, dk::Float64, n::Int32,
     kz = Float64(iz_signed) * dk
     k2 = kx * kx + ky * ky + kz * kz
 
-    # CPU zeroing: DC origin, Nyquist rows/plane
-    if k2 == 0.0 || ix == nk || iy == nyq + _I1 || iz == nyq + _I1
+    # CPU zeroing: DC origin, Nyquist rows/plane — except φ_ij (id 3), which zeroes only
+    # k=0 so the 2LPT trace identity src2 = δ²/2 − Σφii²/2 − Σφij² holds with the
+    # un-zeroed δ (serial convention; validation/NOTES_2LPT_NYQUIST_2026-09-24.md).
+    # −ki·kj/k² is real, so the Nyquist planes stay real.
+    if k2 == 0.0 || (kernel_fn_id != Int32(3) &&
+                     (ix == nk || iy == nyq + _I1 || iz == nyq + _I1))
         @inbounds arr_k[ix, iy, iz] = ComplexF32(0)
         return
     end
@@ -3321,6 +3381,131 @@ end
 # Implementation of the stub declared in `src/PeakPatch.jl`.
 function PeakPatch.set_cuda_device!(id::Int)
     CUDA.device!(id)
+    return nothing
+end
+
+# ============================================================
+# Field-matter lightcone painting (Phase B of docs/field_lightcone_plan.md):
+# on-device 2LPT displacement + HEALPix RING pixelization + atomic map
+# accumulation. One thread per core cell; each thread handles its own
+# sub-cell splitting loop. Maps are device-resident Float64 (npix × nk);
+# atomics on Float64 are supported on sm_60+.
+# ============================================================
+
+import PeakPatch.MultiResolution: ang2pix_ring
+
+function _fieldmap_paint_kernel!(maps, p1x, p1y, p1z, p2x, p2y, p2z, rt,
+                                 nmesh::Int, nbuff::Int, alatt::Float64,
+                                 xbx::Float64, ybx::Float64, zbx::Float64,
+                                 ox::Float64, oy::Float64, oz::Float64,
+                                 rmin::Float64, chimax::Float64, inv_dr::Float64,
+                                 nrt::Int, theta_pix::Float64, subdiv_max::Int,
+                                 nside::Int, nk::Int, has2::Bool,
+                                 vwmask::UInt32, excl, has_excl::Bool,
+                                 pot, has_pot::Bool, pwmask::UInt32)
+    ncore = nmesh - 2 * nbuff
+    idx = (blockIdx().x - 1) * blockDim().x + threadIdx().x
+    idx > ncore * ncore * ncore && return nothing
+    t = idx - 1
+    i = nbuff + 1 + t % ncore
+    j = nbuff + 1 + (t ÷ ncore) % ncore
+    k = nbuff + 1 + t ÷ (ncore * ncore)
+    if has_excl
+        @inbounds excl[i-nbuff, j-nbuff, k-nbuff] && return nothing
+    end
+    cen = 0.5 * (nmesh + 1)
+    qx = xbx + alatt * (i - cen)
+    qy = ybx + alatt * (j - cen)
+    qz = zbx + alatt * (k - cen)
+    dqx = qx - ox; dqy = qy - oy; dqz = qz - oz
+    rq = sqrt(dqx * dqx + dqy * dqy + dqz * dqz)
+    (rmin <= rq <= chimax) || return nothing
+    @inbounds begin
+        s1x = Float64(p1x[i, j, k]); s1y = Float64(p1y[i, j, k]); s1z = Float64(p1z[i, j, k])
+        s2x = 0.0; s2y = 0.0; s2z = 0.0
+        if has2
+            s2x = Float64(p2x[i, j, k]); s2y = Float64(p2y[i, j, k]); s2z = Float64(p2z[i, j, k])
+        end
+        pv = has_pot ? Float64(pot[i, j, k]) : 0.0
+        ns = min(subdiv_max, max(1, ceil(Int, (alatt / rq) / theta_pix)))
+        wsub = 1.0 / (ns * ns * ns)
+        for c3 in 1:ns, c2i in 1:ns, c1 in 1:ns
+            qsx = qx + ((c1 - 0.5) / ns - 0.5) * alatt
+            qsy = qy + ((c2i - 0.5) / ns - 0.5) * alatt
+            qsz = qz + ((c3 - 0.5) / ns - 0.5) * alatt
+            dsx = qsx - ox; dsy = qsy - oy; dsz = qsz - oz
+            rqs = sqrt(dsx * dsx + dsy * dsy + dsz * dsz)
+            (rmin <= rqs <= chimax) || continue
+            xr = rqs * inv_dr + 1.0
+            ii = unsafe_trunc(Int, xr)
+            ii = ii < 1 ? 1 : (ii > nrt - 1 ? nrt - 1 : ii)
+            tt = xr - ii
+            D  = rt[ii, 1] * (1.0 - tt) + rt[ii+1, 1] * tt
+            c2 = rt[ii, 2] * (1.0 - tt) + rt[ii+1, 2] * tt
+            ex = qsx + D * s1x + c2 * s2x - ox
+            ey = qsy + D * s1y + c2 * s2y - oy
+            ez = qsz + D * s1z + c2 * s2z - oz
+            pix = ang2pix_ring(nside, ex, ey, ez)
+            pixq = pwmask != UInt32(0) ? ang2pix_ring(nside, dsx, dsy, dsz) : pix
+            vr = 0.0
+            if vwmask != UInt32(0)
+                vf = rt[ii, 3] * (1.0 - tt) + rt[ii+1, 3] * tt
+                vr = vf * ((D * s1x + 2 * c2 * s2x) * dsx + (D * s1y + 2 * c2 * s2y) * dsy +
+                           (D * s1z + 2 * c2 * s2z) * dsz) / rqs
+            end
+            for ik in 1:nk
+                w = (rt[ii, 3+ik] * (1.0 - tt) + rt[ii+1, 3+ik] * tt) * wsub
+                (vwmask >> (ik - 1)) & UInt32(1) == UInt32(1) && (w *= vr)
+                if (pwmask >> (ik - 1)) & UInt32(1) == UInt32(1)
+                    # Lagrangian deposit for potential-weighted kernels (see FieldMap.jl)
+                    CUDA.@atomic maps[pixq, ik] += w * pv
+                else
+                    CUDA.@atomic maps[pix, ik] += w
+                end
+            end
+        end
+    end
+    return nothing
+end
+
+# Allocation/collection helpers so src/FieldMap.jl never touches CUDA types.
+PeakPatch.fieldmap_gpu_alloc(npix::Int, nk::Int, rtM::Matrix{Float64}) =
+    (CUDA.zeros(Float64, npix, nk), CuArray(rtM))
+PeakPatch.fieldmap_gpu_collect(maps_d::CuArray{Float64,2}) = Array(maps_d)
+
+"""
+    paint_tile_field_gpu!(maps_d, p1x, p1y, p1z, p2x, p2y, p2z, rt_d, ...)
+
+Device-side painting of one tile's core cells into `maps_d` (npix × nk Float64
+CuArray, RING ordering). `rt_d` is the radial factor table (nrt × (3+nk):
+columns D, coef2, vfac, then one weight column per kernel). `vwmask` bit ik-1
+set means kernel ik's weight is multiplied by the cell's LOS velocity v_r [km/s].
+`excl` is an optional host-side core-shaped Bool mask (true = skip cell). When
+`has2=false` the `p2*` arguments are ignored (pass the `p1*` arrays as
+placeholders).
+"""
+function PeakPatch.paint_tile_field_gpu!(maps_d::CuArray{Float64,2},
+        p1x::CuArray{Float32,3}, p1y::CuArray{Float32,3}, p1z::CuArray{Float32,3},
+        p2x::CuArray{Float32,3}, p2y::CuArray{Float32,3}, p2z::CuArray{Float32,3},
+        rt_d::CuArray{Float64,2}, nmesh::Int, nbuff::Int, alatt::Float64,
+        xbx::Float64, ybx::Float64, zbx::Float64, obs::NTuple{3,Float64},
+        rmin::Float64, chimax::Float64, inv_dr::Float64, nrt::Int,
+        theta_pix::Float64, subdiv_max::Int, nside::Int, nk::Int, has2::Bool,
+        vwmask::UInt32=UInt32(0), excl::Union{Nothing,Array{Bool,3}}=nothing,
+        pot::Union{Nothing,CuArray{Float32,3}}=nothing, pwmask::UInt32=UInt32(0))
+    ncore = nmesh - 2 * nbuff
+    ntot = ncore^3
+    has_excl = excl !== nothing
+    excl_d = has_excl ? CuArray(excl) : CUDA.zeros(Bool, 1, 1, 1)
+    has_pot = pot !== nothing
+    pot_d = has_pot ? pot : p1x          # placeholder when unused (never read)
+    threads = 256
+    @cuda threads=threads blocks=cld(ntot, threads) _fieldmap_paint_kernel!(
+        maps_d, p1x, p1y, p1z, p2x, p2y, p2z, rt_d, nmesh, nbuff, alatt,
+        xbx, ybx, zbx, obs[1], obs[2], obs[3], rmin, chimax, inv_dr, nrt,
+        theta_pix, subdiv_max, nside, nk, has2, vwmask, excl_d, has_excl,
+        pot_d, has_pot, pwmask)
+    CUDA.synchronize()
     return nothing
 end
 

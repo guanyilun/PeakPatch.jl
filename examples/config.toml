@@ -22,7 +22,12 @@ ilpt      = 2     # LPT order (1 or 2)
 seed      = 42    # RNG seed
 ntile     = 1     # number of tiles per dimension (1 = single tile)
 use_mpi   = false  # use MPI-distributed pipeline
-merge     = true   # run Lagrangian exclusion + volume reduction
+use_gpu   = false  # GPU multi-resolution path (needs --project=validation for CUDA.jl)
+multires  = false  # multi-resolution path on CPU (implied by use_gpu)
+coarse_factor = 0  # multires coarse grid M = ntile*coarse_factor (must divide N); 0 = auto; ~32 for velocity products
+devices   = "all"  # GPU ids for use_gpu, e.g. [0, 1]
+merge     = true   # run Lagrangian exclusion (volume reduction is disabled, as in Fortran)
+finalize  = true   # Eulerian positions [Mpc/h] + km/s velocities (false: raw Lagrangian + displacements)
 ioutshear = 0     # 0: basic 11-field catalog, >=1: extended 33-field catalog
 wsmooth   = 0     # smoothing window (0=Gaussian, 1=tophat)
 rmax2rs   = 1.0   # max shell radius / filter radius
@@ -40,3 +45,13 @@ output     = "catalog.pksc"
 [output]
 format = "pksc"    # "pksc", "hdf5", or "both"
 path   = "output"  # output directory
+
+# Optional: abundance matching of a lightcone catalog (ievol = 1) to a target HMF
+# in redshift shells; writes <output>_AM.pksc alongside the raw catalog.
+# [abundance_match]
+# enabled  = true
+# hmf      = "tinker"     # or "sheth_tormen"
+# z_max    = 4.5          # default: [run] z_max
+# fsky     = 0.125        # default: inferred (observer at grid corner = 1/8, centre = 1)
+# keep_raw = true         # also keep the un-matched catalog
+# pkfile   = "..."        # PHYSICAL P(k); default: (2π)³ × the field-generation [files] pk

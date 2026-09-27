@@ -20,7 +20,11 @@ H(z, c::CosmologyParams) = 100.0 * c.h * sqrt(E2(z, c))
 # Comoving distance χ(z) in Mpc/h
 function chi(z, c::CosmologyParams)
     integral, _ = quadgk(zp -> 1.0 / sqrt(E2(zp, c)), 0.0, z)
-    return (2.998e5 / 100.0) * c.h * integral  # Mpc/h
+    # Comoving distance in Mpc/h: D_C = (c/H0)∫dz/E with H0=100h, then ×h to
+    # convert Mpc→Mpc/h, so the h cancels and there is NO explicit h factor.
+    # (A spurious *c.h here made χ a factor h≈0.68 too small, truncating the
+    #  lightcone at z≈1.96 instead of z_max and over-assigning peak redshifts.)
+    return (2.998e5 / 100.0) * integral  # Mpc/h
 end
 
 # Linear growth factor D(z), normalized to D(0) = 1

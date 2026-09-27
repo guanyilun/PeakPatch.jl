@@ -1,0 +1,93 @@
+\section{Multi-resolution field synthesis}
+\label{sec:multires}
+
+The expensive step in a monolithic implementation is the global $N^3$ FFT
+(with $N=6144$, a single Fourier-space field is 1.7~TB in double-precision
+complex), repeated for the density, the filter bank, and seven 2LPT component
+fields. \ppjl\ replaces the global transform with a two-level decomposition
+whose key property is \emph{exactness of the noise}: the union of tiles
+realizes the same white-noise field as the monolithic grid, independent of the
+tiling, so tile decomposition is a numerical method, not a change of
+realization.
+
+\subsection{Tiling-independent noise}
+\label{sec:multires-noise}
+
+The $z=0$ white noise is defined by a counter-based (Threefry) random number
+generator \citep{Salmon2011} keyed on the \emph{global lattice index}: cell
+$(i,j,k)$ of the $N^3$ grid receives a unit Gaussian computed directly from
+its flattened index and the run seed. Any subvolume can therefore generate its
+own noise values without communication, and the same seed yields the same
+global field for every tiling, every device count, and both the halo and
+map-making passes (which exploit this determinism to re-synthesize identical
+fields in a separate pass, Section~\ref{sec:maps}).
+
+\subsection{Coarse field and tile residuals}
+\label{sec:multires-split}
+
+The box is divided into ${n_{\rm tile}}^3$ tiles of core size
+$n_{\rm sub}^3$, each extended by a buffer of $n_{\rm buff}$ cells on every
+face ($n_{\rm mesh}=n_{\rm sub}+2n_{\rm buff}$); buffers absorb the finite
+range of the transfer function and of halo exclusion across tile faces, and
+peaks are only accepted in the core. Long-wavelength modes are carried by a
+global coarse grid of size $M^3$ with $M = n_{\rm tile}\times f_c$ for a
+coarsening factor $f_c$:
+\begin{enumerate}
+  \item the coarse noise is the block average of the fine noise over
+        $(N/M)^3$ blocks (normalized to unit variance), computed directly
+        from the Threefry stream;
+  \item the coarse field is synthesized with a standard periodic FFT
+        convolution with $\sqrt{P(k)}$ on the $M^3$ grid, then interpolated
+        onto each tile's fine lattice;
+  \item each tile computes its \emph{residual} noise --- fine noise minus the
+        (nearest-neighbour upsampled) coarse block mean --- which has exactly
+        zero mean in every coarse cell. This is a Hoffman--Ribak-style
+        constrained split: because the residual carries no power at
+        wavelengths longer than the coarse cell, its convolution with
+        $\sqrt{P(k)}$ is short-ranged and can be evaluated with an
+        \emph{isolated} (zero-padded, non-periodic) FFT over the tile plus a
+        shell of surrounding cells, then trimmed to the tile.
+\end{enumerate}
+The tile's total field is the interpolated coarse field plus the isolated
+residual convolution. The same decomposition is applied to every derived
+field (smoothed densities, displacement and 2LPT component fields), so each
+tile runs the entire pipeline of Section~\ref{sec:algorithm} independently.
+\todo{Fig.~F1: tiling/buffer schematic; Fig.~F2: splice cross-section +
+power-spectrum continuity across the coarse--fine transition}
+
+\subsection{A resolution criterion for velocity-weighted products}
+\label{sec:multires-velocity}
+
+The split is benign for density-derived statistics at any practical $f_c$:
+mis-assigned power near the coarse--fine transition band moves structure
+coherently within a tile without changing local densities, and all
+catalogue-level and lensing statistics in
+Sections~\ref{sec:valcat}--\ref{sec:valmaps} are insensitive to $f_c$.
+Velocity-weighted observables are different. The velocity field weights the
+density modes by $\propto k^{-1}$, so the transition band contributes a much
+larger share of the signal, and any decoherence between the coarse
+interpolation and the tile residuals in that band appears directly in
+line-of-sight momentum statistics.
+
+We measured this with the kSZ field maps of Section~\ref{sec:maps}: at our
+production geometry ($n_{\rm tile}=16$), a coarse grid of $64^3$
+($f_c=4$, Nyquist $k_{\rm Nyq}=0.038\,h\,{\rm Mpc}^{-1}$) produces a
+2--3$\times$ excess in the kSZ angular power spectrum at $\ell\lesssim 350$
+--- exactly the multipoles that map to the transition band at the
+$\tau$-weighted distances --- while leaving the lensing convergence control
+map unchanged at the few-per-cent level. Increasing the coarse grid to
+$256^3$ ($f_c=16$, $k_{\rm Nyq}=0.154$) reduces the excess to
+$\lesssim$40\%, and $512^3$ ($f_c=32$, $k_{\rm Nyq}=0.31$) converges the kSZ
+spectrum, changing the density control by $\lesssim$few per cent
+(Section~\ref{sec:valmaps}; Fig.~\todo{F8}). We therefore adopt the criterion
+\begin{equation}
+  k_{\rm Nyq}^{\rm coarse} \;=\; \frac{\pi M}{L_{\rm box}}
+  \;\gtrsim\; 0.3\,h\,{\rm Mpc}^{-1}
+  \label{eq:cfrule}
+\end{equation}
+for any velocity- or potential-weighted product (kSZ, ISW, moving lens),
+while $f_c=4$ suffices for catalogues and density-derived maps. The coarse
+FFT remains negligible in cost at $512^3$, so the criterion carries no
+performance penalty; it is a correctness requirement that we expect applies
+to any tile-based approximate method that synthesizes velocities from a
+decomposed displacement field.

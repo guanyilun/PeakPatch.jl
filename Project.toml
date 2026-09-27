@@ -33,6 +33,7 @@ MPIExt = ["MPI", "PencilFFTs", "PencilArrays"]
 CUDA = "5"
 FFTW = "1"
 HDF5 = "0.17"
+Healpix = "4.2"
 Interpolations = "0.15"
 MPI = "0.20"
 MPIPreferences = "0.1.12"
@@ -47,8 +48,9 @@ julia = "1.11"
 
 [extras]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+Healpix = "9f4e344d-96bc-545a-84a3-ae6b9e1b672b"
 MPIPreferences = "3da0fdf6-3ccc-4f1b-acd9-58baa6c99267"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Test", "MPIPreferences", "CUDA"]
+test = ["Test", "MPIPreferences", "CUDA", "Healpix"]

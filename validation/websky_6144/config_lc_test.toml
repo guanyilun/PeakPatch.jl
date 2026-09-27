@@ -1,0 +1,48 @@
+# A/B field-construction test — small box, z=0 snapshot.
+# Compare run_multitile (global FFT, Fortran-equivalent) vs
+# run_multitile_split (coarse+residual MUSIC). Same seed/filters/cellsize.
+#
+# N=256, cellsize 1.25326 Mpc/h (matches production), box_full=320.8 Mpc/h.
+# Large enough to populate filters up to Rf=34 Mpc/h where the fake giants appear.
+#   split:  ntile=4, nbuff=24, nsub=(256-48)/4=52, nmesh=100, M=4*4=16 (256/16=16) OK
+#   global: ntile=4, nbuff=24, global 256^3 FFT then extract tiles
+# z_out=0, ievol=0 (snapshot) — isolates the FIELD construction from lightcone.
+
+[cosmology]
+Om   = 0.31
+OB   = 0.049
+OL   = 0.69
+h    = 0.68
+
+[grid]
+n       = 100
+boxsize = 125.326
+nbuff   = 24
+cenx    = -160.4
+ceny    = -160.4
+cenz    = -160.4
+
+[run]
+z_out     = 0.0
+z_max     = 4.6
+ievol     = 1
+ilpt      = 2
+ioutshear = 1
+wsmooth   = 1
+rmax2rs   = 0.0
+NonGauss  = 0
+fNL       = 0.0
+seed      = 13579
+ntile     = 4
+coarse_factor = 4
+generate_table = false
+
+[files]
+pk         = "validation/websky_6144/data/pk_websky.dat"
+filterbank = "validation/websky_6144/data/filters_websky.dat"
+homeltab   = "validation/websky_6144/data/HomelTab_websky.dat"
+output     = "lc_test.pksc"
+
+[output]
+format = "pksc"
+path   = "/home/yguan/scratch/websky_6144/ab_test"

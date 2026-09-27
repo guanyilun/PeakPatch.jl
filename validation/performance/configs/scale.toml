@@ -1,0 +1,33 @@
+# Benchmark config 'scale' (gen_bench_configs.jl): n=414 ntile=4 nbuff=16 N=1560 M=120 block=13; full box 1329.5 Mpc/h; z_max=1.016 covers the box
+[cosmology]
+Om = 0.31
+OB = 0.049
+OL = 0.69
+h  = 0.68
+
+[grid]
+n       = 414
+boxsize = 352.8164
+nbuff   = 16
+cenx    = -664.727
+ceny    = -664.727
+cenz    = -664.727
+
+[run]
+z_out     = 0.0
+z_max     = 1.016
+ievol     = 1
+ilpt      = 2
+ioutshear = 1
+wsmooth   = 1
+rmax2rs   = 0.0
+seed      = 12345
+ntile     = 4
+coarse_factor = 30
+
+[files]
+pk         = "validation/websky_6144/data/pk_websky.dat"
+filterbank = "validation/websky_6144/data/filters_websky_finecell.dat"
+homeltab   = "validation/websky_6144/data/HomelTab_websky.dat"
+output     = "bench_scale.pksc"
+

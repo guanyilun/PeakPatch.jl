@@ -50,9 +50,11 @@ function build_abundance_table(halos::AbstractVector, cosmo::CosmologyParams, pk
         nMbins::Int=10000, z_min::Real=0.0, z_max::Real=4.6, nzbins::Int=46,
         Mmin::Real=5e11, Mmax::Real=1e16, hmf::Symbol=:tinker,
         obs::Tuple=(0.0, 0.0, 0.0),
+        fsky::Real=1.0,            # sky fraction of the catalog: 1.0 full-sky, 1/8 for one octant
         nsub_integral::Int=10,
         verbose::Bool=false)
 
+    nzbins >= 2 || throw(ArgumentError("build_abundance_table: nzbins=$nzbins; need ≥ 2 (the table is interpolated linearly in z)"))
     Om = cosmo.Om
 
     # ---- Mass bins (log-spaced) ----
@@ -92,7 +94,9 @@ function build_abundance_table(halos::AbstractVector, cosmo::CosmologyParams, pk
             chi_val = 0.0
             for zp in zz
                 E = sqrt(cosmo.Om * (1 + zp)^3 + cosmo.OL)
-                chi_val += (2.998e5 / 100.0) * cosmo.h / E * dz
+                # Mpc/h comoving distance: no explicit h factor (see chi() in
+                # Cosmology.jl). The previous *cosmo.h made χ ≈0.68× too small.
+                chi_val += (2.998e5 / 100.0) / E * dz
             end
             redge[i] = chi_val
         end
@@ -147,8 +151,8 @@ function build_abundance_table(halos::AbstractVector, cosmo::CosmologyParams, pk
             z_mid = chi_to_z(chi2z, r_mid)
             D_z = growth_factor(z_mid, cosmo)
 
-            # Shell volume (full sky)
-            dV = (4π/3.0) * (r_hi^3 - r_lo^3)
+            # Shell volume × sky fraction (fsky=1/8 for a single octant catalog)
+            dV = fsky * (4π/3.0) * (r_hi^3 - r_lo^3)
 
             # σ(M, z) = D(z) × σ(M, z=0)
             sigma_cent_z = sigma_cent .* D_z
@@ -200,11 +204,18 @@ function build_abundance_table(halos::AbstractVector, cosmo::CosmologyParams, pk
         end
 
         # For each mass bin where PP has halos, find the matched mass
+        itop = 0
         for iM in 1:nMbins
             npp = ngtm_pp[iM]
             npp > 0 || continue
             M_target[iM, iz] = M_of_N(npp)
+            itop = iM
         end
+        # Above this z-bin's most massive halo N_PP(>M) = 0: extend the last matched
+        # value instead of leaving the identity default, which the linear lookup would
+        # blend into the top halo's mass and rank it BELOW the next ones (found by
+        # test_finalize_am.jl; affected the 1-2 most massive halos of each z-bin).
+        itop > 0 && (M_target[itop+1:end, iz] .= M_target[itop, iz])
     end
 
     # ---- Build 2D interpolator ----

@@ -1,0 +1,3 @@
+ntile,nsub,nmesh,delta_rms_err_over_sigma,delta_corr,delta_max_err_over_sigma,psix_rms_err_over_sigma,psix_corr
+1,448,480,3.733563e-02,0.999331892,2.1870e-01,2.033499e-01,0.981299281
+4,112,144,3.781815e-02,0.999313474,2.2634e-01,2.394459e-01,0.973290801

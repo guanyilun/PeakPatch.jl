@@ -1,0 +1,93 @@
+\section{Map making}
+\label{sec:maps}
+
+Secondary-anisotropy maps combine two ingredients, mirroring the Websky
+construction \citep{Stein2020}: \emph{field} maps, line-of-sight integrals
+painted from every lattice cell of the displaced matter field, and
+\emph{halo} maps, profile painting at catalogue positions. Field maps carry
+the large-scale (two-halo and unresolved) signal; halo maps carry the
+small-scale one-halo signal; compensation of the painted halo profiles
+prevents double counting of the halo mass or electrons that are already in
+the field.
+
+\subsection{Field maps from the deterministic lattice}
+\label{sec:maps-field}
+
+Because the noise is deterministic (Section~\ref{sec:multires-noise}), field
+maps are made in a separate re-paint pass that re-synthesizes each tile's
+displacement fields from the same seed --- no simulation snapshot is stored.
+Every lattice cell of mass $\bar\rho_m a_{\rm latt}^3$ is displaced with
+equation~(\ref{eq:2lpt}) evaluated at its lightcone epoch and deposited onto
+HEALPix maps \citep{Gorski2005} with kernel weights per map type:
+\begin{align}
+  \kappa &: \quad
+  W_\kappa = \tfrac{3}{2}\Omega_m \left(\tfrac{H_0}{c}\right)^2
+  (1+z)\,\chi\left(1-\tfrac{\chi}{\chi_\star}\right), \\
+  \tau &: \quad
+  W_\tau = \sigma_T\,\bar n_{e,0}\,f_e\,(1+z)^2 , \qquad
+  {\rm kSZ}: \; -W_\tau\, v_r/c , \\
+  {\rm ISW} &: \quad
+  W_{\rm ISW} = \tfrac{2}{c^2}\, a H (f-1)\, \phi(\bm{q}) ,
+\end{align}
+where $\phi = \tfrac{3}{2}\Omega_m (H_0/c)^2 (D/a)\, \nabla^{-2}\delta_0$ is
+the linear potential, $f$ the growth rate, and $f_e$ accounts for helium
+ionization. \needcheck{final kernel notation pass against FieldMap.jl and
+Websky eqs.\ 3.22--3.24; ISW prefactor conventions}
+
+Cells may be subdivided ($n\le 5^3$ sub-cells) before deposition to suppress
+pixelization noise, and painting runs on-device with a native ring-scheme
+\texttt{ang2pix} and atomic adds at Nside 4096. Two correctness requirements
+emerged from validation. First, every field map must pass an analytic
+integral anchor (e.g., total deposited mass equals the geometric expectation
+to machine precision; mean $\kappa$ matches its analytic value). Second, the
+\emph{deposit position} matters at second order: potential-weighted kernels
+(ISW) must deposit at the \emph{Lagrangian} cell position. Depositing
+$\phi(\bm{q})$ at the Eulerian position imprints the density field onto the
+painted potential --- a $\delta\times\phi$ cross term that exceeds the ISW
+signal by up to three orders of magnitude at $\ell\gtrsim 90$. With the
+Lagrangian deposit the ISW spectrum tracks the linear-theory expectation
+across five decades of $C_\ell$ (Section~\ref{sec:valmaps}).
+
+\subsection{Halo painting}
+\label{sec:maps-halo}
+
+Halo profiles are painted with the \pkg{XGPaint} package \citep{XGPaint},
+to which we contributed the profiles used here:
+\begin{itemize}
+  \item \textbf{Lensing convergence}: truncated NFW with concentration $c=7$
+  (mass- and redshift-independent, the Websky choice), $\rho\propto r^{-2}$
+  extension to $2\,r_{200m}$, and a compensation term --- a uniform sphere at
+  mean overdensity $\Delta=3$ carrying the \emph{full painted mass}
+  ($1.636\,M_{200m}$ for $c=7$) --- so each halo adds zero net mass on top of
+  the full-matter field map.
+  \item \textbf{Gas density / kSZ}: the \citet{Battaglia2016} AGN-feedback
+  gas-density profile. Public implementations of this profile differ in the
+  outer-slope convention and truncation; we implement both conventions behind
+  an explicit flag (the published form, and the form used to produce the
+  released Websky maps), anchor the amplitude to the $\bar\tau$ scaling
+  relation of \citet{Battaglia2016} (our published-form implementation
+  reproduces its $\ln\tau_0=-6.23$ anchor to 16\%), and paint kSZ with the
+  per-halo line-of-sight velocity. An analogous zero-net electron
+  compensation is available for combining with the full-matter momentum
+  field.
+  \item \textbf{tSZ}: the \citet{Battaglia2012} pressure profile, painted for
+  all haloes.
+  \item \textbf{CIB}: the \citet{Shang2012} halo model with the
+  \citet{PlanckCIB2013} parameters, as implemented in \pkg{XGPaint} (the same
+  model used by Websky).
+\end{itemize}
+Painted profiles are sampled at pixel centres; for cuspy profiles this loses
+mass for haloes below the pixel scale, so each halo's residual (analytic
+integral minus painted sum) is deposited in its central pixel, making every
+halo's painted mass exact by construction.
+
+\subsection{Composite maps}
+\label{sec:maps-composite}
+
+The released products are assembled per octant as: $\kappa$ = field
+$\kappa$ + compensated NFW haloes (+ a Gaussian $z>4.5$ tail realized from
+the Limber spectrum); kSZ = field momentum map + compensated gas-density
+haloes above $M_{200c}>10^{13}\Msun$; tSZ and CIB are halo-only. The
+compensated construction for $\kappa$ --- rather than masking haloes out of
+the field --- is what matches the released Websky decomposition
+(Section~\ref{sec:valmaps}).

@@ -1,0 +1,45 @@
+# Production-v2 config — paper campaign rerun 2026-09-26 (production_v2/generate_configs.py).
+# Octant 000: observer at (-2618.0000, -2618.0000, -2618.0000) Mpc/h (centered coords) = a box corner.
+# Geometry: ntile=16, n=416, nbuff=16; nsub=384; periodic_cores -> N = nsub*ntile = 6144;
+# cellsize = 5236/6144 = 0.852214 Mpc/h; box = 5236 Mpc/h = 7700 Mpc. Do not hand-edit.
+
+[cosmology]
+Om   = 0.31
+OB   = 0.049
+OL   = 0.69
+h    = 0.68
+
+[grid]
+n       = 416
+boxsize = 354.52083
+nbuff   = 16
+periodic_cores = true
+cenx    = -2618.0000
+ceny    = -2618.0000
+cenz    = -2618.0000
+
+[run]
+z_out     = 0.0
+z_max     = 4.5
+ievol     = 1
+ilpt      = 2
+ioutshear = 1
+wsmooth   = 1
+rmax2rs   = 0.0
+NonGauss  = 0
+fNL       = 0.0
+seed      = 12345
+ntile     = 16
+coarse_factor = 32
+coarse_compensation = true
+generate_table = false
+
+[files]
+pk         = "validation/websky_6144/data/pk_websky.dat"
+filterbank = "validation/websky_6144/data/filters_websky_finecell.dat"
+homeltab   = "validation/websky_6144/data/HomelTab_websky.dat"
+output     = "catalog_websky_6144_v2_oct000.pksc"
+
+[output]
+format = "pksc"
+path   = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"

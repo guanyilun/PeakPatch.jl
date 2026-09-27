@@ -2,6 +2,8 @@ module Parameters
 
 using TOML
 
+export grid_layout
+
 """
     PipelineConfig
 
@@ -24,6 +26,11 @@ Base.@kwdef struct PipelineConfig
     n::Int = 142
     boxsize::Float64 = 200.0
     nbuff::Int = 4
+    # true: tile cores tile the whole periodic box, N = nsub*ntile, buffers wrap (Fortran
+    # layout; required for corner-observer octant lightcones). false (legacy): N =
+    # nsub*ntile + 2nbuff and the 2nbuff cells between the last and first cores are never
+    # core, i.e. an unsimulated slab (validation/paper/FULLSKY_COMPARISON_2026-09-26.md).
+    periodic_cores::Bool = false
     # Redshift & lightcone
     z_out::Float64 = 0.0
     z_max::Float64 = 0.0
@@ -33,9 +40,13 @@ Base.@kwdef struct PipelineConfig
     cenz::Float64 = 0.0
     # Physics
     ilpt::Int = 2
+    # Multires splice: multiply the coarse-grid kernels by D(k)/T(k) (block-average over
+    # Catmull-Rom transfer) so interpolated coarse + piecewise-constant residual reproduce
+    # the exact field below the coarse Nyquist (validation/tiling/SPLICE_COMPENSATION_2026-09-26.md).
+    coarse_compensation::Bool = false
     ioutshear::Int = 0
     wsmooth::Int = 0
-    rmax2rs::Float64 = 1.0
+    rmax2rs::Float64 = 0.0
     NonGauss::Int = 0
     fNL::Float64 = 0.0
     # Files
@@ -60,9 +71,13 @@ OL   = 0.685    # Omega_Lambda
 h    = 0.674
 
 [grid]
+# UNITS: ALL lengths are Mpc/h (pipeline convention; see CONVENTIONS.md). Fortran/Websky use
+# Mpc. To match a box of L Mpc set boxsize = L*h (Websky 7700 Mpc -> 5236, NOT 7700).
 n      = 142    # grid cells per dimension
-boxsize = 200.0 # box size [Mpc/h]
+boxsize = 200.0 # box size [Mpc/h]  (NOT Mpc)
 nbuff  = 4      # buffer cells
+periodic_cores = false  # true: cores tile the full periodic box (N = nsub*ntile); use for
+                        # corner-observer lightcones (false leaves a 2*nbuff unsimulated slab)
 cenx   = 0.0    # observer x position [Mpc/h]
 ceny   = 0.0    # observer y position [Mpc/h]
 cenz   = 0.0    # observer z position [Mpc/h]
@@ -74,7 +89,7 @@ ievol     = 0     # 0: global z, 1: lightcone (per-peak z)
 ilpt      = 2     # LPT order (1 or 2)
 ioutshear = 0     # 0: basic catalog, ≥1: extended catalog
 wsmooth   = 0     # smoothing window (0=Gaussian, 1=tophat)
-rmax2rs   = 1.0   # max shell radius / filter radius
+rmax2rs   = 0.0   # max shell radius / filter radius (0=unlimited, matches Fortran)
 NonGauss  = 0     # non-Gaussian mode (0=none, 1=correlated fNL, 2=uncorrelated)
 fNL       = 0.0
 
@@ -105,6 +120,7 @@ function PipelineConfig(config::Dict{String,Any})
         n        = Int(get(grid, "n", 142)),
         boxsize  = Float64(get(grid, "boxsize", get(grid, "dL_box", 200.0))),
         nbuff    = Int(get(grid, "nbuff", 4)),
+        periodic_cores = Bool(get(grid, "periodic_cores", false)),
         z_out    = z_out,
         z_max    = Float64(get(run, "z_max", z_out)),
         ievol    = Int(get(run, "ievol", 0)),
@@ -112,9 +128,10 @@ function PipelineConfig(config::Dict{String,Any})
         ceny     = Float64(get(grid, "ceny", 0.0)),
         cenz     = Float64(get(grid, "cenz", 0.0)),
         ilpt      = Int(get(run, "ilpt", 2)),
+        coarse_compensation = Bool(get(run, "coarse_compensation", false)),
         ioutshear = Int(get(run, "ioutshear", 0)),
         wsmooth   = Int(get(run, "wsmooth", 0)),
-        rmax2rs   = Float64(get(run, "rmax2rs", 1.0)),
+        rmax2rs   = Float64(get(run, "rmax2rs", 0.0)),
         NonGauss  = Int(get(run, "NonGauss", 0)),
         fNL       = Float64(get(run, "fNL", 0.0)),
         pkfile        = get(files, "pk", "pk.dat"),
@@ -382,6 +399,20 @@ function PipelineConfig(sp::FortranParams)
         tabfile   = sp.TabInterpFile,
         fileout   = sp.fileout,
     )
+end
+
+"""
+    grid_layout(cfg, ntile) -> (nsub, N)
+
+Tile core size `nsub = n - 2nbuff` and full periodic grid size `N` per dimension.
+`cfg.periodic_cores = true`: `N = nsub*ntile`, so the cores tile the whole periodic box
+and the buffers wrap. Legacy `false`: `N = nsub*ntile + 2nbuff`, which leaves 2nbuff
+cells per axis that are never core (an unsimulated slab next to a corner observer).
+"""
+function grid_layout(cfg::PipelineConfig, ntile::Integer)
+    nsub = cfg.n - 2 * cfg.nbuff
+    N = cfg.periodic_cores ? nsub * ntile : nsub * ntile + 2 * cfg.nbuff
+    return nsub, N
 end
 
 end # module Parameters

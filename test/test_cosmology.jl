@@ -41,9 +41,10 @@
         @test chi(1.0, c) > 0.0
         # χ is monotonically increasing
         @test chi(2.0, c) > chi(1.0, c)
-        # Known value: χ(z=1) ≈ 1550 Mpc (≈ 2300 Mpc/h) for Planck18
-        # Note: chi() returns Mpc (includes h factor)
-        @test 1500 < chi(1.0, c) < 1600
+        # Known value: χ(z=1) ≈ 2294 Mpc/h for this cosmology (Mpc/h units,
+        # no explicit h factor). Earlier this asserted ~1545 (the χ value with
+        # a spurious *h), which truncated lightcones — see chi() in Cosmology.jl.
+        @test 2250 < chi(1.0, c) < 2350
     end
 
     @testset "Growth rate f(z)" begin

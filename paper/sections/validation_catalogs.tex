@@ -1,0 +1,40 @@
+\section{Validation I: catalogues}
+\label{sec:valcat}
+
+\todo{P3 section --- transcribe from
+validation/websky\_6144/ (TIER\_B\_SUMMARY and per-statistic MDs) with
+publication figures from the frozen campaign. Structure and final numbers
+below.}
+
+We validate against the released Websky catalogue \citep{Stein2020} at
+matched configuration: box $7.7$~Gpc ($5236\Mpch$), $N=6144$
+($a_{\rm latt}=0.852\Mpch$), $\Omega_m=0.31$, $\Omega_b=0.049$, $h=0.68$,
+lightcone octant to $z=4.5$, abundance-matched masses. Two levels of
+comparison:
+
+\begin{enumerate}
+  \item \textbf{Finder equivalence} (same code family, matched cell size):
+  the \ppjl\ finder reproduces the Fortran peak-patch peak density to 0.5\%
+  on identical fields. \todo{Fig.~F4}
+  \item \textbf{Catalogue statistics vs.\ Websky} (different realizations;
+  agreement expected at the realization-scatter level):
+  \begin{itemize}
+    \item mass function: $\sim$1\% above $3\times10^{12}\Msun$ after
+    abundance matching; mass floor $1.1\times10^{12}\Msun$ matches
+    Websky's. \todo{Fig.~F5}
+    \item redshift distribution $dN/dz$: matches, peak at $z\simeq1.4$.
+    \todo{Fig.~F6}
+    \item two-point function $\xi(r)$: matched-geometry Landy--Szalay bias
+    ratio 0.97--1.09 over 3--19$\Mpch$; the only residual is
+    $\sim$1.3$\times$ at 1--3$\Mpch$ (one-halo regime, expected for a
+    Lagrangian-exclusion method).
+    \item halo bias $b(M)$: $\le$5\% in four mass bins.
+    \item velocities: $\sigma_{v_r}(z)$ to 1--2\%.
+    \item pairwise velocity $v_{12}(r)$: ratio 0.997 in the kSZ-relevant
+    window. \todo{Fig.~F7 (panels)}
+  \end{itemize}
+\end{enumerate}
+
+\todo{units-convention cautionary paragraph (Mpc vs Mpc/h masquerading as a
+resolution deficit) --- factual, no blame, cross-ref
+Section~\ref{sec:impl-io}}

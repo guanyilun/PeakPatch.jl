@@ -1,0 +1,50 @@
+# Websky 6144^3 GPU Multi-Resolution — Octant 000 (nbuff=24, rmax2rs=0.0)
+#
+# Matches/exceeds Fortran reference: nbuff=22→nhunt=21 (38,792 cells)
+# Here: nbuff=24→nhunt=23 (~51,068 cells)
+#
+# Geometry:
+#   ntile=16, nmesh=429, nbuff=24
+#   nsub = 429 - 48 = 381
+#   N = 381*16 + 48 = 6144
+#   cellsize = 7700/6144 = 1.25326 Mpc/h
+#   per-tile boxsize = 429 * 1.25326 = 537.65 Mpc/h
+
+[cosmology]
+Om   = 0.31
+OB   = 0.049
+OL   = 0.69
+h    = 0.68
+
+[grid]
+n       = 429
+boxsize = 537.6488
+nbuff   = 24
+cenx    = -3850.0
+ceny    = -3850.0
+cenz    = -3850.0
+
+[run]
+z_out     = 0.0
+z_max     = 4.6
+ievol     = 1
+ilpt      = 2
+ioutshear = 1
+wsmooth   = 1
+rmax2rs   = 0.0
+NonGauss  = 0
+fNL       = 0.0
+seed      = 12345
+ntile     = 16
+coarse_factor = 4
+generate_table = true
+
+[files]
+pk         = "validation/websky_6144/data/pk_websky.dat"
+filterbank = "validation/websky_6144/data/filters_websky.dat"
+homeltab   = "validation/websky_6144/data/HomelTab_websky.dat"
+output     = "catalog_websky_6144_oct000_nbuff24.pksc"
+
+[output]
+format = "pksc"
+path   = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"

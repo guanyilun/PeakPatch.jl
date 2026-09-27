@@ -1,0 +1,36 @@
+# Matched-cellsize Fortran-vs-Julia: N_global=468, cellsize 1.2533, box 586.5, z=0 snapshot.
+# run_multitile: nmesh=256, nbuff=22, ntile=2 -> nsub=212, N=212*2+44=468.
+[cosmology]
+Om = 0.31
+OB = 0.049
+OL = 0.69
+h  = 0.68
+[grid]
+n       = 256
+boxsize = 320.8333
+nbuff   = 22
+cenx    = 0.0
+ceny    = 0.0
+cenz    = 0.0
+[run]
+z_out=0.0
+z_max=4.6
+ievol=0
+ilpt=2
+ioutshear=1
+wsmooth=1
+rmax2rs=0.0
+NonGauss=0
+fNL=0.0
+seed=13579
+ntile=2
+coarse_factor=4
+generate_table=false
+[files]
+pk="validation/websky_6144/data/pk_websky.dat"
+filterbank="validation/websky_6144/data/filters_websky.dat"
+homeltab="validation/websky_6144/data/HomelTab_websky.dat"
+output="cellfix.pksc"
+[output]
+format="pksc"
+path="/home/yguan/scratch/websky_6144/fortran_floortest"

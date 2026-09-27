@@ -93,7 +93,7 @@ end
 
 """
     analyse_peak_gpu(pg, ipp, alatt, ir2min, ZZon, Rfclvi, ct, stab;
-                     nbuff=0, growth_tables=nothing, rmax2rs=0.0, ...) -> PeakResult
+                     nbuff=0, rmax2rs=0.0, ...) -> PeakResult
 
 GPU-model shell analysis. Same physics as `RadialShell.analyse_peak` but
 with restructured data access:
@@ -107,7 +107,7 @@ within each shell becomes the cooperative `threadIdx.x` gather + reduce.
 function analyse_peak_gpu(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
                            ZZon::Float64, Rfclvi::Float64, ct::CollapseTableInterp,
                            stab::ShellTables;
-                           nbuff::Int=0, growth_tables=nothing,
+                           nbuff::Int=0,
                            rmax2rs::Float64=0.0, fcrit_override=nothing,
                            fortran_compat::Bool=false)
     # Determine max shells to process.
@@ -150,7 +150,7 @@ function analyse_peak_gpu(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
     end
 
     fcrit = fcrit_override !== nothing ? Float64(fcrit_override) :
-            (growth_tables !== nothing ? fsc_of_z(ZZon - 1.0, growth_tables) : 1.686)
+            fsc_of_z(ZZon - 1.0, ct)
 
     ilpt2 = pg.eta2x !== nothing
 

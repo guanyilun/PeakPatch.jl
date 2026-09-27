@@ -128,6 +128,8 @@ end
 struct CollapseTableInterp{I}
     itp::I       # scaled, extrapolated interpolant
     out_val::Float32
+    x1::Float64  # lower bound of log10(Frho) axis
+    x2::Float64  # upper bound of log10(Frho) axis
 end
 
 function CollapseTableInterp(table::Array{Float32,3}, tp::CollapseTableParams)
@@ -137,7 +139,7 @@ function CollapseTableInterp(table::Array{Float32,3}, tp::CollapseTableParams)
     raw = Interpolations.interpolate(table, BSpline(Linear()))
     sitp = scale(raw, xs, ys, zs)
     eitp = extrapolate(sitp, Float32(-1.0))
-    CollapseTableInterp(eitp, Float32(-1.0))
+    CollapseTableInterp(eitp, Float32(-1.0), Float64(tp.X1), Float64(tp.X2))
 end
 
 function interpolate(ct::CollapseTableInterp, x, y, z)

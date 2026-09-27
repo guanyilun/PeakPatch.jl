@@ -1,0 +1,33 @@
+# Benchmark config 'mem_n256' (gen_bench_configs.jl): n=256 ntile=2 nbuff=16 N=480 M=48 block=10; full box 409.1 Mpc/h; z_max=0.254 covers the box
+[cosmology]
+Om = 0.31
+OB = 0.049
+OL = 0.69
+h  = 0.68
+
+[grid]
+n       = 256
+boxsize = 218.1667
+nbuff   = 16
+cenx    = -204.531
+ceny    = -204.531
+cenz    = -204.531
+
+[run]
+z_out     = 0.0
+z_max     = 0.254
+ievol     = 1
+ilpt      = 2
+ioutshear = 1
+wsmooth   = 1
+rmax2rs   = 0.0
+seed      = 12345
+ntile     = 2
+coarse_factor = 24
+
+[files]
+pk         = "validation/websky_6144/data/pk_websky.dat"
+filterbank = "validation/websky_6144/data/filters_websky_finecell.dat"
+homeltab   = "validation/websky_6144/data/HomelTab_websky.dat"
+output     = "bench_mem_n256.pksc"
+

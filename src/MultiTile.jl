@@ -113,6 +113,8 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     nbuff = cfg.nbuff
     nsub = nmesh - 2 * nbuff
     N = nsub * ntile + 2 * nbuff
+    cfg.periodic_cores && error("periodic_cores=true is not supported by the CPU MultiTile " *
+        "path (tiles are sliced from global arrays without wrapping); use run_multitile_split")
     alatt = cfg.boxsize / nmesh
     boxsize_full = N * alatt
     dcore_box = nsub * alatt
@@ -132,7 +134,7 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     a_out = 1.0 / (1.0 + z_out)
     ZZon = 1.0 + z_out
 
-    fcrit_val = fsc_of_z(z_out, growth_tables)
+    fcrit_val = fsc_of_z(z_out, ct)
     _, _, D_out = Dlinear_ab(a_out, growth_tables)
 
     Rfclmax = filters[1][3]
@@ -151,6 +153,10 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     chi2z = ievol == 1 ? build_chi_to_z(cosmo; z_max=z_max + 1.0) : nothing
 
     verbose && @info "Phase 0: N=$N, box=$(round(boxsize_full;digits=2)), ntile=$ntile, nsub=$nsub, nmesh=$nmesh, fcrit=$fcrit_val$(ievol == 1 ? ", lightcone mode" : "")"
+    # UNITS GUARD: the pipeline is Mpc/h throughout (chi(z) uses H0=100h). Print cellsize/box
+    # in BOTH Mpc/h and Mpc so a Fortran/Websky (Mpc) vs Julia (Mpc/h) mixup is visible at a glance.
+    # To match a Fortran/Websky box of L Mpc, set boxsize = L*h (e.g. Websky 7700 Mpc -> 5236 Mpc/h).
+    verbose && @info "  Units (Mpc/h pipeline): cellsize=$(round(alatt;digits=4)) Mpc/h (=$(round(alatt/cosmo.h;digits=4)) Mpc), full box=$(round(boxsize_full;digits=1)) Mpc/h (=$(round(boxsize_full/cosmo.h;digits=1)) Mpc)"
 
     # ---- Phase 1: Field generation on full grid ----
     pk = load_pk(cfg.pkfile)
@@ -241,12 +247,9 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             delta_s_tile = Tf.(extract_tile(delta_s_full, it, jt, kt, nsub, nmesh))
             xbx, ybx, zbx = tile_center(it, jt, kt, ntile, dcore_box)
 
-            # Per-tile fcrit in lightcone mode
+            # Peak finding uses constant fcrit = fsc_of_z(z_out), matching Fortran.
+            # Per-peak redshift is applied later in shell analysis only.
             fcrit_tile = fcrit
-            if ievol == 1
-                z_tile = peak_redshift(obs[1], obs[2], obs[3], xbx, ybx, zbx, chi2z)
-                fcrit_tile = Tf(fsc_of_z(z_tile, growth_tables))
-            end
 
             new_peaks = find_peaks(delta_s_tile, tile_masks[tid],
                                    xbx, ybx, zbx, alatt, nbuff, fcrit_tile, Rf)
@@ -335,7 +338,6 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             tile_results[idx] = analyse_peak(pg, peaks[idx].ipp, alatt, ir2min,
                                              ZZon_tile[idx], Rf, ct, shells;
                                              nbuff=nbuff,
-                                             growth_tables=growth_tables,
                                              rmax2rs=cfg.rmax2rs,
                                              fortran_compat=fortran_compat)
         end
@@ -351,9 +353,11 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                 continue
             end
 
-            # Per-peak growth factor and velocity scaling
+            # Per-peak growth factor and displacement scaling.
+            # Stores the 1LPT/2LPT DISPLACEMENT at the peak's redshift (Sbar in Mpc/h); the
+            # Eulerian position + km/s velocity conversion (merge_pkvd) is done by finalize_eulerian.
             a_pk = 1.0 / ZZon_tile[idx]
-            _, _, D_pk = Dlinear_ab(a_pk, growth_tables)
+            D_pk, _, _ = Dlinear_ab(a_pk, growth_tables)   # 1st return = D (growth factor); was D/a (3rd) — bug
 
             peak = peaks[idx]
             Rf = tile_Rfs[idx]
@@ -361,7 +365,7 @@ function run_multitile(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             Sbar_vel = result.Sbar .* D_pk
             Sbar2_vel = if psi2_x_full !== nothing
                 Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
-                result.Sbar2 .* (-(-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2))
+                result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)   # -3/7 matches Fortran; was +3/7 (sign bug)
             else
                 @SVector zeros(3)
             end
@@ -452,6 +456,8 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     nbuff = cfg.nbuff
     nsub = nmesh - 2 * nbuff
     N = nsub * ntile + 2 * nbuff
+    cfg.periodic_cores && error("periodic_cores=true is not supported by the CPU MultiTile " *
+        "path (tiles are sliced from global arrays without wrapping); use run_multitile_split")
     alatt = cfg.boxsize / nmesh
     boxsize_full = N * alatt
     dcore_box = nsub * alatt
@@ -471,7 +477,7 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     a_out = 1.0 / (1.0 + z_out)
     ZZon = 1.0 + z_out
 
-    fcrit_val = fsc_of_z(z_out, growth_tables)
+    fcrit_val = fsc_of_z(z_out, ct)
     _, _, D_out = Dlinear_ab(a_out, growth_tables)
 
     Rfclmax = filters[1][3]
@@ -490,6 +496,8 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     chi2z = ievol == 1 ? build_chi_to_z(cosmo; z_max=z_max + 1.0) : nothing
 
     verbose && @info "Phase 0 (lowmem): N=$N, box=$(round(boxsize_full;digits=2)), ntile=$ntile, nsub=$nsub, nmesh=$nmesh$(ievol == 1 ? ", lightcone mode" : "")"
+    # UNITS GUARD (see run_multitile): pipeline is Mpc/h. To match a Fortran/Websky box of L Mpc, boxsize = L*h.
+    verbose && @info "  Units (Mpc/h pipeline): cellsize=$(round(alatt;digits=4)) Mpc/h (=$(round(alatt/cosmo.h;digits=4)) Mpc), full box=$(round(boxsize_full;digits=1)) Mpc/h (=$(round(boxsize_full/cosmo.h;digits=1)) Mpc)"
 
     # ---- Build tile list ----
     tile_ids = NTuple{3,Int}[]
@@ -579,11 +587,9 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             delta_s_tile = Tf.(extract_tile(delta_s_full, it, jt, kt, nsub, nmesh))
             xbx, ybx, zbx = tile_center(it, jt, kt, ntile, dcore_box)
 
+            # Peak finding uses constant fcrit = fsc_of_z(z_out), matching Fortran.
+            # Per-peak redshift is applied later in shell analysis only.
             fcrit_tile = fcrit
-            if ievol == 1
-                z_tile = peak_redshift(obs[1], obs[2], obs[3], xbx, ybx, zbx, chi2z)
-                fcrit_tile = Tf(fsc_of_z(z_tile, growth_tables))
-            end
 
             new_peaks = find_peaks(delta_s_tile, tile_masks[tid],
                                    xbx, ybx, zbx, alatt, nbuff, fcrit_tile, Rf)
@@ -688,7 +694,6 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             tile_results[idx] = analyse_peak(pg, peaks[idx].ipp, alatt, ir2min,
                                              ZZon_tile[idx], Rf, ct, shells;
                                              nbuff=nbuff,
-                                             growth_tables=growth_tables,
                                              rmax2rs=cfg.rmax2rs,
                                              fortran_compat=fortran_compat)
         end
@@ -704,7 +709,7 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             end
 
             a_pk = 1.0 / ZZon_tile[idx]
-            _, _, D_pk = Dlinear_ab(a_pk, growth_tables)
+            D_pk, _, _ = Dlinear_ab(a_pk, growth_tables)   # 1st return = D (growth factor); was D/a (3rd) — bug
 
             peak = peaks[idx]
             Rf = tile_Rfs[idx]
@@ -712,7 +717,7 @@ function run_multitile_lowmem(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             Sbar_vel = result.Sbar .* D_pk
             Sbar2_vel = if src2_k !== nothing
                 Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
-                result.Sbar2 .* (-(-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2))
+                result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)   # -3/7 matches Fortran; was +3/7 (sign bug)
             else
                 @SVector zeros(3)
             end

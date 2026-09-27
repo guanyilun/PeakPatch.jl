@@ -1,0 +1,18 @@
+\section{Performance}
+\label{sec:performance}
+
+\todo{P2 section --- requires the benchmark runs (plan item 3.2). Anchors
+available now, to be replaced by controlled measurements:}
+
+\begin{itemize}
+  \item Catalogue octant ($6144^3$-equivalent, $z<4.6$, $f_c=4$):
+  $\sim$19~min on $4\times$L40S.
+  \item Catalogue octant at production settings ($f_c=32$, $z<4.5$):
+  $\sim$7~h on $4\times$L40S \needcheck{replace with frozen-campaign
+  timings; understand the $f_c$ scaling}.
+  \item Field-map octant (5 kernels, Nside 4096, GPU painting):
+  $\sim$1.3~h on one L40S.
+  \item \todo{strong scaling 1$\to$4 GPUs; H100 node number; peak memory
+  per GPU vs.\ tile size; CPU-only and MPI reference points; Fortran/CPU
+  comparison from CITA runs}
+\end{itemize}

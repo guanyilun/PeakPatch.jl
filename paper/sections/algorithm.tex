@@ -1,0 +1,78 @@
+\section{The peak-patch algorithm}
+\label{sec:algorithm}
+
+We briefly review the mass-peak-patch algorithm to fix notation and
+conventions; \citet{BondMyers1996a} and \citet{Stein2019} give full
+derivations. Throughout, lengths are comoving in $h^{-1}$Mpc, masses in
+$\Msun$ unless suffixed $/h$, and the linear density field is normalized at
+$z=0$ with growth factor $D(z)$ ($D(0)=1$).
+
+\subsection{Initial field and filter bank}
+\label{sec:algorithm-filters}
+
+The pipeline starts from a Gaussian random realization $\delta_0(\bm{q})$ of
+the linear $z=0$ matter power spectrum $P(k)$ on an $N^3$ lattice of spacing
+$a_{\rm latt}$. The field is smoothed with a bank of top-hat filters of radii
+$R_{f,i}$, geometrically spaced with ratio $\sim$1.1--1.2 between
+$R_{f,\min}\simeq 2\,a_{\rm latt}$ (below which the lattice cannot resolve the
+proto-halo) and an $R_{f,\max}$ set by the largest clusters expected in the
+volume \citep[cf.][]{Stein2019}. Candidate peaks are lattice maxima of each
+smoothed field that exceed the collapse threshold at that filter scale.
+
+\subsection{Homogeneous-ellipsoid collapse}
+\label{sec:algorithm-collapse}
+
+For each candidate, the algorithm measures the mean overdensity
+$\bar\delta(R)$ and the strain (deformation) tensor eigenvalues
+$(\lambda_1,\lambda_2,\lambda_3)$ of the linear displacement field, smoothed
+on trial radii around the candidate, and solves the homogeneous-ellipsoid
+collapse equations to find the largest radius $R_{\rm TH}$ whose enclosed
+ellipsoid collapses along all three axes by the target redshift. The collapse
+solution is precomputed as a table over (overdensity, ellipticity,
+prolateness) --- the ``homogeneous ellipsoid table'' --- and evaluated by
+interpolation at run time. The halo mass is the top-hat mass
+\begin{equation}
+  M = \frac{4\pi}{3}\,\bar\rho_m\,R_{\rm TH}^3 ,
+  \label{eq:mtophat}
+\end{equation}
+with $\bar\rho_m$ the comoving mean matter density.
+
+\subsection{Exclusion and merging}
+\label{sec:algorithm-exclusion}
+
+Proto-haloes found at different filter scales overlap. The candidate list is
+sorted by mass and processed in descending order with binary
+exclusion-and-merging: a candidate whose centre lies inside an accepted
+proto-halo is removed; partial overlaps reduce $R_{\rm TH}$ to the
+non-overlapping volume \citep[the ``binary reduction'' of][]{Stein2019}.
+The result is a space-exclusive set of Lagrangian spheres.
+
+\subsection{Displacements, velocities, and mass calibration}
+\label{sec:algorithm-2lpt}
+
+Accepted proto-halo centres move from their Lagrangian positions $\bm{q}$ to
+Eulerian positions with second-order Lagrangian perturbation theory,
+\begin{equation}
+  \bm{x} = \bm{q} + D(z)\,\bm{\psi}^{(1)}(\bm{q})
+         - \tfrac{3}{7}\,D^2(z)\,\bm{\psi}^{(2)}(\bm{q}),
+  \label{eq:2lpt}
+\end{equation}
+where $\bm{\psi}^{(1)} = -\nabla\phi^{(1)}$ is the Zel'dovich displacement and
+$\bm{\psi}^{(2)}$ derives from the second-order source
+$\sum_{i<j}[\phi^{(1)}_{,ii}\phi^{(1)}_{,jj}-(\phi^{(1)}_{,ij})^2]$. The
+displacement fields are averaged over the proto-halo's Lagrangian sphere
+rather than sampled at its centre, which suppresses small-scale displacement
+noise for massive haloes. Peculiar velocities follow from the time derivative
+of equation~(\ref{eq:2lpt}),
+$\bm{v} = a\,[\dot D\,\bm{\psi}^{(1)} - \tfrac{3}{7}\,2 D \dot D\,
+\bm{\psi}^{(2)}]$, evaluated at each halo's lightcone redshift
+(Section~\ref{sec:lightcone}). \needcheck{sign/definition conventions of
+$\bm{\psi}^{(2)}$ against Merger.finalize\_eulerian before submission}
+
+Raw top-hat masses from equation~(\ref{eq:mtophat}) are known to be biased
+relative to conventional spherical-overdensity masses; as in Websky and other
+mock suites, the final calibration step is abundance matching: in redshift
+bins, the ranked $R_{\rm TH}$ masses are remapped to reproduce a target mass
+function \citep[we use][]{Tinker2008}, preserving each halo's rank. All
+catalogue-level comparisons in Section~\ref{sec:valcat} use abundance-matched
+masses.

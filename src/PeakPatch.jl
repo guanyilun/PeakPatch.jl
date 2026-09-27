@@ -40,7 +40,7 @@ using .PeakFind: PeakCandidate, find_peaks
 using .RadialShell: ShellCell, PeakGrid, PeakResult, no_collapse,
     hRinteg, atab4, precompute_shells, analyse_peak, normalize_strain!, normalize_strain,
     fsc_of_z, get_evals, reset_dump_counters!, get_dump_counts
-using .Parameters: PipelineConfig, FortranParams, read_params_bin, write_params_bin
+using .Parameters: PipelineConfig, FortranParams, read_params_bin, write_params_bin, grid_layout
 using .Catalog: HaloRecord, ExtHaloRecord, write_pksc, read_pksc
 using .EllipsoidalCollapse: EllipsoidParams, evolve_ellipse_full,
     get_b_2, _elliptic_rd
@@ -49,7 +49,7 @@ using .CollapseTable: CollapseTableParams, CollapseTableInterp,
     write_homeltab, read_homeltab, interpolate
 using .Exclusion: SpatialHash, build_hash, sphere_overlap,
     lagrangian_exclusion!, volume_reduction!
-using .Merger: merge_catalog
+using .Merger: merge_catalog, finalize_eulerian
 using .MassFunction: rho_mean, R_of_M, M_of_R, sigma_R, sigma_M,
     dlnsigma_dlnM, tinker_dndlnM, sheth_tormen_dndlnM,
     cumulative_ngtm, precompute_sigma
@@ -57,7 +57,7 @@ using .AbundanceMatch: AbundanceTable, build_abundance_table,
     abundance_match, save_abundance_table, load_abundance_table
 using .Pipeline: run_tile
 using .MultiTile: run_multitile, run_multitile_lowmem, extract_tile, tile_center
-using .MultiResolution: run_multitile_split, compare_fields_split
+using .MultiResolution: run_multitile_split, compare_fields_split, run_multitile_fieldmap
 using .ShellAnalysisGPU: ShellTables, build_shell_tables, analyse_peak_gpu
 
 # MPI extension stub — method defined in ext/MPIExt.jl when MPI+PencilFFTs are loaded
@@ -192,7 +192,7 @@ function kernel_strain_gpu end
                           peaks_i, peaks_j, peaks_k, stab,
                           collapse_table_vals, X1, X2, Y1, Y2, Z1, Z2,
                           alatt, ir2min, ZZon, Rfclvi;
-                          fcrit_override=nothing, growth_tables=nothing,
+                          fcrit_override=nothing, ct=nothing,
                           rmax2rs=0.0, lapd=nothing, mask=nothing, nbuff=0,
                           threads=128, ct_out_val=-1.0)
         -> NamedTuple with Matrix{Float32} fields per-peak
@@ -233,7 +233,7 @@ function analyse_peak_gpu_cuda end
                                     batches, stab, ct_table,
                                     X1, X2, Y1, Y2, Z1, Z2, alatt, ZZon;
                                     lapd=nothing, mask=nothing, nbuff=0,
-                                    growth_tables=nothing, rmax2rs=0.0,
+                                    ct=nothing, rmax2rs=0.0,
                                     fcrit_override=nothing, threads=128,
                                     ct_out_val=-1.0)
         -> (results::Vector{NamedTuple}, mask::Union{Array{Int8,3},Nothing})
@@ -377,6 +377,20 @@ Defined in `ext/CUDAExt.jl` — requires `using CUDA`.
 """
 function set_cuda_device! end
 
+"""
+    paint_tile_field_gpu!(maps_d, p1x, p1y, p1z, p2x, p2y, p2z, rt_d, geometry...)
+
+Device-side field-matter painting of one tile (Phase B of docs/field_lightcone_plan.md):
+on-device 2LPT displacement + HEALPix RING pixelization + atomic accumulation into a
+device-resident (npix × nk) Float64 map. Method defined in ext/CUDAExt.jl.
+"""
+function paint_tile_field_gpu! end
+
+"Allocate device maps + radial table for GPU field painting. Method in ext/CUDAExt.jl."
+function fieldmap_gpu_alloc end
+"Download device field maps to a host Matrix. Method in ext/CUDAExt.jl."
+function fieldmap_gpu_collect end
+
 export
     CosmologyParams, E2, H, chi, growth_factor, growth_rate, delta_c,
     DlinearTables, Dlinear_tables, Dlinear_ab, Dfnofa,
@@ -393,13 +407,13 @@ export
     ShellCell, PeakGrid, PeakResult,
     hRinteg, atab4, precompute_shells, analyse_peak, normalize_strain!, normalize_strain,
     fsc_of_z, get_evals, reset_dump_counters!, get_dump_counts,
-    PipelineConfig, FortranParams, read_params_bin, write_params_bin,
+    PipelineConfig, FortranParams, read_params_bin, write_params_bin, grid_layout,
     HaloRecord, ExtHaloRecord, write_pksc, read_pksc,
     EllipsoidParams, evolve_ellipse_full, get_b_2,
     CollapseTableParams, CollapseTableInterp,
     make_table, make_table_threaded,
     write_homeltab, read_homeltab, interpolate,
-    sphere_overlap, merge_catalog,
+    sphere_overlap, merge_catalog, finalize_eulerian,
     rho_mean, R_of_M, M_of_R, sigma_R, sigma_M,
     dlnsigma_dlnM, tinker_dndlnM, sheth_tormen_dndlnM,
     cumulative_ngtm, precompute_sigma,
@@ -407,7 +421,7 @@ export
     abundance_match, save_abundance_table, load_abundance_table,
     run_tile,
     run_multitile, run_multitile_lowmem, extract_tile, tile_center,
-    run_multitile_split, compare_fields_split,
+    run_multitile_split, compare_fields_split, run_multitile_fieldmap,
     run_multitile_mpi,
     write_catalog_hdf5,
     shell_fbar_gather_gpu,

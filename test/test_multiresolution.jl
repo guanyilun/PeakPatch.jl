@@ -168,4 +168,28 @@ end
     rm(tmpdir; recursive=true)
 end
 
+@testset "Splice compensation D/T" begin
+    # Coarse factor Π D(k)/T(k) (MultiResolution._splice_compensation): unity at k=0, even,
+    # bounded, and equal to an independent evaluation of the block-average transfer D and the
+    # Catmull-Rom transfer T (the model that reproduces the measured split/exact P(k)
+    # bump, validation/tiling/). With the factor, 1 + D(T·(D/T) − D) = 1 at low k.
+    MR = PeakPatch.MultiResolution
+    for (M, b) in ((64, 12), (96, 8), (40, 6))
+        c = MR._splice_compensation(M, b)
+        @test c[1] ≈ 1.0 atol=1e-7
+        @test all(j -> c[j+1] ≈ c[M-j+1], 1:M-1)
+        @test all(x -> 0.5 < x < 1.5, c)
+        cr(t) = (-0.5t^3 + t^2 - 0.5t, 1.5t^3 - 2.5t^2 + 1, -1.5t^3 + 2t^2 + 0.5t, 0.5t^3 - 0.5t^2)
+        for j in (1, 3, M ÷ 4)
+            θ = 2π * j / (M * b)
+            D = sin(b * θ / 2) / (b * sin(θ / 2))
+            T = sum(sum(w * cos(b * θ * ((s + 0.5) / b + 0.5 - (floor((s + 0.5) / b + 0.5) + d)))
+                        for (d, w) in zip(-1:2, cr((s + 0.5) / b + 0.5 - floor((s + 0.5) / b + 0.5))))
+                    for s in 0:b-1) / b
+            @test c[j+1] ≈ D / T rtol=1e-5
+            @test 1 + D * (T * c[j+1] - D) ≈ 1 atol=1e-5
+        end
+    end
+end
+
 println("\nAll multi-resolution tests completed.")

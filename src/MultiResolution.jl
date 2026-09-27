@@ -22,7 +22,7 @@ using ..Filters: smooth_field, gaussian_window_fortran, tophat_window, read_filt
 using ..PeakFind: PeakCandidate, find_peaks
 using ..RadialShell: PeakGrid, precompute_shells, analyse_peak, fsc_of_z
 using ..ShellAnalysisGPU: build_shell_tables
-using ..Parameters: PipelineConfig
+using ..Parameters: PipelineConfig, grid_layout
 using ..Catalog: HaloRecord, ExtHaloRecord
 using ..CollapseTable: CollapseTableInterp, read_homeltab
 using ..MultiTile: tile_center, extract_tile
@@ -282,9 +282,45 @@ function _isolated_convolve(noise::Array{Float32,3}, pk, boxsize_local::Float64,
     return result[s1:s2, s1:s2, s1:s2]
 end
 
-"""Apply √P(k) convolution on a (small) periodic grid. Standard approach."""
+"""
+    _splice_compensation(M, block) -> Vector{Float64}
+
+Per-axis coarse-kernel factor D(k)/T(k) on the M-point coarse grid (fftfreq order;
+even in k). The tile field is interp_CR(coarse) + K*(n − spread_pc(block mean)); below
+the coarse Nyquist that equals K*n·[1 + D(T − D)] per axis product, with
+  D(θ) = sin(bθ/2)/(b sin(θ/2))   block-average (cell-centred) transfer, θ = k·dx_fine,
+  T(θ) = ⟨Σ_d w_d(t) e^{-ibθ(f−i−d)}⟩_fine   Catmull-Rom interpolation transfer
+         projected on the fine-grid mode (average over the b fine sub-positions).
+Multiplying the coarse kernels by Π D/T makes the stitched field exact there; the
+uncompensated split has P_split/P_exact = 1.02, 1.04, 1.09, 1.11 at 0.16, 0.24, 0.39,
+0.62 k_Nyq,coarse (measured and predicted, validation/tiling/). Aliased images above the
+coarse Nyquist are not diagonal in k and are unaffected.
+"""
+function _splice_compensation(M::Int, block::Int)
+    b = block
+    c = zeros(Float64, M)
+    for j in 0:M-1
+        js = j <= M ÷ 2 ? j : j - M                      # signed coarse wavenumber index
+        θ = 2π * js / (M * b)                             # k · dx_fine
+        D = js == 0 ? 1.0 : sin(b * θ / 2) / (b * sin(θ / 2))
+        T = 0.0 + 0.0im
+        for s in 0:b-1
+            f = (s + 0.5) / b + 0.5; i = floor(Int, f); t = f - i
+            w = _catmull_rom(Float32(t))
+            for (d, wd) in zip(-1:2, w)
+                T += Float64(wd) * cis(-b * θ * (f - (i + d)))
+            end
+        end
+        T /= b
+        c[j+1] = clamp(D / real(T), 0.0, 2.0)
+    end
+    c
+end
+
+"""Apply √P(k) convolution on a (small) periodic grid. Standard approach.
+`comp` (optional per-axis vector from `_splice_compensation`) multiplies by Π comp."""
 function _periodic_convolve!(noise_k, pk, n::Int, boxsize::Float64;
-                              kernel_fn=nothing)
+                              kernel_fn=nothing, comp=nothing)
     dk = 2π / boxsize
     kx_arr = FFTW.rfftfreq(n, n * dk)
     ky_arr = FFTW.fftfreq(n, n * dk)
@@ -299,6 +335,7 @@ function _periodic_convolve!(noise_k, pk, n::Int, boxsize::Float64;
         end
         k = sqrt(k2)
         amp = sqrt(pk(k) * dk^3 * n^3)
+        comp !== nothing && (amp *= comp[ix] * comp[iy] * comp[iz])
         if kernel_fn !== nothing
             noise_k[ix, iy, iz] *= amp * kernel_fn(kx, ky, kz, k2)
         else
@@ -326,6 +363,9 @@ end
 
 _kernel_laplacian() = (kx, ky, kz, k2) -> k2
 
+# Inverse Laplacian ∇⁻²δ (potential up to the Poisson prefactor): pot(k) = -δ(k)/k²
+_kernel_pot() = (kx, ky, kz, k2) -> -1 / k2
+
 # ============================================================
 # GPU dispatch helper
 # ============================================================
@@ -341,7 +381,7 @@ Shared entry point used by `run_multitile_split`. Calls the CPU
 `_isolated_convolve` or the GPU `isolated_convolve_gpu` based on `use_gpu`.
 `kernel_id` matches the CUDA kernel IDs:
   0=δ, 1=1LPT (uses `dim1`), 2=2LPT (uses `dim1`),
-  3=φ_ij (uses `dim1`, `dim2`), 4=Laplacian.
+  3=φ_ij (uses `dim1`, `dim2`), 4=Laplacian, 5=∇⁻² (potential).
 """
 function _isolated_convolve_dispatch(use_gpu::Bool, noise::Array{Float32,3}, pk,
                                       boxsize::Float64, n::Int,
@@ -357,6 +397,7 @@ function _isolated_convolve_dispatch(use_gpu::Bool, noise::Array{Float32,3}, pk,
          kernel_id == 2 ? _kernel_2lpt(dim1) :
          kernel_id == 3 ? _kernel_phi_ij(dim1, dim2) :
          kernel_id == 4 ? _kernel_laplacian() :
+         kernel_id == 5 ? _kernel_pot() :
          error("bad kernel_id $kernel_id")
     return _isolated_convolve(noise, pk, boxsize, n; kernel_fn=kf, nshell=nshell)
 end
@@ -364,7 +405,7 @@ end
 """
     _gpu_analyse_peaks_batch(delta_tile, psi_tile, psi2_tile, lapd_tile, mask,
                              peaks, Rf_per_peak, stab_gpu, ct_table_gpu,
-                             ct_params, alatt, ZZon, nbuff, rmax2rs, growth_tables)
+                             ct_params, alatt, ZZon, nbuff, rmax2rs, ct)
 
 Batched GPU shell analysis: groups peaks by filter scale Rf (so `ir2min`,
 `Rfclvi` are uniform per batch) and invokes `analyse_peak_gpu_cuda` once per
@@ -380,7 +421,7 @@ function _gpu_analyse_peaks_batch(delta_tile,
                                     stab_gpu, ct_table_gpu,
                                     ct_params, alatt::Float64,
                                     ZZon::Float64, nbuff::Int,
-                                    rmax2rs::Float64, growth_tables;
+                                    rmax2rs::Float64, ct;
                                     ZZon_pp::Union{Nothing,AbstractVector}=nothing,
                                     fcrit_pp::Union{Nothing,AbstractVector}=nothing)
     npeaks = length(peaks)
@@ -458,7 +499,7 @@ function _gpu_analyse_peaks_batch(delta_tile,
         ct_params.Y1, ct_params.Y2,
         ct_params.Z1, ct_params.Z2,
         alatt, ZZon;
-        growth_tables=growth_tables, rmax2rs=rmax2rs,
+        ct=ct, rmax2rs=rmax2rs,
         lapd=lapd_tile, mask=mask, nbuff=nbuff)
 
     # Scatter results back to per-peak slots
@@ -498,6 +539,26 @@ end
 # ============================================================
 # Main pipeline
 # ============================================================
+
+"""
+Warn when a lightcone observer sits outside the region covered by tile cores. With the
+legacy layout (`periodic_cores=false`) the cores span ±ntile·nsub·a/2 while the periodic
+box is 2nbuff cells wider, so a box-corner observer sees an unsimulated slab of
+thickness (|obs| − ntile·nsub·a/2) next to each octant plane.
+"""
+function _warn_if_observer_outside_cores(cfg::PipelineConfig, ntile, nsub, nmesh)
+    cfg.ievol == 1 || return nothing
+    alatt = cfg.boxsize / nmesh
+    H = ntile * nsub * alatt / 2
+    gap = maximum(abs.((cfg.cenx, cfg.ceny, cfg.cenz))) - H
+    if gap > 0.01 * alatt                        # ignore config rounding (≪ one cell)
+        @warn "lightcone observer lies $(round(gap; digits=2)) Mpc/h outside the tile-core " *
+              "region (±$(round(H; digits=1)) Mpc/h): that slab next to each octant plane is " *
+              "never simulated. Set [grid] periodic_cores = true (N = nsub*ntile) for " *
+              "corner-observer lightcones." maxlog=1
+    end
+    nothing
+end
 
 """
     run_multitile_split(cfg; ntile, seed, verbose, coarse_factor=4)
@@ -546,8 +607,8 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     # ---- Geometry ----
     nmesh = cfg.n
     nbuff = cfg.nbuff
-    nsub = nmesh - 2 * nbuff
-    N = nsub * ntile + 2 * nbuff
+    nsub, N = grid_layout(cfg, ntile)
+    _warn_if_observer_outside_cores(cfg, ntile, nsub, nmesh)
     alatt = cfg.boxsize / nmesh
     boxsize_full = N * alatt
     dcore_box = nsub * alatt
@@ -563,7 +624,7 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     z_out = cfg.z_out
     a_out = 1.0 / (1.0 + z_out)
     ZZon = 1.0 + z_out
-    fcrit = Float32(fsc_of_z(z_out, growth_tables))
+    fcrit = Float32(fsc_of_z(z_out, ct))
     _, _, D_out = Dlinear_ab(a_out, growth_tables)
     Rfclmax = filters[1][3]
     nhunt = min(nbuff - 1, floor(Int, Rfclmax * 1.75 / alatt))
@@ -618,16 +679,20 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     coarse_noise = _downsample_noise(N, M, seed)
     coarse_k = rfft(coarse_noise)
 
+    # splice compensation for every coarse field that is interpolated into the tiles
+    comp = cfg.coarse_compensation ? _splice_compensation(M, block) : nothing
+    verbose && comp !== nothing && @info "coarse splice compensation D/T on" block
+
     # δ_coarse: convolve coarse noise with full T(k)
     delta_coarse_k = copy(coarse_k)
-    _periodic_convolve!(delta_coarse_k, pk, M, boxsize_full)
+    _periodic_convolve!(delta_coarse_k, pk, M, boxsize_full; comp=comp)
     delta_coarse = irfft(delta_coarse_k, M)
 
     # ψ_coarse: 1LPT displacements on coarse grid
     psi_coarse = Vector{Array{Float32,3}}(undef, 3)
     for dim in 1:3
         psi_k = copy(coarse_k)
-        _periodic_convolve!(psi_k, pk, M, boxsize_full; kernel_fn=_kernel_1lpt(dim))
+        _periodic_convolve!(psi_k, pk, M, boxsize_full; kernel_fn=_kernel_1lpt(dim), comp=comp)
         psi_coarse[dim] = irfft(psi_k, M)
     end
 
@@ -662,7 +727,7 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     lapd_coarse = nothing
     if ioutshear >= 1
         lapd_k = copy(coarse_k)
-        _periodic_convolve!(lapd_k, pk, M, boxsize_full; kernel_fn=_kernel_laplacian())
+        _periodic_convolve!(lapd_k, pk, M, boxsize_full; kernel_fn=_kernel_laplacian(), comp=comp)
         lapd_coarse = irfft(lapd_k, M)
     end
 
@@ -716,11 +781,11 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
     # state; writes go into `local_halos_basic[wid]` / `local_halos_ext[wid]`
     # / `local_timings[wid]`. Safe for concurrent invocation across workers
     # as long as each worker uses its own `wid`.
-    process_tile! = function (wid::Int, ti::Int, tid::NTuple{3,Int})
+    process_tile! = function (wid::Int, ti::Int, tid::NTuple{3,Int},
+                              halos_basic::Vector{HaloRecord},
+                              halos_ext::Vector{ExtHaloRecord},
+                              timings::Dict{String,Float64})
         it, jt, kt = tid
-        halos_basic = local_halos_basic[wid]
-        halos_ext   = local_halos_ext[wid]
-        timings     = local_timings[wid]
         _tic()  = profile ? time() : 0.0
         _toc!(key::String, t0::Float64) = profile ? (timings[key] += time() - t0) : nothing
 
@@ -813,12 +878,12 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                 src2_local .+= delta_tile .^ 2 .* 0.5f0
                 for d in 1:3
                     phi_k = copy(delta_tile_k)
-                    _apply_kernel_inplace!(phi_k, nmesh, boxsize_local, _kernel_phi_ij(d, d))
+                    _apply_kernel_inplace!(phi_k, nmesh, boxsize_local, _kernel_phi_ij(d, d); zero_nyquist=false)
                     src2_local .-= irfft(phi_k, nmesh) .^ 2 .* 0.5f0
                 end
                 for (di, dj) in ((1,2), (1,3), (2,3))
                     phi_k = copy(delta_tile_k)
-                    _apply_kernel_inplace!(phi_k, nmesh, boxsize_local, _kernel_phi_ij(di, dj))
+                    _apply_kernel_inplace!(phi_k, nmesh, boxsize_local, _kernel_phi_ij(di, dj); zero_nyquist=false)
                     src2_local .-= irfft(phi_k, nmesh) .^ 2
                 end
                 src2_local_k = rfft(src2_local)
@@ -863,15 +928,10 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
         tile_d2Rf   = Float32[]
 
         xbx, ybx, zbx = tile_center(it, jt, kt, ntile, dcore_box)
-        # Per-filter fcrit (ievol=1 depends on tile position; ievol=0 constant)
+        # Peak finding uses constant fcrit = fsc_of_z(z_out), matching Fortran.
+        # Per-peak redshift is applied later in shell analysis only.
         fcrits_per_filter = Vector{Float32}(undef, length(filters))
-        if ievol == 1
-            z_tile = peak_redshift(obs[1], obs[2], obs[3], xbx, ybx, zbx, chi2z)
-            fcrit_tile = Float32(fsc_of_z(z_tile, growth_tables))
-            fill!(fcrits_per_filter, fcrit_tile)
-        else
-            fill!(fcrits_per_filter, fcrit)
-        end
+        fill!(fcrits_per_filter, fcrit)
 
         if use_gpu
             fn = getglobal(_pp_parent(), :peak_find_tile_gpu)
@@ -966,7 +1026,7 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                     z_pk = peak_redshift(obs[1], obs[2], obs[3], p.x, p.y, p.z, chi2z)
                     z_pk_tile[idx]     = z_pk
                     ZZon_pp_full[idx]  = Float32(1.0 + z_pk)
-                    fcrit_pp_full[idx] = Float32(fsc_of_z(z_pk, growth_tables))
+                    fcrit_pp_full[idx] = Float32(fsc_of_z(z_pk, ct))
                 end
                 keep = findall(z -> z <= z_max, z_pk_tile)
                 if length(keep) < npk0
@@ -1004,7 +1064,7 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                 tile_masks,
                 tile_peaks, tile_Rf,
                 stab_gpu, ct_table_gpu, ct_params,
-                alatt, ZZon, nbuff, cfg.rmax2rs, growth_tables;
+                alatt, ZZon, nbuff, cfg.rmax2rs, ct;
                 ZZon_pp=ZZon_pp_tile, fcrit_pp=fcrit_pp_tile)
             _toc!("09_shell_analysis", t0)
 
@@ -1029,11 +1089,6 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             # vectors to `npks` so `push!` doesn't keep re-growing.
             r = gpu_res
             npks = length(tile_peaks)
-            if ioutshear >= 1
-                sizehint!(halos_ext, length(halos_ext) + npks)
-            else
-                sizehint!(halos_basic, length(halos_basic) + npks)
-            end
             coef2_base = -3.0/7.0          # 2LPT: coef = coef2_base * Om_a^(-1/143) * D_pk^2
             @inbounds for idx in 1:npks
                 r.RTHL[idx] <= 0 && continue
@@ -1049,7 +1104,7 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                 end
 
                 a_pk = 1.0 / ZZon_pk
-                _, _, D_pk = Dlinear_ab(a_pk, growth_tables)
+                D_pk, _, _ = Dlinear_ab(a_pk, growth_tables)   # 1st return = D; was D/a (3rd) — bug (same fix as MultiTile.jl)
                 D_pk_f32 = Float32(D_pk)
                 RTHL_phys = Float32(Float64(r.RTHL[idx]) * alatt)
 
@@ -1060,7 +1115,7 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                 Sbar2_1 = 0.0f0; Sbar2_2 = 0.0f0; Sbar2_3 = 0.0f0
                 if ilpt >= 2
                     Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
-                    coef = Float32(-(coef2_base * Om_a^(-1.0/143) * D_pk^2))
+                    coef = Float32(coef2_base * Om_a^(-1.0/143) * D_pk^2)   # -3/7 matches Fortran; was +3/7 (sign bug)
                     Sbar2_1 = r.Sbar2[1, idx] * coef
                     Sbar2_2 = r.Sbar2[2, idx] * coef
                     Sbar2_3 = r.Sbar2[3, idx] * coef
@@ -1109,27 +1164,25 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                 result = if profile
                     ts = time()
                     r = analyse_peak(pg, peak.ipp, alatt, ir2min, ZZon_pk, Rf, ct, shells;
-                                      nbuff=nbuff, growth_tables=growth_tables,
-                                      rmax2rs=cfg.rmax2rs)
+                                      nbuff=nbuff, rmax2rs=cfg.rmax2rs)
                     shell_cpu_time += time() - ts
                     r
                 else
                     analyse_peak(pg, peak.ipp, alatt, ir2min, ZZon_pk, Rf, ct, shells;
-                                  nbuff=nbuff, growth_tables=growth_tables,
-                                  rmax2rs=cfg.rmax2rs)
+                                  nbuff=nbuff, rmax2rs=cfg.rmax2rs)
                 end
 
                 result.RTHL <= 0 && continue
 
                 a_pk = 1.0 / ZZon_pk
-                _, _, D_pk = Dlinear_ab(a_pk, growth_tables)
+                D_pk, _, _ = Dlinear_ab(a_pk, growth_tables)   # 1st return = D; was D/a (3rd) — bug (same fix as MultiTile.jl)
                 RTHL_phys = Float32(result.RTHL * alatt)
                 Sbar_vel = result.Sbar .* D_pk
 
                 Sbar2_vel = zeros(3)
                 if ilpt >= 2
                     Om_a = Omnr * a_pk^3 / (Omnr * a_pk^3 + cosmo.OL)
-                    Sbar2_vel = -result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)
+                    Sbar2_vel = result.Sbar2 .* (-3.0/7.0 * Om_a^(-1.0/143) * D_pk^2)   # -3/7 matches Fortran; was +3/7 (sign bug)
                 end
 
                 if ioutshear >= 1
@@ -1184,26 +1237,37 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
         # Round-robin partition of tile_ids across workers (load-balance by
         # interleaving; small tiles won't cluster on one worker).
         wid_of = Int[mod1(i, n_workers) for i in 1:length(tile_ids)]
+        # Each task owns its output arrays (Julia 1.12 ConcurrencyViolationError
+        # prevents mutating parent-task arrays from spawned tasks).
+        worker_results = Vector{Any}(undef, n_workers)
         tasks = Task[]
         for wid in 1:n_workers
             my_indices = [i for i in 1:length(tile_ids) if wid_of[i] == wid]
             my_device  = devices[wid]
             t = Threads.@spawn begin
-                # Bind this task to its assigned CUDA device via the
-                # CUDAExt-provided stub (avoids importing CUDA into
-                # PeakPatch.jl core).
                 set_dev = getglobal(_pp_parent(), :set_cuda_device!)
                 set_dev(my_device)
+                # Create task-local accumulators so Julia 1.12 task ownership is respected
+                my_halos_basic = HaloRecord[]
+                my_halos_ext   = ExtHaloRecord[]
+                my_timings     = _new_timing_dict()
                 for idx in my_indices
-                    process_tile!(wid, idx, tile_ids[idx])
+                    process_tile!(wid, idx, tile_ids[idx], my_halos_basic, my_halos_ext, my_timings)
                 end
+                worker_results[wid] = (my_halos_basic, my_halos_ext, my_timings)
             end
             push!(tasks, t)
         end
         foreach(wait, tasks)
+        # Collect per-worker results into the shared vectors
+        for wid in 1:n_workers
+            local_halos_basic[wid] = worker_results[wid][1]
+            local_halos_ext[wid]   = worker_results[wid][2]
+            local_timings[wid]     = worker_results[wid][3]
+        end
     else
         for (ti, tid) in enumerate(tile_ids)
-            process_tile!(1, ti, tid)
+            process_tile!(1, ti, tid, local_halos_basic[1], local_halos_ext[1], local_timings[1])
         end
     end
 
@@ -1236,7 +1300,10 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
 end
 
 """Apply a k-space kernel to an existing k-space array (no P(k), just the kernel)."""
-function _apply_kernel_inplace!(arr_k, n::Int, boxsize::Float64, kernel_fn)
+# zero_nyquist=false for φ_ij: the tile-local 2LPT trace identity uses the un-zeroed δ, so
+# φ_ij must zero only k=0 (serial convention; validation/NOTES_2LPT_NYQUIST_2026-09-24.md).
+function _apply_kernel_inplace!(arr_k, n::Int, boxsize::Float64, kernel_fn;
+                                zero_nyquist::Bool=true)
     dk = 2π / boxsize
     kx_arr = Float64.(FFTW.rfftfreq(n, n * dk))
     ky_arr = Float64.(FFTW.fftfreq(n, n * dk))
@@ -1246,7 +1313,7 @@ function _apply_kernel_inplace!(arr_k, n::Int, boxsize::Float64, kernel_fn)
     for iz in 1:n, iy in 1:n, ix in 1:nk
         kx = kx_arr[ix]; ky = ky_arr[iy]; kz = kz_arr[iz]
         k2 = kx^2 + ky^2 + kz^2
-        if k2 == 0.0 || ix == nk || iy == nyq + 1 || iz == nyq + 1
+        if k2 == 0.0 || (zero_nyquist && (ix == nk || iy == nyq + 1 || iz == nyq + 1))
             arr_k[ix, iy, iz] = 0
             continue
         end
@@ -1364,5 +1431,7 @@ function _rms_frac(a, b)
     rms_a = sqrt(sum(a .^ 2) / length(a))
     return rms_a > 0 ? rms_diff / rms_a : 0.0
 end
+
+include("FieldMap.jl")
 
 end # module MultiResolution
