@@ -864,17 +864,34 @@ function _shell_gather_full_kernel!(Fshell_out, nshell_out,
                                     peaks_i, peaks_j, peaks_k,
                                     off_di, off_dj, off_dk,
                                     shell_start, shell_count,
-                                    nshells::Int32, n1::Int32, n2::Int32, n3::Int32)
+                                    nshells::Int32, n1::Int32, n2::Int32, n3::Int32,
+                                    early::Int32, shell_r2, ir2min::Int32, fcrit_pp)
     peak_id = blockIdx().x
     tid = threadIdx().x
     bdim = blockDim().x
 
     sdata_f = CuDynamicSharedArray(Float32, 32)
     sdata_i = CuDynamicSharedArray(Int32, 32, 32 * sizeof(Float32))
+    stop_flag = CuDynamicSharedArray(Int32, 1, 32 * sizeof(Float32) + 32 * sizeof(Int32))
 
     @inbounds ci = peaks_i[peak_id]
     @inbounds cj = peaks_j[peak_id]
     @inbounds ck = peaks_k[peak_id]
+
+    # Early exit (early == 1): thread 1 replays _post_process_kernel!'s Fbar recurrence
+    # shell by shell (same reduced sums, same Float32 expression) and m0 logic. Once
+    # Fbar < fcrit·(1 − 1e-4) at some shell ≥ m0 (the first shell with r² > ir2min),
+    # no quantity post-processing uses depends on shells beyond crossing radius + 2
+    # (strain/gradient stencils are ±2 cells), so the gather stops at radius ≥ r_cross + 3.
+    # The threshold margin makes the detected crossing never earlier than the true one;
+    # unvisited shells keep their zero initialisation. Outputs are bit-identical.
+    if tid == _I1
+        @inbounds stop_flag[1] = _I0
+    end
+    ee_fcrit = early == _I1 ? (@inbounds fcrit_pp[peak_id]) * (1.0f0 - 1.0f-4) : 0.0f0
+    ee_Fbarp = 0.0f0; ee_dFbarp = 0.0f0; ee_radp = 0.0f0
+    ee_past_m0 = false; ee_rstop = 3.4f38
+    sync_threads()
 
     s = _I1
     while s <= nshells
@@ -985,12 +1002,39 @@ function _shell_gather_full_kernel!(Fshell_out, nshell_out,
             @inbounds SRshell_out[Int32(3), Int32(2), s, peak_id] = SRzy_tot
             @inbounds SRshell_out[Int32(3), Int32(3), s, peak_id] = SRzz_tot
             @inbounds lapdshell_out[s, peak_id] = lapd_tot
+            if early == _I1
+                dF = n_tot > _I0 ? F_tot / Float32(n_tot) : 0.0f0
+                if s == _I1
+                    ee_Fbarp = dF; ee_dFbarp = dF; ee_radp = 0.0f0
+                else
+                    @inbounds r2s = shell_r2[s]
+                    rad_s = sqrt(Float32(r2s))
+                    rad3p = ee_radp * ee_radp * ee_radp
+                    rad3 = rad_s * rad_s * rad_s
+                    Fbar_s = (rad3p * ee_Fbarp + 0.5f0 * (ee_dFbarp + dF) * (rad3 - rad3p)) / rad3
+                    ee_Fbarp = Fbar_s; ee_dFbarp = dF; ee_radp = rad_s
+                    if !ee_past_m0 && Float32(r2s) > Float32(ir2min)
+                        ee_past_m0 = true                       # this shell is m0
+                    end
+                    if ee_past_m0 && ee_rstop > 1.0f38 && Fbar_s < ee_fcrit
+                        ee_rstop = rad_s + 3.0f0                # crossing found
+                    end
+                    if rad_s >= ee_rstop
+                        @inbounds stop_flag[1] = _I1
+                    end
+                end
+            end
         end
         sync_threads()
+        @inbounds stop_flag[1] == _I1 && break
         s += _I1
     end
     return
 end
+
+# Shell early exit in the full gather (see _shell_gather_full_kernel!). Exact by
+# construction; PEAKPATCH_SHELL_EARLY_EXIT=0 disables it (A/B validation).
+const _SHELL_EARLY_EXIT = Ref(get(ENV, "PEAKPATCH_SHELL_EARLY_EXIT", "1") != "0")
 
 # Internal launcher: operates entirely on pre-allocated GPU arrays.
 # Exposed so `analyse_peak_gpu_cuda` can drive the gather without a
@@ -1004,11 +1048,15 @@ function _launch_shell_gather_full!(
         eta2x_d, eta2y_d, eta2z_d, lapd_d,
         pi_d, pj_d, pk_d,
         stab_d::ShellTablesGPU;
-        threads::Int=128)
+        threads::Int=128,
+        shell_r2_d=nothing, ir2min::Integer=0, fcrit_pp_d=nothing)
     npeaks  = length(pi_d)
     nshells = stab_d.nshells
     n1, n2, n3 = size(delta_d)
-    shmem = 32 * sizeof(Float32) + 32 * sizeof(Int32)
+    early = _SHELL_EARLY_EXIT[] && shell_r2_d !== nothing && fcrit_pp_d !== nothing
+    r2_arg = early ? shell_r2_d : CUDA.zeros(Int32, 1)
+    fc_arg = early ? fcrit_pp_d : CUDA.zeros(Float32, 1)
+    shmem = 32 * sizeof(Float32) + 32 * sizeof(Int32) + sizeof(Int32)
     @cuda threads=threads blocks=npeaks shmem=shmem _shell_gather_full_kernel!(
         Fshell_d, nshell_d, Sshell_d, S2shell_d, Gshell_d, Gfshell_d, SRshell_d,
         lapdshell_d,
@@ -1017,6 +1065,7 @@ function _launch_shell_gather_full!(
         stab_d.offsets_di, stab_d.offsets_dj, stab_d.offsets_dk,
         stab_d.shell_start, stab_d.shell_count,
         Int32(nshells), Int32(n1), Int32(n2), Int32(n3),
+        Int32(early), r2_arg, Int32(ir2min), fc_arg,
     )
     return nothing
 end
@@ -2392,11 +2441,19 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
             SRshell_d   = CUDA.zeros(Float32, 3, 3, nshells, npeaks)
             lapdshell_d = CUDA.zeros(Float32, nshells, npeaks)
 
+            ZZon_pp_d  = has_pp_b ? CuArray{Float32}(view(ZZon_pp_b_h, rng))  :
+                                    CUDA.fill(Float32(ZZon),  npeaks)
+            fcrit_pp_d = has_pp_b ? CuArray{Float32}(view(fcrit_pp_b_h, rng)) :
+                                    CUDA.fill(Float32(fcrit), npeaks)
+
             _launch_shell_gather_full!(
                 Fshell_d, nshell_d, Sshell_d, S2shell_d, Gshell_d, Gfshell_d, SRshell_d,
                 lapdshell_d,
                 delta_d, etax_d, etay_d, etaz_d, eta2x_d, eta2y_d, eta2z_d, lapd_d,
-                pi_d, pj_d, pk_d, stab_d; threads=threads)
+                pi_d, pj_d, pk_d, stab_d; threads=threads,
+                # early exit is exact only with the full shell range (rmax2rs == 0)
+                shell_r2_d=(rmax2rs > 0.0 ? nothing : shell_r2_d), ir2min=ir2min,
+                fcrit_pp_d=fcrit_pp_d)
 
             RTHL_d          = CUDA.zeros(Float32, npeaks)
             Fbarx_d         = CUDA.zeros(Float32, npeaks)
@@ -2412,11 +2469,6 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
             gradpkrf_d      = CUDA.zeros(Float32, 3, npeaks)
             d2F_d           = CUDA.zeros(Float32, npeaks)
             zvir_half_d     = CUDA.zeros(Float32, npeaks)
-
-            ZZon_pp_d  = has_pp_b ? CuArray{Float32}(view(ZZon_pp_b_h, rng))  :
-                                    CUDA.fill(Float32(ZZon),  npeaks)
-            fcrit_pp_d = has_pp_b ? CuArray{Float32}(view(fcrit_pp_b_h, rng)) :
-                                    CUDA.fill(Float32(fcrit), npeaks)
 
             @cuda threads=threads blocks=npeaks shmem=shmem_bytes _post_process_kernel!(
                 RTHL_d, Fbarx_d, e_v_d, p_v_d, strain_final_d, eigs_d,

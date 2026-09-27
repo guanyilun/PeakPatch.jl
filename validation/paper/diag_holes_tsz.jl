@@ -2,8 +2,9 @@
 # Diagnostics: (1) where are the exactly-zero pixels of the assembled field maps (octant
 # seams? near-observer holes?); (2) per-octant tSZ ours/ref C_ℓ ratios.
 include(joinpath(@__DIR__, "spectra.jl"))
-const F = "/home/yguan/projects/aip-aspuru-ab/yguan/websky/fullsky_prod"
-const FM = "/home/yguan/projects/aip-aspuru-ab/yguan/websky/fieldmaps_prod"
+const C = get(ENV, "CAMPAIGN", "prod")
+const F = "/home/yguan/projects/aip-aspuru-ab/yguan/websky/fullsky_$(C)"
+const FM = "/home/yguan/projects/aip-aspuru-ab/yguan/websky/fieldmaps_$(C)"
 const W = "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref"
 
 function holes(path)
@@ -15,8 +16,8 @@ function holes(path)
             basename(path), length(z), count(<(0.02), th), count(x -> 0.02 <= x < 0.1, th),
             count(x -> 0.1 <= x < 1, th), count(>=(1), th))
 end
-holes(joinpath(F, "kappa_field_prod_fullsky_nside4096.fits"))
-holes(joinpath(F, "isw_uK_prod_fullsky_nside4096.fits"))
+holes(joinpath(F, "kappa_field_$(C)_fullsky_nside4096.fits"))
+holes(joinpath(F, "isw_uK_$(C)_fullsky_nside4096.fits"))
 
 # seam profile: rms (and mean) of a map vs angular distance to the nearest octant plane
 function seam_profile(label, path; scale=1.0)
@@ -35,15 +36,19 @@ function seam_profile(label, path; scale=1.0)
     end
     println()
 end
-seam_profile("ours tSZ y", joinpath(F, "tsz_y_prod_fullsky_nside4096.fits"))
+seam_profile("ours tSZ y", joinpath(F, "tsz_y_$(C)_fullsky_nside4096.fits"))
 seam_profile("websky tsz_2048", joinpath(W, "tsz_2048.fits"))
-seam_profile("ours kSZ total uK", joinpath(F, "ksz_total_uK_prod_fullsky_nside4096.fits"))
+seam_profile("ours kSZ total uK", joinpath(F, "ksz_total_uK_$(C)_fullsky_nside4096.fits"))
 seam_profile("websky ksz", joinpath(W, "ksz.fits"))
 seam_profile("websky cib545", joinpath(W, "cib_nu0545.fits"))
-seam_profile("ours kappa_lt4.5", joinpath(F, "kappa_lt4.5_prod_fullsky_nside4096.fits"))
+seam_profile("ours isw uK", joinpath(F, "isw_uK_$(C)_fullsky_nside4096.fits"))
+seam_profile("websky isw uK", joinpath(W, "isw.fits"); scale=2.7255e6)
+seam_profile("ours cib545", joinpath(F, "cib_nu0545_wcut_$(C)_fullsky_nside4096.fits"))
+seam_profile("websky kap_lt4.5", joinpath(W, "kap_lt4.5.fits"))
+seam_profile("ours kappa_lt4.5", joinpath(F, "kappa_lt4.5_$(C)_fullsky_nside4096.fits"))
 
 # per-octant tSZ at Nside 2048
-mo = loadmap(joinpath(F, "tsz_y_prod_fullsky_nside4096.fits"); nside=2048)
+mo = loadmap(joinpath(F, "tsz_y_$(C)_fullsky_nside4096.fits"); nside=2048)
 mr = loadmap(joinpath(W, "tsz_2048.fits"))
 edges = [100, 200, 400, 800, 1600, 3200, 4097]
 S = octant_spectra(Dict("o" => mo, "r" => mr), [("o", "o"), ("r", "r")], 4096, edges)

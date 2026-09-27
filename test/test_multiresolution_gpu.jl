@@ -102,3 +102,22 @@ end
 
     rm(tmpdir; recursive=true)
 end
+
+@testset "GPU shell early exit is exact (2LPT, ioutshear=1)" begin
+    # The full gather stops each peak's shell walk 3 cells past its first Fbar < fcrit
+    # crossing (CUDAExt._shell_gather_full_kernel!). Post-processing never reads beyond
+    # crossing + 2 cells, so the catalog must be bit-identical with the exit disabled.
+    ext = Base.get_extension(PeakPatch, :CUDAExt)
+    tmpdir = mktempdir()
+    cfg = _make_config(tmpdir; n=68, boxsize=226.67, z=0.0, ilpt=2, nbuff=12, ioutshear=1)
+    run() = PeakPatch.run_multitile_split(cfg; ntile=2, seed=42, coarse_factor=4,
+                                          use_gpu=true, verbose=false)
+    old = ext._SHELL_EARLY_EXIT[]
+    ext._SHELL_EARLY_EXIT[] = false; h_off = run()
+    ext._SHELL_EARLY_EXIT[] = true;  h_on = run()
+    ext._SHELL_EARLY_EXIT[] = old
+    key(h) = ntuple(i -> getfield(h, i), fieldcount(typeof(h)))
+    @test !isempty(h_off)
+    @test isequal(sort(key.(h_off)), sort(key.(h_on)))   # isequal: NaN == NaN (gradrf can be NaN)
+    rm(tmpdir; recursive=true)
+end
