@@ -133,4 +133,33 @@ end
         am1 = abundance_match(halos, t1, COSMO; obs=(0.0, 0.0, 0.0))
         @test all(mass(a1) > mass(a8) for (a1, a8) in zip(am1, am))
     end
+
+    @testset "counts accumulated over parts = one catalog (full-sky assembly)" begin
+        Medge, zedge_t = am_grid(; nMbins=4000, z_min=zlo, z_max=zhi, nzbins=nz, Mmin=1e12, Mmax=1e16)
+        Npp = zeros(4000, nz); h = length(halos) ÷ 2
+        am_counts!(Npp, halos[1:h], COSMO; obs=(0.0, 0.0, 0.0), Medge, zedge=zedge_t)
+        am_counts!(Npp, halos[h+1:end], COSMO; obs=(0.0, 0.0, 0.0), Medge, zedge=zedge_t)
+        tp = build_abundance_table(Npp, COSMO, pk; hmf=:tinker, z_min=zlo, z_max=zhi,
+                                   Mmin=1e12, Mmax=1e16, fsky=1/8)
+        @test tp.M_target == table.M_target
+    end
+
+    @testset "tail_N freezes the correction factor above the tail" begin
+        tN = 20
+        tt = build_abundance_table(halos, COSMO, pk; hmf=:tinker, z_min=zlo, z_max=zhi, nzbins=nz,
+                                   nMbins=4000, Mmin=1e12, Mmax=1e16, obs=(0.0, 0.0, 0.0),
+                                   fsky=1/8, tail_N=tN)
+        amt = abundance_match(halos, tt, COSMO; obs=(0.0, 0.0, 0.0))
+        for ib in 1:nz
+            idx = findall(==(ib), binof)
+            Mraw = mass.(halos[idx]); Mt = mass.(amt[idx]); M0 = mass.(am[idx])
+            o = sortperm(Mraw; rev=true)
+            @test issorted(Mt[reverse(o)])                     # still rank-preserving
+            # top tN-1 halos: one common factor M_AM/M_raw (they no longer sit on N_target = rank)
+            f = Mt[o[1:tN-1]] ./ Mraw[o[1:tN-1]]
+            @test maximum(f) / minimum(f) ≈ 1 atol=2e-3
+            # below the tail the table is unchanged
+            @test Mt[o[3tN:end]] ≈ M0[o[3tN:end]] rtol=1e-6
+        end
+    end
 end

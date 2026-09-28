@@ -26,6 +26,43 @@ struct AbundanceTable
 end
 
 """
+    am_grid(; nMbins=10000, z_min=0.0, z_max=4.6, nzbins=46, Mmin=5e11, Mmax=1e16)
+
+Mass edges and redshift edges of the abundance-matching table.
+"""
+function am_grid(; nMbins::Int=10000, z_min::Real=0.0, z_max::Real=4.6, nzbins::Int=46,
+                 Mmin::Real=5e11, Mmax::Real=1e16)
+    Medge = 10.0 .^ range(log10(Mmin), log10(Mmax); length=nMbins+1)
+    zedge = collect(range(z_min, z_max; length=nzbins+1))
+    return Medge, zedge
+end
+
+"""
+    am_counts!(N_pp, halos, cosmo; obs, Medge, zedge, chi2z=nothing)
+
+Add the PeakPatch halo counts of `halos` (redshift from the distance to `obs`, Mpc/h) to the
+`nMbins × nzbins` histogram `N_pp` on the `am_grid` edges.
+"""
+function am_counts!(N_pp::AbstractMatrix, halos::AbstractVector, cosmo::CosmologyParams;
+                    obs::Tuple=(0.0, 0.0, 0.0), Medge, zedge, chi2z=nothing)
+    c2z = chi2z === nothing ? build_chi_to_z(cosmo; z_max=zedge[end] + 1.0) : chi2z
+    ρ_m = rho_mean(cosmo.Om)
+    nMbins, nzbins = size(N_pp)
+    for h in halos
+        M = (4π/3.0) * ρ_m * Float64(h.RTHL)^3
+        (M < Medge[1] || M >= Medge[end]) && continue
+        r = sqrt(Float64(h.x - obs[1])^2 + Float64(h.y - obs[2])^2 + Float64(h.z - obs[3])^2)
+        z = r > 0 ? chi_to_z(c2z, r) : 0.0
+        iM = searchsortedfirst(Medge, M) - 1
+        (iM < 1 || iM > nMbins) && continue
+        iz = searchsortedfirst(zedge, z) - 1
+        (iz < 1 || iz > nzbins) && continue
+        N_pp[iM, iz] += 1.0
+    end
+    return N_pp
+end
+
+"""
     build_abundance_table(halos, cosmo, pk;
         nMbins=10000, z_min=0.0, z_max=4.6, nzbins=46,
         Mmin=5e11, Mmax=1e16, hmf=:tinker,
@@ -45,40 +82,43 @@ Arguments:
 - `pk`: P(k) interpolator from load_pk
 - `hmf`: mass function to match (:tinker or :sheth_tormen)
 - `obs`: observer position (x,y,z) in Mpc/h for redshift from distance
+- `fsky`: sky fraction the counts cover (1/8 for one octant, 1 for a full-sky set)
+- `tail_N`: if > 0, above the mass where fewer than `tail_N` PeakPatch halos remain in a
+  z-bin, the fractional correction M_target/M_TH is frozen at its value there (the top
+  halos keep their raw rank-to-rank spacing, rescaled) instead of every rank mapping onto
+  N_target = rank. Rank matching pins each z-bin's rank-1 halo at M(N_target = 1) and so
+  removes the Poisson tail above it. `tail_N = 0` keeps pure rank matching.
+
+For a catalog split across several files/observers (e.g. the 8 octants of a full sky),
+accumulate the counts with [`am_counts!`](@ref) over each part, then call
+`build_abundance_table(N_pp, cosmo, pk; fsky=1.0, ...)` with the summed counts.
 """
 function build_abundance_table(halos::AbstractVector, cosmo::CosmologyParams, pk;
         nMbins::Int=10000, z_min::Real=0.0, z_max::Real=4.6, nzbins::Int=46,
         Mmin::Real=5e11, Mmax::Real=1e16, hmf::Symbol=:tinker,
         obs::Tuple=(0.0, 0.0, 0.0),
         fsky::Real=1.0,            # sky fraction of the catalog: 1.0 full-sky, 1/8 for one octant
-        nsub_integral::Int=10,
+        nsub_integral::Int=10, tail_N::Real=0,
         verbose::Bool=false)
+    nzbins >= 2 || throw(ArgumentError("build_abundance_table: nzbins=$nzbins; need ≥ 2 (the table is interpolated linearly in z)"))
+    Medge, zedge = am_grid(; nMbins, z_min, z_max, nzbins, Mmin, Mmax)
+    N_pp = am_counts!(zeros(nMbins, nzbins), halos, cosmo; obs, Medge, zedge)
+    return build_abundance_table(N_pp, cosmo, pk; z_min, z_max, Mmin, Mmax, hmf, fsky,
+                                 nsub_integral, tail_N, verbose)
+end
 
+function build_abundance_table(N_pp::AbstractMatrix, cosmo::CosmologyParams, pk;
+        z_min::Real=0.0, z_max::Real=4.6, Mmin::Real=5e11, Mmax::Real=1e16,
+        hmf::Symbol=:tinker, fsky::Real=1.0, nsub_integral::Int=10, tail_N::Real=0,
+        verbose::Bool=false)
+    nMbins, nzbins = size(N_pp)
     nzbins >= 2 || throw(ArgumentError("build_abundance_table: nzbins=$nzbins; need ≥ 2 (the table is interpolated linearly in z)"))
     Om = cosmo.Om
-
-    # ---- Mass bins (log-spaced) ----
-    Medge = 10.0 .^ range(log10(Mmin), log10(Mmax); length=nMbins+1)
+    Medge, zedge = am_grid(; nMbins, z_min, z_max, nzbins, Mmin, Mmax)
     Mcent = @. 10.0^((log10(Medge[1:end-1]) + log10(Medge[2:end])) / 2.0)
     dlnM = diff(log.(Medge))  # bin widths in ln(M)
-
-    # ---- Redshift bins ----
-    zedge = range(z_min, z_max; length=nzbins+1)
     zcent = [(zedge[i] + zedge[i+1]) / 2.0 for i in 1:nzbins]
-
-    # ---- Chi-to-z table for halo redshifts ----
     chi2z = build_chi_to_z(cosmo; z_max=z_max + 1.0)
-
-    # ---- Compute per-halo masses and redshifts ----
-    ρ_m = rho_mean(Om)
-    halo_M = Vector{Float64}(undef, length(halos))
-    halo_z = Vector{Float64}(undef, length(halos))
-
-    for (i, h) in enumerate(halos)
-        halo_M[i] = (4π/3.0) * ρ_m * Float64(h.RTHL)^3
-        r = sqrt(Float64(h.x - obs[1])^2 + Float64(h.y - obs[2])^2 + Float64(h.z - obs[3])^2)
-        halo_z[i] = r > 0 ? chi_to_z(chi2z, r) : 0.0
-    end
 
     # ---- Comoving distance edges for redshift bins ----
     redge = Vector{Float64}(undef, length(zedge))
@@ -100,24 +140,6 @@ function build_abundance_table(halos::AbstractVector, cosmo::CosmologyParams, pk
             end
             redge[i] = chi_val
         end
-    end
-
-    # ---- Bin PeakPatch halos by mass and redshift → N(>M|z) ----
-    N_pp = zeros(nMbins, nzbins)
-    for i in eachindex(halo_M)
-        M = halo_M[i]
-        z = halo_z[i]
-        (M < Mmin || M >= Mmax) && continue
-
-        # Find mass bin
-        iM = searchsortedfirst(Medge, M) - 1
-        (iM < 1 || iM > nMbins) && continue
-
-        # Find redshift bin
-        iz = searchsortedfirst(collect(zedge), z) - 1
-        (iz < 1 || iz > nzbins) && continue
-
-        N_pp[iM, iz] += 1.0
     end
 
     # Cumulative N(>M) per z-bin
@@ -216,6 +238,15 @@ function build_abundance_table(halos::AbstractVector, cosmo::CosmologyParams, pk
         # blend into the top halo's mass and rank it BELOW the next ones (found by
         # test_finalize_am.jl; affected the 1-2 most massive halos of each z-bin).
         itop > 0 && (M_target[itop+1:end, iz] .= M_target[itop, iz])
+        # Tail: above the last edge with ≥ tail_N PeakPatch halos, freeze the fractional
+        # correction instead (monotone in M, so the linear (log M, z) lookup keeps ranks).
+        if tail_N > 0
+            it = findlast(>=(tail_N), ngtm_pp)
+            if it !== nothing
+                f = M_target[it, iz] / Medge[it]
+                M_target[it+1:end, iz] .= f .* Medge[it+1:end-1]
+            end
+        end
     end
 
     # ---- Build 2D interpolator ----

@@ -53,7 +53,7 @@ using .Merger: merge_catalog, finalize_eulerian
 using .MassFunction: rho_mean, R_of_M, M_of_R, sigma_R, sigma_M,
     dlnsigma_dlnM, tinker_dndlnM, sheth_tormen_dndlnM,
     cumulative_ngtm, precompute_sigma
-using .AbundanceMatch: AbundanceTable, build_abundance_table,
+using .AbundanceMatch: AbundanceTable, build_abundance_table, am_grid, am_counts!,
     abundance_match, save_abundance_table, load_abundance_table
 using .Pipeline: run_tile
 using .MultiTile: run_multitile, run_multitile_lowmem, extract_tile, tile_center
@@ -417,7 +417,7 @@ export
     rho_mean, R_of_M, M_of_R, sigma_R, sigma_M,
     dlnsigma_dlnM, tinker_dndlnM, sheth_tormen_dndlnM,
     cumulative_ngtm, precompute_sigma,
-    AbundanceTable, build_abundance_table,
+    AbundanceTable, build_abundance_table, am_grid, am_counts!,
     abundance_match, save_abundance_table, load_abundance_table,
     run_tile,
     run_multitile, run_multitile_lowmem, extract_tile, tile_center,
