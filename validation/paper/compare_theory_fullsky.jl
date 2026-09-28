@@ -10,6 +10,8 @@ using DelimitedFiles
 const D = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"
 const W = "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref"
 const T = joinpath(@__DIR__, "..", "paper_theory", "results")
+const C = get(ENV, "CAMPAIGN", "v2")               # campaign under test; kSZ "before" column = frozen (v2) or v2 (v3)
+const CB = C == "v2" ? "prod" : C == "v3" ? "v2" : "v3"
 
 kl = readdlm(joinpath(T, "kappa_limber.txt"); comments=true)          # ell, lin..., halofit...
 kl_ell = kl[:, 1]; kl_lin45 = kl[:, 3]; kl_hf45 = kl[:, 6]
@@ -29,8 +31,8 @@ function measured(path; scale=1.0)
 end
 
 # ---- κ ----
-co, le, nm = measured(joinpath(D, "fullsky_v2", "kappa_lt4.5_v2_fullsky_nside4096.fits"))
-cf, _, _ = measured(joinpath(D, "fullsky_v2", "kappa_field_v2_fullsky_nside4096.fits"))
+co, le, nm = measured(joinpath(D, "fullsky_$(C)", "kappa_lt4.5_$(C)_fullsky_nside4096.fits"))
+cf, _, _ = measured(joinpath(D, "fullsky_$(C)", "kappa_field_$(C)_fullsky_nside4096.fits"))
 cw, _, _ = measured(joinpath(W, "kap_lt4.5.fits"))
 tlin = bin_theory(l -> interp(kl_ell, kl_lin45, l), edges)
 thf = bin_theory(l -> interp(kl_ell, kl_hf45, l), edges)
@@ -41,7 +43,7 @@ for b in eachindex(le)
     @printf("%-7.0f %-11.3f %-11.3f %-11.3f %-12.3f %-12.3f %-6.3f\n", le[b], co[b] / thf[b],
             cw[b] / thf[b], cf[b] / tlin[b], co[b] / cw[b], thf[b] / tlin[b], σ[b])
 end
-write_table(joinpath(@__DIR__, "results", "theory_v2_kappa.txt"),
+write_table(joinpath(@__DIR__, "results", "theory_$(C)_kappa.txt"),
             "ell_eff C_ours C_field_ours C_websky C_halofit_0-4.5 C_linear_0-4.5 (maps pixwin-deconvolved, Gaussian approx)",
             le, co, cf, cw, thf, tlin)
 
@@ -49,13 +51,13 @@ write_table(joinpath(@__DIR__, "results", "theory_v2_kappa.txt"),
 e2 = lbins(1000; lmin=20)
 edges = e2
 theo = bin_theory(l -> 2π / (l * (l + 1)) * (interp(dop[:, 1], dop[:, 4], l) + interp(ov[:, 1], ov[:, 2], l)), e2)
-cv2, le2, nm2 = measured(joinpath(D, "fullsky_v2", "ksz_field_uK_v2_fullsky_nside4096.fits"))
-cp, _, _ = measured(joinpath(D, "fullsky_prod", "ksz_field_uK_prod_fullsky_nside4096.fits"))
+cv2, le2, nm2 = measured(joinpath(D, "fullsky_$(C)", "ksz_field_uK_$(C)_fullsky_nside4096.fits"))
+cp, _, _ = measured(joinpath(D, "fullsky_$(CB)", "ksz_field_uK_$(CB)_fullsky_nside4096.fits"))
 @printf("\n== field kSZ vs linear (exact-LOS Doppler + OV), z<4.5\n")
-@printf("%-7s %-12s %-14s %-14s %-6s\n", "ell", "D_theory", "v2/theory", "frozen/theory", "σ")
+@printf("%-7s %-12s %-14s %-14s %-6s\n", "ell", "D_theory", "$(C)/theory", "$(CB)/theory", "σ")
 for b in eachindex(le2)
     @printf("%-7.0f %-12.4f %-14.3f %-14.3f %-6.3f\n", le2[b], theo[b] * le2[b] * (le2[b] + 1) / 2π,
             cv2[b] / theo[b], cp[b] / theo[b], sqrt(2 / nm2[b]))
 end
-write_table(joinpath(@__DIR__, "results", "theory_v2_ksz_field.txt"),
-            "ell_eff C_v2 C_frozen C_theory(Doppler_fullLOS+OV_lin) [uK^2]", le2, cv2, cp, theo)
+write_table(joinpath(@__DIR__, "results", "theory_$(C)_ksz_field.txt"),
+            "ell_eff C_$(C) C_$(CB) C_theory(Doppler_fullLOS+OV_lin) [uK^2]", le2, cv2, cp, theo)

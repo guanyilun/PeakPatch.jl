@@ -11,7 +11,9 @@ const Om = 0.31; const rho_m = 2.775e11 * Om
 pk = PeakPatch.PowerSpectrum.load_pk(joinpath(@__DIR__, "..", "websky_6144", "data", "pk_websky_RAW_unnormalized.dat"))
 chi2z = build_chi_to_z(COSMO; z_max=3.0)
 const D = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"
-const obs = -2618.0
+const OCT = get(ENV, "OCT", "000")
+# octZYX bit = 1 -> observer at +2618 on that axis
+const obsv = (OCT[3] == '1' ? 2618.0 : -2618.0, OCT[2] == '1' ? 2618.0 : -2618.0, OCT[1] == '1' ? 2618.0 : -2618.0)
 
 function tail(path; Mcut=3e14, zmax=1.0)
     out = Tuple{Float64,Float64}[]
@@ -25,7 +27,7 @@ function tail(path; Mcut=3e14, zmax=1.0)
                 b = (k - 1) * 33
                 M = 4 / 3 * π * rho_m * Float64(bf[b+7])^3
                 M > Mcut || continue
-                r = sqrt((bf[b+1] - obs)^2 + (bf[b+2] - obs)^2 + (bf[b+3] - obs)^2)
+                r = sqrt((bf[b+1] - obsv[1])^2 + (bf[b+2] - obsv[2])^2 + (bf[b+3] - obsv[3])^2)
                 z = chi_to_z(chi2z, r); z < zmax && push!(out, (M, z))
             end
             nd += m
@@ -34,8 +36,9 @@ function tail(path; Mcut=3e14, zmax=1.0)
     out
 end
 const TAG = get(ENV, "TAG", "v2")   # v2 (nbuff 16) | v3test (nbuff 25)
-raw = tail(joinpath(D, "catalog_websky_6144_$(TAG)_oct000.pksc"))
-am = tail(joinpath(D, "catalog_websky_6144_$(TAG)_oct000_AM.pksc"))
+const RAWD = TAG == "v3" ? "/home/yguan/scratch/websky_6144/catalogs_v3" : D   # v3 raw catalogs live on scratch
+raw = tail(joinpath(RAWD, "catalog_websky_6144_$(TAG)_oct$(OCT).pksc"))
+am = tail(joinpath(D, "catalog_websky_6144_$(TAG)_oct$(OCT)_AM.pksc"))
 
 Mg = 10 .^ range(12, 16; length=801); lnMg = log.(Mg); sg = precompute_sigma(Mg, pk, Om)
 function Ntinker(Mcut, za, zb)
@@ -54,7 +57,7 @@ function Ntinker(Mcut, za, zb)
     acc
 end
 cnt(v, M, za, zb) = count(t -> t[1] > M && za <= t[2] < zb, v)
-@printf("[%s] oct000 (1/8 sky), N(>M) in z bins: RAW | AM | Tinker expectation\n", TAG)
+@printf("[%s] oct%s (1/8 sky), N(>M) in z bins: RAW | AM | Tinker expectation\n", TAG, OCT)
 for (za, zb) in ((0.0, 0.25), (0.25, 0.5), (0.5, 1.0), (0.0, 1.0))
     for M in (3e14, 5e14, 1e15, 2e15)
         @printf("z %.2f-%.2f  M>%.0e: %6d | %6d | %8.2f\n", za, zb, M, cnt(raw, M, za, zb), cnt(am, M, za, zb), Ntinker(M, za, zb))
