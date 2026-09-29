@@ -167,70 +167,45 @@ function volume_reduction!(survived::Vector{Bool},
                            x::AbstractVector{<:Real}, y::AbstractVector{<:Real},
                            z::AbstractVector{<:Real}, r::AbstractVector{<:Real},
                            order::Vector{Int}, sh::SpatialHash)
-    nhalo = length(order)
+    # Fortran merge_pkvd 'shared' reduction (exclusion.f90:120-204): every surviving pair
+    # with d < r_i + r_j adds to EACH halo its own cap beyond the mid-plane (sphere_overlap),
+    # all overlaps are accumulated first, then r_new = (r³ − 3ΔV/4π)^(1/3).
+    # Each pair is visited once, from its larger member (`order` rank breaks radius ties;
+    # Fortran visits equal-radius pairs twice), so neighbours lie within 2 r_i.
+    rank = similar(order); rank[order] = eachindex(order)
     dV = zeros(Float64, length(r))
-
-    for rank in 1:nhalo
-        i = order[rank]
-        !survived[i] && continue
-
-        ri = Float64(r[i])
-        xi, yi, zi = Float64(x[i]), Float64(y[i]), Float64(z[i])
-
-        # Search radius: r_i + r_max_possible, but conservatively use 2*r_i
-        # (matches Fortran which uses 2*int(ri) cells)
-        search_r = ri + Float64(r[order[1]])  # ri + largest surviving radius
-        dcell = ceil(Int, search_r / sh.cell_size)
+    for i in order
+        survived[i] || continue
+        ri = Float64(r[i]); xi, yi, zi = Float64(x[i]), Float64(y[i]), Float64(z[i])
+        dcell = ceil(Int, 2ri / sh.cell_size)
         ci, cj, ck = _cell_idx(sh, xi, yi, zi)
-
         for diz in -dcell:dcell, diy in -dcell:dcell, dix in -dcell:dcell
-            jx = dix + ci
-            jy = diy + cj
-            jz = diz + ck
+            jx = dix + ci; jy = diy + cj; jz = diz + ck
             (jx < 1 || jx > sh.nc || jy < 1 || jy > sh.nc || jz < 1 || jz > sh.nc) && continue
-
             j = sh.hoc[jx, jy, jz]
             while j > 0
-                if j != i && survived[j]
+                if j != i && survived[j] && rank[j] > rank[i]        # j is the smaller of the pair
                     rj = Float64(r[j])
-                    dx = Float64(x[j]) - xi
-                    dy = Float64(y[j]) - yi
-                    dz = Float64(z[j]) - zi
-                    dist = sqrt(dx^2 + dy^2 + dz^2)
-
-                    if dist < ri + rj && dist > abs(ri - rj)
-                        v1, v2 = sphere_overlap(dist, ri, rj)
-                        # Only accumulate for the smaller halo to avoid
-                        # double-counting: each pair adds to the smaller one.
-                        # Following Fortran: process in order, accumulate both.
-                        dV[i] += v1
-                        dV[j] += v2
+                    d = sqrt((Float64(x[j]) - xi)^2 + (Float64(y[j]) - yi)^2 + (Float64(z[j]) - zi)^2)
+                    if d < ri + rj
+                        v1, v2 = sphere_overlap(d, ri, rj)
+                        dV[i] += v1; dV[j] += v2
                     end
                 end
                 j = sh.ll[j]
             end
         end
     end
-
-    # Correct for double-counting: each pair (i,j) was visited twice
-    # (once when processing i, once when processing j)
-    dV .*= 0.5
-
-    # Reduce radii
     new_r = copy(Vector{Float64}(r))
-    four_pi_thirds = 4.0 * π / 3.0
-    for i in 1:length(r)
-        !survived[i] && continue
-        vol_old = four_pi_thirds * Float64(r[i])^3
-        vol_new = vol_old - dV[i]
+    for i in eachindex(r)
+        survived[i] || continue
+        vol_new = 4π / 3 * Float64(r[i])^3 - dV[i]
         if vol_new <= 0.0
-            survived[i] = false
-            new_r[i] = 0.0
+            survived[i] = false; new_r[i] = 0.0          # Fortran: NaN radius (r³−ΔV<0), never flagged
         else
-            new_r[i] = (vol_new / four_pi_thirds)^(1.0/3.0)
+            new_r[i] = cbrt(vol_new * 3 / (4π))
         end
     end
-
     return new_r
 end
 

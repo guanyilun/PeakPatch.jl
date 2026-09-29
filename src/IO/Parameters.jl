@@ -44,6 +44,10 @@ Base.@kwdef struct PipelineConfig
     # Catmull-Rom transfer) so interpolated coarse + piecewise-constant residual reproduce
     # the exact field below the coarse Nyquist (validation/tiling/SPLICE_COMPENSATION_2026-09-26.md).
     coarse_compensation::Bool = false
+    # Lightcone peak-candidate threshold: false = fsc_of_z(z_out) everywhere (all catalogs up
+    # to v3fs); true = fsc_of_z(z_tile) with z_tile from the tile centre's distance to the
+    # observer, as Fortran hpkvd does for ievol=1 (hpkvd.f90:510-514, 612; peakvoidsubs.f90:82).
+    peak_threshold_per_tile::Bool = false
     ioutshear::Int = 0
     wsmooth::Int = 0
     rmax2rs::Float64 = 0.0
@@ -129,6 +133,7 @@ function PipelineConfig(config::Dict{String,Any})
         cenz     = Float64(get(grid, "cenz", 0.0)),
         ilpt      = Int(get(run, "ilpt", 2)),
         coarse_compensation = Bool(get(run, "coarse_compensation", false)),
+        peak_threshold_per_tile = Bool(get(run, "peak_threshold_per_tile", false)),
         ioutshear = Int(get(run, "ioutshear", 0)),
         wsmooth   = Int(get(run, "wsmooth", 0)),
         rmax2rs   = Float64(get(run, "rmax2rs", 0.0)),

@@ -49,6 +49,30 @@ using Random
         @test v1 < v2  # smaller sphere loses more fraction
     end
 
+    @testset "volume reduction (Fortran shared)" begin
+        mk(x, y, z, R) = HaloRecord(Float32(x), Float32(y), Float32(z), 0f0, 0f0, 0f0, Float32(R), 0f0, 0f0, 0f0, 0f0)
+        # two overlapping halos, centres outside each other: each loses its own cap
+        h = [mk(50, 50, 50, 3.0), mk(54, 50, 50, 2.0)]
+        v1, v2 = sphere_overlap(4.0, 3.0, 2.0)
+        m0 = merge_catalog(h); m1 = merge_catalog(h; volume_reduction=true)
+        @test [x.RTHL for x in m0] == Float32[3, 2]
+        @test sort([x.RTHL for x in m1]; rev=true) ≈ [cbrt(27 - 3v1 / 4π), cbrt(8 - 3v2 / 4π)] rtol=1e-5
+        # random set vs brute force: exclusion survivors, then all-pairs caps
+        rng = MersenneTwister(7)
+        hs = [mk(100rand(rng), 100rand(rng), 100rand(rng), 1 + 4rand(rng)) for _ in 1:600]
+        ex = merge_catalog(hs); red = merge_catalog(hs; volume_reduction=true)
+        dV = zeros(length(ex))
+        for a in eachindex(ex), b in a+1:length(ex)
+            p, q = ex[a], ex[b]; d = sqrt((p.x - q.x)^2 + (p.y - q.y)^2 + (p.z - q.z)^2)
+            d < p.RTHL + q.RTHL || continue
+            va, vb = sphere_overlap(Float64(d), Float64(p.RTHL), Float64(q.RTHL)); dV[a] += va; dV[b] += vb
+        end
+        want = Dict((e.x, e.y, e.z) => cbrt(Float64(e.RTHL)^3 - 3dV[k] / 4π) for (k, e) in enumerate(ex) if Float64(e.RTHL)^3 > 3dV[k] / 4π)
+        @test length(red) == length(want)
+        @test all(isapprox(Float64(e.RTHL), want[(e.x, e.y, e.z)]; rtol=1e-5) for e in red)
+        @test count(k -> dV[k] > 0, eachindex(dV)) > 50          # the case is non-trivial
+    end
+
     @testset "SpatialHash build and query" begin
         # 4 halos in a small box
         x = [1.0, 2.0, 1.1, 50.0]

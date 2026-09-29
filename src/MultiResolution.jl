@@ -13,7 +13,7 @@ using FFTW
 using Printf: @sprintf
 
 using ..Cosmology: CosmologyParams, Dlinear_tables, Dlinear_ab, chi, omega_m_a,
-    build_chi_to_z, peak_redshift
+    build_chi_to_z, chi_to_z, peak_redshift
 using ..PowerSpectrum: load_pk
 using ..RandomField: _threefry_gaussian, generate_grf, fill_noise_threefry!
 using ..LPT
@@ -928,10 +928,17 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
         tile_d2Rf   = Float32[]
 
         xbx, ybx, zbx = tile_center(it, jt, kt, ntile, dcore_box)
-        # Peak finding uses constant fcrit = fsc_of_z(z_out), matching Fortran.
-        # Per-peak redshift is applied later in shell analysis only.
+        # Peak-candidate threshold. Default: constant fcrit = fsc_of_z(z_out). Fortran hpkvd
+        # instead uses fsc_of_z(z_tile) on the lightcone, z_tile from the tile centre's
+        # distance (hpkvd.f90:510-514 -> get_pks, peakvoidsubs.f90:82); opt in with
+        # cfg.peak_threshold_per_tile. Per-peak redshift is applied in shell analysis either way.
         fcrits_per_filter = Vector{Float32}(undef, length(filters))
-        fill!(fcrits_per_filter, fcrit)
+        if ievol == 1 && cfg.peak_threshold_per_tile
+            r_tile = sqrt((xbx - obs[1])^2 + (ybx - obs[2])^2 + (zbx - obs[3])^2)
+            fill!(fcrits_per_filter, Float32(fsc_of_z(chi_to_z(chi2z, r_tile), ct)))
+        else
+            fill!(fcrits_per_filter, fcrit)
+        end
 
         if use_gpu
             fn = getglobal(_pp_parent(), :peak_find_tile_gpu)
