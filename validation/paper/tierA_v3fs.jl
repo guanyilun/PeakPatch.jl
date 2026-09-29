@@ -264,4 +264,6 @@ for (j, t) in enumerate(TK_M), iz in 1:length(TK_Z)-1
 end
 close(io); @info "wrote" OUT
 end
-main()
+if abspath(PROGRAM_FILE) == (@__FILE__)   # include()-able for the helpers (tierA_diag.jl)
+    main()
+end

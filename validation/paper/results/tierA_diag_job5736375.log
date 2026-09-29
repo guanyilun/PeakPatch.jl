@@ -1,0 +1,36 @@
+Node: kn083 commit: 0ab8b81 Start: Mon Sep 28 10:36:44 PM EDT 2026
+Websky patch: 2079516 halos; inscribed cap half-angle 5.004°, Ω = 0.02395 sr
+shell z=0.727 D=0.6891  <ξ_mm,lin>(6–18) = 0.1666  σ8 check 0.8101
+
+== D1 absolute bias b = sqrt(<ξ_hh>/<ξ_mm,lin>) over 6–18 Mpc/h, and Tinker10 b(M)
+M 5.0e+12-8.0e+12  n_W   9259  W    1.504 | ours    1.629 ± 0.0561   | W/ours 0.923  z  -2.2  | Tinker10 1.613  W/Tk 0.932  ours/Tk 1.010
+M 8.0e+12-1.3e+13  n_W   5634  W    1.808 | ours    1.829 ± 0.0667   | W/ours 0.989  z  -0.3  | Tinker10 1.824  W/Tk 0.991  ours/Tk 1.003
+M 1.3e+13-2.0e+13  n_W   2979  W    1.927 | ours    2.072 ± 0.0817   | W/ours 0.930  z  -1.8  | Tinker10 2.078  W/Tk 0.928  ours/Tk 0.997
+M 2.0e+13-3.2e+13  n_W   1753  W    2.368 | ours    2.328 ± 0.132    | W/ours 1.017  z  +0.3  | Tinker10 2.390  W/Tk 0.991  ours/Tk 0.974
+M 3.2e+13-7.9e+13  n_W   1367  W    2.678 | ours     2.82 ± 0.183    | W/ours 0.950  z  -0.8  | Tinker10 3.035  W/Tk 0.882  ours/Tk 0.929
+M 7.9e+13-2.5e+14  n_W    272  W    4.204 | ours    3.892 ± 0.43     | W/ours 1.080  z  +0.7  | Tinker10 4.604  W/Tk 0.913  ours/Tk 0.845
+
+== D2 close pairs per halo, M>5e12 (AM masses), in u = d/(R_i+R_j)
+u 0.00-0.25  W  0.06034 | ours    0.073 ± 0.00214  | W/ours 0.827  z  -5.9
+u 0.25-0.50  W   0.2796 | ours   0.3338 ± 0.00857  | W/ours 0.838  z  -6.3
+u 0.50-0.75  W   0.4098 | ours   0.4586 ± 0.0113   | W/ours 0.894  z  -4.3
+u 0.75-1.00  W   0.5864 | ours   0.6318 ± 0.0217   | W/ours 0.928  z  -2.1
+u 1.00-1.50  W    1.729 | ours    1.853 ± 0.0676   | W/ours 0.933  z  -1.8
+u 1.50-2.00  W    2.644 | ours     2.77 ± 0.099    | W/ours 0.954  z  -1.3
+u 2.00-3.00  W    8.864 | ours     9.09 ± 0.363    | W/ours 0.975  z  -0.6
+
+== D3 ξ(3–15 Mpc/h) and ξ(1–3), M>5e12, after a common post-hoc Eulerian exclusion (centre within f·R of a larger kept halo)
+f=0  kept W 1.0000 ours 1.0000  ξ(3–15): W    1.223 | ours    1.394 ± 0.0429   | W/ours 0.877  z  -4.0   ξ(1–3): W    5.829 | ours    7.369 ± 0.22     | W/ours 0.791  z  -7.0
+f=1  kept W 0.6863 ours 0.6558  ξ(3–15): W   0.6374 | ours   0.7139 ± 0.0368   | W/ours 0.893  z  -2.1   ξ(1–3): W  -0.6552 | ours  -0.7804 ± 0.0627   | W/ours 0.839  z  +2.0
+f=2  kept W 0.3604 ours 0.3458  ξ(3–15): W  -0.2809 | ours  -0.2847 ± 0.0237   | W/ours 0.986  z  +0.2   ξ(1–3): W  -0.9973 | ours   -1.019 ± 0.212    | W/ours 0.979  z  +0.1
+
+== D4 ours: same number of halos selected by RAW-mass rank vs by AM mass (M_AM > 5e12)
+oct 000  N  20514  overlap of selections 0.9986  ξ(3–15) AM 1.4425 raw-rank 1.4461  ratio 1.0025
+oct 001  N  20795  overlap of selections 0.9991  ξ(3–15) AM 1.4485 raw-rank 1.4566  ratio 1.0057
+oct 010  N  22077  overlap of selections 0.9988  ξ(3–15) AM 1.3540 raw-rank 1.3605  ratio 1.0048
+oct 011  N  20677  overlap of selections 0.9986  ξ(3–15) AM 1.4487 raw-rank 1.4343  ratio 0.9900
+oct 100  N  22100  overlap of selections 0.9987  ξ(3–15) AM 1.3463 raw-rank 1.3497  ratio 1.0025
+oct 101  N  21221  overlap of selections 0.9988  ξ(3–15) AM 1.3705 raw-rank 1.3795  ratio 1.0066
+oct 110  N  22266  overlap of selections 0.9986  ξ(3–15) AM 1.3497 raw-rank 1.3663  ratio 1.0123
+oct 111  N  21744  overlap of selections 0.9987  ξ(3–15) AM 1.3685 raw-rank 1.3639  ratio 0.9966
+End: Mon Sep 28 10:51:03 PM EDT 2026

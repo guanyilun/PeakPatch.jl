@@ -117,7 +117,7 @@ Sources: `validation/websky_6144/production_v3/README.md` and `config_v3_oct000.
 | Filter bank | Paper: Rf,min = 2 a_latt; Rf,max = 36 Mpc (24.5 Mpc/h); count and spacing not stated. `filter_gen.py` default: 1.65 a_latt, spacing 1.15 (the same as ours). Production bank not located; the evidence conflicts (paper 2.0; the dense-bank residual suggests ≈1.2) | Rf,min = 1.65 a_latt, Rf,max = 30.44 Mpc/h, 23 filters, spacing 1.15 | `data/filters_websky_finecell.dat`; `2001.08787.txt:300-303`; `LOW_MASS_COMPLETENESS_2026-06-15.md:66-80` |
 | Peak threshold on the lightcone | Constant fcrit = fsc_of_z(0) | Same. Shell analysis uses the per-peak z_pk (1+z_pk, fsc_of_z(z_pk)) | `src/MultiResolution.jl:934-937,1017-1045` |
 | Ω_m(a) in the 2LPT coefficient | Standard (Ωm/a³)/(Ωm/a³+ΩΛ) (`hpkvd.f90:762,875`) | Same since 058207a (v2 used a³ in place of a⁻³; §6.1). v3 includes the fix | `src/Cosmology/Cosmology.jl` |
-| Merge | Exclusion with a fixed NC=256 hash; volume reduction commented out | Same survivors, with a data-sized hash (`clamp(round(cbrt(n)),16,1024)`), a total order (−R_TH,x,y,z), and volume reduction disabled | `src/Merger/Merger.jl:32-80`; `Exclusion.jl:22,57-64` |
+| Merge | Lagrangian exclusion (centre inside a larger halo), then **volume reduction**: each halo loses its caps beyond the mid-plane with every overlapping neighbour (`merge_pkvd.f90:139-140`, `exclusion.f90:120-204`; Stein+2020 §2.3). Fixed NC=256 hash | Same exclusion with a data-sized hash and a total order (−R_TH,x,y,z). **Volume reduction was skipped** (a comment wrongly said Fortran had it commented out); now available as `merge_catalog(...; volume_reduction=true)`, default off, so every catalog up to v3fs is exclusion-only. This causes most of the clustering excess (§3.1, `CLUSTERING_EXCESS_2026-09-28.md`) | `src/Merger/Merger.jl`; `Exclusion.jl` |
 | Eulerian positions and velocities | merge_pkvd | Port: x = q+ψ1+ψ2, v = a·100·E·f·(ψ1+2ψ2). Velocity epoch from one chi→z evaluation at the Eulerian distance, with no iteration | `src/Merger/Merger.jl:106-145` |
 | AM | Tinker M200m, Δz=0.1 bins, 10⁴ mass bins, bilinear interpolation; **one full-sky table**; above a slice's top halo the table is left at identity, so the bilinear lookup blends the top halos with their raw masses; only halos with >10 particles before AM | Same table method (46 z-bins, Δz≈0.098, over 5e11–1e16), **one full-sky table from all 8 octants**. Above the last mass edge with ≥10 halos per z-bin, the fractional correction is frozen (`tail_N`), which is monotone and keeps ranks (the reference's identity default can invert them). **No particle cut** | `src/AbundanceMatch/AbundanceMatch.jl`; `~/work/peakpatch/python/catalogue_tools/abundance_match/make_abundancematch_table.py`; `2001.08787.txt:1044-1052` |
 | Catalog format | 10 floats, ~9e8 halos, 33 GB | 33 Float32 (extended pksc), 198.4M halos/octant (928.4M full sky in 5e11–1e16 at z<4.5), 26.2 GB/octant | `src/Merger/Merger.jl:84-162` |
@@ -186,6 +186,11 @@ Further tiling results:
 | > 1e14 | 1.20, 1.19, 1.15, 1.03, 0.80, 0.55, — | 0.96–1.00 (z<3) |
 | > 5e14 | 1.35, 1.26, 1.07, 0.72 (z<1.5) | 0.97–1.01 |
 | > 1e15 | 1.00, 1.05, 0.92 (z<1) | 0.96–1.05 |
+
+**Cause of the clustering excess** (`validation/paper/CLUSTERING_EXCESS_2026-09-28.md`):
+- Our merge skipped the Fortran volume-reduction pass.
+- Diagnostics: abundance matching is not the cause (raw-rank and AM selections are 99.9% the same). Our absolute bias is 0.97–1.01 × Tinker10 below 3e13, Websky's 0.93–0.99. Ours has 16–17% more close pairs at u = d/(R_i+R_j) < 0.5 (6σ).
+- A/B of our own pipeline (same raw halos, z = 0.7 snapshot, reduction on/off): ξ(1–3) 0.796, ξ(3–15) 0.916, and the same close-pair profile as Websky/ours. With reduction, our low-mass bias is 0.98–1.00 × Tinker10.
 
 **Comparison with the 2026-07 single-cap Tier-A** (superseded `oct000_finecell_AM`, one cap, no error bar; `BIAS_PAIRWISE_V12_2026-07-16.md`): its "ξ bias ratio 1.06 (3–15 Mpc/h)" is confirmed (now 1.068 ± 0.018). Its b(M) ratios (ours/W 1.024 / 1.006 / 0.980 / 0.952) and v12 (0.997) are **not** reproduced by the 8-cap mean: that single cap was one draw within the scatter.
 
@@ -400,12 +405,12 @@ Sources: `validation/paper/V3_RESULTS_2026-09-28.md`, `validation/paper/results/
 | Stale conclusion that the nhunt clamp was harmless | It held only while the field was wrong | Superseded by V2_RESULTS |
 
 **Stale text in the paper draft and comments** (to correct):
-- `paper/sections/algorithm.tex:46-47` says partial overlaps reduce R_TH, but volume reduction is disabled (`Merger.jl:68`).
+- `paper/sections/algorithm.tex:46-47` says partial overlaps reduce R_TH. That is the Fortran algorithm, but every catalog up to v3fs ran without it; keep the text and state the production setting once the rerun is decided.
 - `paper/sections/maps.tex:54` and `intro.tex:58` say halo profiles are painted with XGPaint. Only CIB uses XGPaint.
 - `paper/sections/performance.tex:8-9` still quotes the stale "~19 min on 4×L40S".
 - `src/FieldMap.jl` comments are stale on three points: the +3/7 sign, ISW painted at displaced positions, and D/a.
 - `MultiResolution.jl:591-593` says shell analysis stays on the CPU; it runs on the GPU.
-- `run_gpu_octant.jl:92` logs "volume reduction", which is disabled.
+- `run_gpu_octant.jl:92` logs "exclusion + volume reduction" but calls `merge_catalog` without `volume_reduction=true`.
 - `TILING_INVARIANCE_2026-09-26.md:112` still calls the canonical merge order "not applied".
 - `PERFORMANCE_2026-09-26.md` gives "20 filters"; production uses 23.
 
@@ -425,7 +430,7 @@ Sources: `validation/paper/V3_RESULTS_2026-09-28.md`, `validation/paper/results/
 | # | Item | Status / next action |
 |---|---|---|
 | 1 | **Attribute the field-map change v2 → v3** | The field-kSZ excess at ℓ = 70–200 (1.13–1.21 → 1.01–1.10) and the ISW changes coincide with two changes: the Ω_m(a) coefficient and the tile layout (nbuff 16→25). Deciding test: one oct000 field map with one change and not the other (~1.5 h on 1 GPU). Until then, do not claim which change resolved it |
-| 2 | **Ours ~7% more biased than Websky** (ξ 3–15 Mpc/h 1.14×, 4σ; b(M) +4–7% below 3e13; 1–3 Mpc/h 1.2–1.33×) | Tier-A rerun done (§3.1). Cause not identified; candidates: mass-rank scatter at fixed AM mass, merge/exclusion, Eulerian displacement convention, tile layout. A test: b(M) at fixed *raw* mass rank, and ξ of the raw catalog |
+| 2 | **Ours ~7% more biased than Websky: cause found** | Our merge skipped the Fortran volume-reduction pass. A same-raw-catalog A/B (reduction on/off) gives ξ(1–3) 0.796 (Websky/ours 0.79), ξ(3–15) 0.916 (0.877 ± 0.029), and the same close-pair deficit profile; residual 0.96 ± 0.03 (1.4σ). **Decision: rerun the catalogs with `volume_reduction=true`** (full catalog rerun; raw pre-merge halos were not saved). The Fortran per-tile lightcone threshold (`peak_threshold_per_tile`) is a second, untested difference (`CLUSTERING_EXCESS_2026-09-28.md`) |
 | 3 | `tail_N` choice | 10 is a judgement call (below ~10 halos per slice the relative Poisson scatter is ≳30%); not derived in any note, and the sensitivity to tail_N (e.g. 3 / 10 / 30) has not been measured |
 | 4 | CIB normalization (1.23× in mean) | Decide whether to rescale L0 to the released mean or quote the ratio |
 | 5 | CIB 400 mJy flux cut | Apply to both maps before scoring the Poisson regime |

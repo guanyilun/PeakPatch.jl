@@ -1,0 +1,123 @@
+Node: kn129 commit: 0ab8b81 (+ uncommitted volume_reduction option) Start: Mon Sep 28 11:12:21 PM EDT 2026
+Precompiling packages...
+  12122.2 ms  ✓ PeakPatch
+  17624.9 ms  ✓ PeakPatch → CUDAExt
+  2 dependencies successfully precompiled in 47 seconds. 329 already precompiled.
+┌ Info: merge A/B snapshot
+│   N = 1536
+│   L = 1309.0000103225807
+└   zsn = 0.7
+[ Info: run_multitile_split(use_gpu=true): CUDA_VISIBLE_DEVICES not set; using default GPU
+[ Info: Phase 0: N=1536, ntile=4, M_coarse=128, block=12
+┌ Info: coarse splice compensation D/T on
+└   block = 12
+[ Info: Phase 1a: coarse fields done (M=128)
+[ Info:   Tile 1/64 (1,1,1) [w=1]: 401805 peaks, 337645 worker-local halos
+[ Info:   Tile 2/64 (2,1,1) [w=1]: 401655 peaks, 675228 worker-local halos
+[ Info:   Tile 3/64 (3,1,1) [w=1]: 395245 peaks, 1006711 worker-local halos
+[ Info:   Tile 4/64 (4,1,1) [w=1]: 391317 peaks, 1334977 worker-local halos
+[ Info:   Tile 5/64 (1,2,1) [w=1]: 397728 peaks, 1669045 worker-local halos
+[ Info:   Tile 6/64 (2,2,1) [w=1]: 386995 peaks, 1993686 worker-local halos
+[ Info:   Tile 7/64 (3,2,1) [w=1]: 398788 peaks, 2328551 worker-local halos
+[ Info:   Tile 8/64 (4,2,1) [w=1]: 390856 peaks, 2655709 worker-local halos
+[ Info:   Tile 9/64 (1,3,1) [w=1]: 391228 peaks, 2983236 worker-local halos
+[ Info:   Tile 10/64 (2,3,1) [w=1]: 399317 peaks, 3318294 worker-local halos
+[ Info:   Tile 11/64 (3,3,1) [w=1]: 390225 peaks, 3645425 worker-local halos
+[ Info:   Tile 12/64 (4,3,1) [w=1]: 395167 peaks, 3976578 worker-local halos
+[ Info:   Tile 13/64 (1,4,1) [w=1]: 397672 peaks, 4310464 worker-local halos
+[ Info:   Tile 14/64 (2,4,1) [w=1]: 402045 peaks, 4647974 worker-local halos
+[ Info:   Tile 15/64 (3,4,1) [w=1]: 391561 peaks, 4976225 worker-local halos
+[ Info:   Tile 16/64 (4,4,1) [w=1]: 396157 peaks, 5308700 worker-local halos
+[ Info:   Tile 17/64 (1,1,2) [w=1]: 400826 peaks, 5645613 worker-local halos
+[ Info:   Tile 18/64 (2,1,2) [w=1]: 397363 peaks, 5979351 worker-local halos
+[ Info:   Tile 19/64 (3,1,2) [w=1]: 404900 peaks, 6319612 worker-local halos
+[ Info:   Tile 20/64 (4,1,2) [w=1]: 394623 peaks, 6650452 worker-local halos
+[ Info:   Tile 21/64 (1,2,2) [w=1]: 387233 peaks, 6974540 worker-local halos
+[ Info:   Tile 22/64 (2,2,2) [w=1]: 394253 peaks, 7305202 worker-local halos
+[ Info:   Tile 23/64 (3,2,2) [w=1]: 396220 peaks, 7637879 worker-local halos
+[ Info:   Tile 24/64 (4,2,2) [w=1]: 389939 peaks, 7964976 worker-local halos
+[ Info:   Tile 25/64 (1,3,2) [w=1]: 402505 peaks, 8303379 worker-local halos
+[ Info:   Tile 26/64 (2,3,2) [w=1]: 397699 peaks, 8637212 worker-local halos
+[ Info:   Tile 27/64 (3,3,2) [w=1]: 399190 peaks, 8972859 worker-local halos
+[ Info:   Tile 28/64 (4,3,2) [w=1]: 393653 peaks, 9303031 worker-local halos
+[ Info:   Tile 29/64 (1,4,2) [w=1]: 398284 peaks, 9637591 worker-local halos
+[ Info:   Tile 30/64 (2,4,2) [w=1]: 402505 peaks, 9976395 worker-local halos
+[ Info:   Tile 31/64 (3,4,2) [w=1]: 391832 peaks, 10304855 worker-local halos
+[ Info:   Tile 32/64 (4,4,2) [w=1]: 394352 peaks, 10635698 worker-local halos
+[ Info:   Tile 33/64 (1,1,3) [w=1]: 390204 peaks, 10962683 worker-local halos
+[ Info:   Tile 34/64 (2,1,3) [w=1]: 393152 peaks, 11292532 worker-local halos
+[ Info:   Tile 35/64 (3,1,3) [w=1]: 398278 peaks, 11626852 worker-local halos
+[ Info:   Tile 36/64 (4,1,3) [w=1]: 394373 peaks, 11958340 worker-local halos
+[ Info:   Tile 37/64 (1,2,3) [w=1]: 397185 peaks, 12291849 worker-local halos
+[ Info:   Tile 38/64 (2,2,3) [w=1]: 398540 peaks, 12627132 worker-local halos
+[ Info:   Tile 39/64 (3,2,3) [w=1]: 403970 peaks, 12967412 worker-local halos
+[ Info:   Tile 40/64 (4,2,3) [w=1]: 401434 peaks, 13304627 worker-local halos
+[ Info:   Tile 41/64 (1,3,3) [w=1]: 391571 peaks, 13632526 worker-local halos
+[ Info:   Tile 42/64 (2,3,3) [w=1]: 395470 peaks, 13964753 worker-local halos
+[ Info:   Tile 43/64 (3,3,3) [w=1]: 398255 peaks, 14299333 worker-local halos
+[ Info:   Tile 44/64 (4,3,3) [w=1]: 399361 peaks, 14634964 worker-local halos
+[ Info:   Tile 45/64 (1,4,3) [w=1]: 398533 peaks, 14969962 worker-local halos
+[ Info:   Tile 46/64 (2,4,3) [w=1]: 390947 peaks, 15298109 worker-local halos
+[ Info:   Tile 47/64 (3,4,3) [w=1]: 398301 peaks, 15632455 worker-local halos
+[ Info:   Tile 48/64 (4,4,3) [w=1]: 405563 peaks, 15974056 worker-local halos
+[ Info:   Tile 49/64 (1,1,4) [w=1]: 396335 peaks, 16306311 worker-local halos
+[ Info:   Tile 50/64 (2,1,4) [w=1]: 399238 peaks, 16641530 worker-local halos
+[ Info:   Tile 51/64 (3,1,4) [w=1]: 385115 peaks, 16963619 worker-local halos
+[ Info:   Tile 52/64 (4,1,4) [w=1]: 398728 peaks, 17298737 worker-local halos
+[ Info:   Tile 53/64 (1,2,4) [w=1]: 395218 peaks, 17630132 worker-local halos
+[ Info:   Tile 54/64 (2,2,4) [w=1]: 393904 peaks, 17960453 worker-local halos
+[ Info:   Tile 55/64 (3,2,4) [w=1]: 395270 peaks, 18292122 worker-local halos
+[ Info:   Tile 56/64 (4,2,4) [w=1]: 406382 peaks, 18634247 worker-local halos
+[ Info:   Tile 57/64 (1,3,4) [w=1]: 394750 peaks, 18965490 worker-local halos
+[ Info:   Tile 58/64 (2,3,4) [w=1]: 399552 peaks, 19300768 worker-local halos
+[ Info:   Tile 59/64 (3,3,4) [w=1]: 385989 peaks, 19623442 worker-local halos
+[ Info:   Tile 60/64 (4,3,4) [w=1]: 390048 peaks, 19950287 worker-local halos
+[ Info:   Tile 61/64 (1,4,4) [w=1]: 387958 peaks, 20275712 worker-local halos
+[ Info:   Tile 62/64 (2,4,4) [w=1]: 394328 peaks, 20606375 worker-local halos
+[ Info:   Tile 63/64 (3,4,4) [w=1]: 392405 peaks, 20935935 worker-local halos
+[ Info:   Tile 64/64 (4,4,4) [w=1]: 396861 peaks, 21268649 worker-local halos
+[ Info: Done: 21268649 halos
+┌ Info: raw halos
+└   length(raw) = 21268649
+[ Info: Exclusion: 21268649 → 9223160 halos (removed 12045489)
+[ Info: Merged catalog: 21268649 → 9223160 halos
+[ Info: Exclusion: 21268649 → 9223160 halos (removed 12045489)
+[ Info: Volume reduction: 9223160 → 9223153 halos; mean r 1.8167 → 1.7796
+[ Info: Merged catalog: 21268649 → 9223153 halos
+snapshot z=0.70, N=1536, L=1309.0 Mpc/h, raw halos 21268649; <ξ_mm,lin>(6–18)=0.1715
+
+[A_excl] halos 9223160, AM M>5e12: 1598454; ξ(3–15) 1.4210  ξ(1–3) 7.6060
+  b(M 5.0e+12-8.0e+12) = 1.622   Tinker10 1.580   b/Tk 1.027
+  b(M 8.0e+12-1.3e+13) = 1.832   Tinker10 1.784   b/Tk 1.027
+  b(M 1.3e+13-2.0e+13) = 2.101   Tinker10 2.030   b/Tk 1.035
+  b(M 2.0e+13-3.2e+13) = 2.380   Tinker10 2.332   b/Tk 1.020
+  b(M 3.2e+13-7.9e+13) = 2.912   Tinker10 2.956   b/Tk 0.985
+  b(M 7.9e+13-2.5e+14) = 3.925   Tinker10 4.474   b/Tk 0.877
+
+[B_excl+red] halos 9223153, AM M>5e12: 1598454; ξ(3–15) 1.3013  ξ(1–3) 6.0570
+  b(M 5.0e+12-8.0e+12) = 1.582   Tinker10 1.580   b/Tk 1.001
+  b(M 8.0e+12-1.3e+13) = 1.761   Tinker10 1.784   b/Tk 0.987
+  b(M 1.3e+13-2.0e+13) = 2.032   Tinker10 2.030   b/Tk 1.001
+  b(M 2.0e+13-3.2e+13) = 2.279   Tinker10 2.332   b/Tk 0.977
+  b(M 3.2e+13-7.9e+13) = 2.776   Tinker10 2.956   b/Tk 0.939
+  b(M 7.9e+13-2.5e+14) = 3.698   Tinker10 4.474   b/Tk 0.827
+
+== B/A (reduction on / off) — compare the Websky/ours Tier-A ratios in brackets
+ξ(3–15) B/A 0.916   [W/ours 0.877 ± 0.029]
+ξ(1–3)  B/A 0.796   [W/ours 0.79]
+close pairs/halo u 0.00-0.25: A 0.0798 B 0.0619  B/A 0.776
+close pairs/halo u 0.25-0.50: A 0.3493 B 0.3012  B/A 0.862
+close pairs/halo u 0.50-0.75: A 0.4880 B 0.4563  B/A 0.935
+close pairs/halo u 0.75-1.00: A 0.6797 B 0.6479  B/A 0.953
+close pairs/halo u 1.00-1.50: A 2.0184 B 1.9505  B/A 0.966
+close pairs/halo u 1.50-2.00: A 3.0818 B 3.0121  B/A 0.977
+close pairs/halo u 2.00-3.00: A 10.4273 B 10.2931  B/A 0.987
+  [W/ours in the same u bins: 0.827 0.838 0.894 0.928 0.933 0.954 0.975]
+b(M 5.0e+12-8.0e+12) B/A 0.975
+b(M 8.0e+12-1.3e+13) B/A 0.961
+b(M 1.3e+13-2.0e+13) B/A 0.967
+b(M 2.0e+13-3.2e+13) B/A 0.958
+b(M 3.2e+13-7.9e+13) B/A 0.953
+b(M 7.9e+13-2.5e+14) B/A 0.942
+  [W/ours b(M) in the tierA_diag bins: 0.923 0.989 0.930 1.017 0.950 1.080]
+End: Mon Sep 28 11:35:51 PM EDT 2026
