@@ -1,0 +1,42 @@
+# threshold A/B lightcone (validation/paper/threshold_ab.jl): v3 physics, N=1536, observer at the box corner, z<1
+
+[cosmology]
+Om   = 0.31
+OB   = 0.049
+OL   = 0.69
+h    = 0.68
+
+[grid]
+n       = 434
+boxsize = 369.86068
+nbuff   = 25
+periodic_cores = true
+cenx    = -654.48986
+ceny    = -654.48986
+cenz    = -654.48986
+
+[run]
+z_out     = 0.0
+z_max     = 1.0
+ievol     = 1
+ilpt      = 2
+ioutshear = 1
+wsmooth   = 1
+rmax2rs   = 0.0
+NonGauss  = 0
+fNL       = 0.0
+seed      = 12345
+ntile     = 4
+coarse_factor = 32
+coarse_compensation = true
+generate_table = false
+
+[files]
+pk         = "validation/websky_6144/data/pk_websky.dat"
+filterbank = "validation/websky_6144/data/filters_websky_finecell.dat"
+homeltab   = "validation/websky_6144/data/HomelTab_websky.dat"
+output     = "threshold_ab.pksc"
+
+[output]
+format = "pksc"
+path   = "/home/yguan/scratch/websky_6144/merge_ab"
