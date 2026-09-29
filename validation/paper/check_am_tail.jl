@@ -36,9 +36,11 @@ function tail(path; Mcut=3e14, zmax=1.0)
     out
 end
 const TAG = get(ENV, "TAG", "v2")   # v2 (nbuff 16) | v3test (nbuff 25)
-const RAWD = TAG == "v3" ? "/home/yguan/scratch/websky_6144/catalogs_v3" : D   # v3 raw catalogs live on scratch
-raw = tail(joinpath(RAWD, "catalog_websky_6144_$(TAG)_oct$(OCT).pksc"))
-am = tail(joinpath(D, "catalog_websky_6144_$(TAG)_oct$(OCT)_AM.pksc"))
+const S3 = "/home/yguan/scratch/websky_6144/catalogs_v3"      # v3 raw and v3fs AM catalogs live on scratch
+const RAWD = TAG in ("v3", "v3fs") ? S3 : D
+raw = tail(joinpath(RAWD, "catalog_websky_6144_$(TAG == "v3fs" ? "v3" : TAG)_oct$(OCT).pksc"))
+am = tail(TAG == "v3fs" ? joinpath(S3, "catalog_websky_6144_v3_oct$(OCT)_AMfs.pksc") :
+          joinpath(D, "catalog_websky_6144_$(TAG)_oct$(OCT)_AM.pksc"))
 
 Mg = 10 .^ range(12, 16; length=801); lnMg = log.(Mg); sg = precompute_sigma(Mg, pk, Om)
 function Ntinker(Mcut, za, zb)
