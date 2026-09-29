@@ -36,10 +36,12 @@ function tail(path; Mcut=3e14, zmax=1.0)
     out
 end
 const TAG = get(ENV, "TAG", "v2")   # v2 (nbuff 16) | v3test (nbuff 25)
-const S3 = "/home/yguan/scratch/websky_6144/catalogs_v3"      # v3 raw and v3fs AM catalogs live on scratch
-const RAWD = TAG in ("v3", "v3fs") ? S3 : D
-raw = tail(joinpath(RAWD, "catalog_websky_6144_$(TAG == "v3fs" ? "v3" : TAG)_oct$(OCT).pksc"))
-am = tail(TAG == "v3fs" ? joinpath(S3, "catalog_websky_6144_v3_oct$(OCT)_AMfs.pksc") :
+# v3/v4 raw and v3fs/v4fs AM catalogs live on scratch (catalogs_<base>/, AM files *_AMfs.pksc)
+const BASE = endswith(TAG, "fs") ? TAG[1:end-2] : TAG
+const S3 = "/home/yguan/scratch/websky_6144/catalogs_$(BASE)"
+const RAWD = BASE in ("v3", "v4") ? S3 : D
+raw = tail(joinpath(RAWD, "catalog_websky_6144_$(BASE)_oct$(OCT).pksc"))
+am = tail(endswith(TAG, "fs") ? joinpath(S3, "catalog_websky_6144_$(BASE)_oct$(OCT)_AMfs.pksc") :
           joinpath(D, "catalog_websky_6144_$(TAG)_oct$(OCT)_AM.pksc"))
 
 Mg = 10 .^ range(12, 16; length=801); lnMg = log.(Mg); sg = precompute_sigma(Mg, pk, Om)

@@ -35,6 +35,9 @@ function main()
     coarse_factor = get(run_cfg, "coarse_factor", 4)
     gen_table  = get(run_cfg, "generate_table", false)
     ode_solver = Symbol(get(run_cfg, "ode_solver", "rk4"))
+    # Fortran merge_pkvd volume reduction after exclusion (off in every catalog up to v3fs;
+    # validation/paper/CLUSTERING_EXCESS_2026-09-28.md)
+    vol_red    = Bool(get(run_cfg, "volume_reduction", false))
 
     # Output parameters
     out_cfg = get(config, "output", Dict{String,Any}())
@@ -72,7 +75,7 @@ function main()
     alatt = cfg.boxsize / nmesh
     boxsize_full = N * alatt
 
-    @info "Websky 6144^3 GPU multi-resolution" N=N ntile=ntile nmesh=nmesh nbuff=nbuff nsub=nsub boxsize_full=round(boxsize_full; digits=1) periodic_cores=cfg.periodic_cores seed=seed coarse_factor=coarse_factor ievol=cfg.ievol z_max=cfg.z_max ilpt=cfg.ilpt ioutshear=cfg.ioutshear
+    @info "Websky 6144^3 GPU multi-resolution" N=N ntile=ntile nmesh=nmesh nbuff=nbuff nsub=nsub boxsize_full=round(boxsize_full; digits=1) periodic_cores=cfg.periodic_cores seed=seed coarse_factor=coarse_factor ievol=cfg.ievol z_max=cfg.z_max ilpt=cfg.ilpt ioutshear=cfg.ioutshear peak_threshold_per_tile=cfg.peak_threshold_per_tile volume_reduction=vol_red
 
     # ---- Run pipeline ----
     t0 = time()
@@ -90,8 +93,8 @@ function main()
 
     # ---- Merge (Lagrangian-space exclusion) ----
     if length(halos) > 1
-        @info "Running merger (exclusion + volume reduction)..."
-        halos = merge_catalog(halos; verbose=true)
+        @info "Running merger" exclusion=true volume_reduction=vol_red
+        halos = merge_catalog(halos; verbose=true, volume_reduction=vol_red)
         @info "After merge: $(length(halos)) halos"
     end
 

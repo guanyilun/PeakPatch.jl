@@ -23,11 +23,12 @@ import PeakPatch.MassFunction: precompute_sigma, tinker_dndlnM
 const HUB = 0.68; const RHO_M = 2.775e11 * 0.31
 const COSMO = CosmologyParams(0.31, 0.049, 0.69, 0.68, 0.965, 0.81)
 const CHI2Z = build_chi_to_z(COSMO; z_max=6.0)
-const S3 = "/home/yguan/scratch/websky_6144/catalogs_v3"
+const CAMP = get(ENV, "TIERA_CAMP", "v3")          # catalogs_<CAMP>/catalog_websky_6144_<CAMP>_octZYX[_AMfs].pksc
+const S3 = "/home/yguan/scratch/websky_6144/catalogs_$(CAMP)"
 const WSKY = "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref/halos_10x10.pksc"
 const OCTS = split(get(ENV, "TIERA_OCTS", "000,001,010,011,100,101,110,111"), ",")   # smoke test: TIERA_OCTS=000
 const MAXH = parse(Int, get(ENV, "TIERA_MAXH", "0"))                              # smoke test: read only the first MAXH halos per file
-const OUT = MAXH > 0 ? "/tmp/tierA_smoke.txt" : joinpath(@__DIR__, "results", "tierA_v3fs.txt")
+const OUT = MAXH > 0 ? "/tmp/tierA_smoke.txt" : joinpath(@__DIR__, "results", "tierA_$(CAMP)fs.txt")
 # octZYX bit = 1 -> observer at +2618 on that axis -> that axis looks toward −
 obs_of(o) = (o[3] == '1' ? 2618.0 : -2618.0, o[2] == '1' ? 2618.0 : -2618.0, o[1] == '1' ? 2618.0 : -2618.0)
 axis_of(o) = (a = [o[3] == '1' ? -1.0 : 1.0, o[2] == '1' ? -1.0 : 1.0, o[1] == '1' ? -1.0 : 1.0]; a ./ norm(a))
@@ -177,7 +178,7 @@ caps = Cap[]
 for o in OCTS
     ob = obs_of(o); ax = axis_of(o); c = Cap(ob)
     @info "octant $o" ob ax
-    stream(joinpath(S3, "catalog_websky_6144_v3_oct$(o)_AMfs.pksc"), (bf, b) -> begin
+    stream(joinpath(S3, "catalog_websky_6144_$(CAMP)_oct$(o)_AMfs.pksc"), (bf, b) -> begin
         R = Float64(bf[b+7]); R > 0 || return
         X = Float64(bf[b+1]); Y = Float64(bf[b+2]); Z = Float64(bf[b+3])
         dx = X - ob[1]; dy = Y - ob[2]; dz = Z - ob[3]; r = sqrt(dx^2 + dy^2 + dz^2)
@@ -186,7 +187,7 @@ for o in OCTS
         (dx * ax[1] + dy * ax[2] + dz * ax[3]) / r >= COSW || return
         addhalo!(c, X, Y, Z, Float64(bf[b+4]), Float64(bf[b+5]), Float64(bf[b+6]), M, r, z)
     end)
-    stream(joinpath(S3, "catalog_websky_6144_v3_oct$(o).pksc"), (bf, b) -> begin
+    stream(joinpath(S3, "catalog_websky_6144_$(CAMP)_oct$(o).pksc"), (bf, b) -> begin
         R = Float64(bf[b+7]); R > 0 || return
         r = sqrt((bf[b+1] - ob[1])^2 + (bf[b+2] - ob[2])^2 + (bf[b+3] - ob[3])^2)
         z = chi_to_z(CHI2Z, r); M = mass(R)

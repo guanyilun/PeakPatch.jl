@@ -5,7 +5,7 @@
 # sky is the plain sum over octants.
 #
 #   CAMPAIGN=prod|v2|v3 julia --project=validation -t 8 assemble_fullsky.jl [product ...]
-# (prod = frozen 2026-07 campaign with AMv2 halos; v2 = periodic-core rerun 2026-09; v3 = nbuff=25 rerun 2026-09-27; v3fs = v3 with full-sky AM + tail_N)
+# (prod = frozen 2026-07 campaign with AMv2 halos; v2 = periodic-core rerun 2026-09; v3 = nbuff=25 rerun 2026-09-27; v3fs = v3 with full-sky AM + tail_N; v4fs = v3fs + volume reduction + per-tile threshold)
 #
 # products (default all): kappa ksz tsz isw cib
 #   kappa_lt4.5  = Σ (field κ + κ_halo_comp)         [construction B, z<4.5]
@@ -19,7 +19,7 @@ using Healpix, Printf
 
 const D = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"
 const CAMP = get(ENV, "CAMPAIGN", "prod")
-CAMP in ("prod", "v2", "v3", "v3fs") || error("CAMPAIGN must be prod, v2, v3 or v3fs")
+CAMP in ("prod", "v2", "v3", "v3fs", "v4fs") || error("CAMPAIGN must be prod, v2, v3, v3fs or v4fs")
 const FM = joinpath(D, "fieldmaps_$(CAMP)"); const HM = joinpath(D, "halomaps_$(CAMP)")
 const CM = joinpath(D, "cibmaps_$(CAMP)"); const OUT = joinpath(D, "fullsky_$(CAMP)")
 const HTAG = CAMP == "prod" ? (oct -> "prod_oct$(oct)_AMv2") : (oct -> "$(CAMP)_oct$(oct)_AM")
