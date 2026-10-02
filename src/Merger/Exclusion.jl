@@ -166,12 +166,13 @@ Returns a new radius vector (original `r` is not modified).
 function volume_reduction!(survived::Vector{Bool},
                            x::AbstractVector{<:Real}, y::AbstractVector{<:Real},
                            z::AbstractVector{<:Real}, r::AbstractVector{<:Real},
-                           order::Vector{Int}, sh::SpatialHash)
+                           order::Vector{Int}, sh::SpatialHash; fortran_ties::Bool=false)
     # Fortran merge_pkvd 'shared' reduction (exclusion.f90:120-204): every surviving pair
     # with d < r_i + r_j adds to EACH halo its own cap beyond the mid-plane (sphere_overlap),
     # all overlaps are accumulated first, then r_new = (r³ − 3ΔV/4π)^(1/3).
-    # Each pair is visited once, from its larger member (`order` rank breaks radius ties;
-    # Fortran visits equal-radius pairs twice), so neighbours lie within 2 r_i.
+    # Each pair is visited once, from its larger member (`order` rank breaks radius ties), so
+    # neighbours lie within 2 r_i. Fortran's neighbour test `ri >= rj` (exclusion.f90:122) puts an
+    # equal-radius pair in both lists, so it is reduced twice; `fortran_ties=true` reproduces that.
     rank = similar(order); rank[order] = eachindex(order)
     dV = zeros(Float64, length(r))
     for i in order
@@ -189,7 +190,8 @@ function volume_reduction!(survived::Vector{Bool},
                     d = sqrt((Float64(x[j]) - xi)^2 + (Float64(y[j]) - yi)^2 + (Float64(z[j]) - zi)^2)
                     if d < ri + rj
                         v1, v2 = sphere_overlap(d, ri, rj)
-                        dV[i] += v1; dV[j] += v2
+                        w = (fortran_ties && rj == ri) ? 2.0 : 1.0
+                        dV[i] += w * v1; dV[j] += w * v2
                     end
                 end
                 j = sh.ll[j]

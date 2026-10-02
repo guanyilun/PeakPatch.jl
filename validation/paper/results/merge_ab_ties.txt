@@ -1,0 +1,60 @@
+snapshot z=0.70, N=1536, L=1309.0 Mpc/h, raw halos 21268649; <ξ_mm,lin>(6–18)=0.1715
+
+[A_excl] halos 9223160, AM M>5e12: 1598454; ξ(3–15) 1.4210  ξ(1–3) 7.6060
+  b(M 5.0e+12-8.0e+12) = 1.622   Tinker10 1.580   b/Tk 1.027
+  b(M 8.0e+12-1.3e+13) = 1.832   Tinker10 1.784   b/Tk 1.027
+  b(M 1.3e+13-2.0e+13) = 2.101   Tinker10 2.030   b/Tk 1.035
+  b(M 2.0e+13-3.2e+13) = 2.380   Tinker10 2.332   b/Tk 1.020
+  b(M 3.2e+13-7.9e+13) = 2.912   Tinker10 2.956   b/Tk 0.985
+  b(M 7.9e+13-2.5e+14) = 3.925   Tinker10 4.474   b/Tk 0.877
+
+[B_excl+red] halos 9223153, AM M>5e12: 1598454; ξ(3–15) 1.3013  ξ(1–3) 6.0570
+  b(M 5.0e+12-8.0e+12) = 1.582   Tinker10 1.580   b/Tk 1.001
+  b(M 8.0e+12-1.3e+13) = 1.761   Tinker10 1.784   b/Tk 0.987
+  b(M 1.3e+13-2.0e+13) = 2.032   Tinker10 2.030   b/Tk 1.001
+  b(M 2.0e+13-3.2e+13) = 2.279   Tinker10 2.332   b/Tk 0.977
+  b(M 3.2e+13-7.9e+13) = 2.776   Tinker10 2.956   b/Tk 0.939
+  b(M 7.9e+13-2.5e+14) = 3.698   Tinker10 4.474   b/Tk 0.827
+
+[C_red+fortran_ties] halos 9223153, AM M>5e12: 1598454; ξ(3–15) 1.3013  ξ(1–3) 6.0570
+  b(M 5.0e+12-8.0e+12) = 1.582   Tinker10 1.580   b/Tk 1.001
+  b(M 8.0e+12-1.3e+13) = 1.761   Tinker10 1.784   b/Tk 0.987
+  b(M 1.3e+13-2.0e+13) = 2.032   Tinker10 2.030   b/Tk 1.001
+  b(M 2.0e+13-3.2e+13) = 2.279   Tinker10 2.332   b/Tk 0.977
+  b(M 3.2e+13-7.9e+13) = 2.776   Tinker10 2.956   b/Tk 0.939
+  b(M 7.9e+13-2.5e+14) = 3.698   Tinker10 4.474   b/Tk 0.827
+
+== C/B (Fortran double reduction of equal-radius pairs, on top of reduction) — residual to explain: Websky/ours full sky ξ(3–15) 0.948 ± 0.002
+ξ(3–15) C/B 1.0000   ξ(1–3) C/B 1.0000
+b(M 5.0e+12-8.0e+12) C/B 1.0000
+b(M 8.0e+12-1.3e+13) C/B 1.0000
+b(M 1.3e+13-2.0e+13) C/B 1.0000
+b(M 2.0e+13-3.2e+13) C/B 1.0000
+b(M 3.2e+13-7.9e+13) C/B 1.0000
+b(M 7.9e+13-2.5e+14) C/B 1.0000
+close pairs/halo u 0.00-0.25: C/B 1.000
+close pairs/halo u 0.25-0.50: C/B 1.000
+close pairs/halo u 0.50-0.75: C/B 1.000
+close pairs/halo u 0.75-1.00: C/B 1.000
+close pairs/halo u 1.00-1.50: C/B 1.000
+close pairs/halo u 1.50-2.00: C/B 1.000
+close pairs/halo u 2.00-3.00: C/B 1.000
+
+== B/A (reduction on / off) — compare the Websky/ours Tier-A ratios in brackets
+ξ(3–15) B/A 0.916   [W/ours 0.877 ± 0.029]
+ξ(1–3)  B/A 0.796   [W/ours 0.79]
+close pairs/halo u 0.00-0.25: A 0.0798 B 0.0619  B/A 0.776
+close pairs/halo u 0.25-0.50: A 0.3493 B 0.3012  B/A 0.862
+close pairs/halo u 0.50-0.75: A 0.4880 B 0.4563  B/A 0.935
+close pairs/halo u 0.75-1.00: A 0.6797 B 0.6479  B/A 0.953
+close pairs/halo u 1.00-1.50: A 2.0184 B 1.9505  B/A 0.966
+close pairs/halo u 1.50-2.00: A 3.0818 B 3.0121  B/A 0.977
+close pairs/halo u 2.00-3.00: A 10.4273 B 10.2931  B/A 0.987
+  [W/ours in the same u bins: 0.827 0.838 0.894 0.928 0.933 0.954 0.975]
+b(M 5.0e+12-8.0e+12) B/A 0.975
+b(M 8.0e+12-1.3e+13) B/A 0.961
+b(M 1.3e+13-2.0e+13) B/A 0.967
+b(M 2.0e+13-3.2e+13) B/A 0.958
+b(M 3.2e+13-7.9e+13) B/A 0.953
+b(M 7.9e+13-2.5e+14) B/A 0.942
+  [W/ours b(M) in the tierA_diag bins: 0.923 0.989 0.930 1.017 0.950 1.080]

@@ -71,6 +71,11 @@ using Random
         @test length(red) == length(want)
         @test all(isapprox(Float64(e.RTHL), want[(e.x, e.y, e.z)]; rtol=1e-5) for e in red)
         @test count(k -> dV[k] > 0, eachindex(dV)) > 50          # the case is non-trivial
+        # fortran_ties: an equal-radius overlapping pair is reduced twice
+        ht = [mk(50, 50, 50, 2.0), mk(53, 50, 50, 2.0)]
+        v1t, _ = sphere_overlap(3.0, 2.0, 2.0)
+        @test all(x -> x.RTHL ≈ cbrt(8 - 3v1t / 4π), merge_catalog(ht; volume_reduction=true))
+        @test all(x -> x.RTHL ≈ cbrt(8 - 6v1t / 4π), merge_catalog(ht; volume_reduction=true, fortran_ties=true))
     end
 
     @testset "SpatialHash build and query" begin

@@ -20,17 +20,19 @@ Two-pass algorithm (matching Fortran `merge_pkvd`):
 
 Works with both `HaloRecord` (11-field) and `ExtHaloRecord` (33-field) catalogs.
 """
-function merge_catalog(halos::Vector{HaloRecord}; verbose::Bool=false, volume_reduction::Bool=false)
+function merge_catalog(halos::Vector{HaloRecord}; verbose::Bool=false, volume_reduction::Bool=false,
+                       fortran_ties::Bool=false)
     isempty(halos) && return HaloRecord[]
-    _merge_impl(halos, verbose, volume_reduction)
+    _merge_impl(halos, verbose, volume_reduction, fortran_ties)
 end
 
-function merge_catalog(halos::Vector{ExtHaloRecord}; verbose::Bool=false, volume_reduction::Bool=false)
+function merge_catalog(halos::Vector{ExtHaloRecord}; verbose::Bool=false, volume_reduction::Bool=false,
+                       fortran_ties::Bool=false)
     isempty(halos) && return ExtHaloRecord[]
-    _merge_impl(halos, verbose, volume_reduction)
+    _merge_impl(halos, verbose, volume_reduction, fortran_ties)
 end
 
-function _merge_impl(halos::Vector{T}, verbose::Bool, reduce::Bool) where T <: Union{HaloRecord, ExtHaloRecord}
+function _merge_impl(halos::Vector{T}, verbose::Bool, reduce::Bool, fortran_ties::Bool=false) where T <: Union{HaloRecord, ExtHaloRecord}
     nhalo = length(halos)
 
     # Extract position and radius arrays
@@ -70,7 +72,7 @@ function _merge_impl(halos::Vector{T}, verbose::Bool, reduce::Bool) where T <: U
     # exclusion.f90:166-204; Stein+2020 §2.3); only a per-pair re-centring variant is commented
     # out there. Off by default here, which is what every catalog up to v3fs used.
     if reduce
-        new_r = volume_reduction!(survived, x, y, z, r, order, sh)
+        new_r = volume_reduction!(survived, x, y, z, r, order, sh; fortran_ties=fortran_ties)
         n_after_red = count(survived)
         verbose && @info "Volume reduction: $n_after_exc → $n_after_red halos; mean r $(round(sum(r[survived]) / n_after_red; digits=4)) → $(round(sum(new_r[survived]) / n_after_red; digits=4))"
     else

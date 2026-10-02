@@ -145,4 +145,6 @@ function fullsky_main()
     end
     close(io); @info "wrote" OUTFS
 end
-fullsky_main()
+if abspath(PROGRAM_FILE) == (@__FILE__)   # include()-able (tierA_lagrangian.jl)
+    fullsky_main()
+end

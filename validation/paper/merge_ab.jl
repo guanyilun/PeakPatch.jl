@@ -89,8 +89,16 @@ function main()
     @info "raw halos" length(raw)
     cosmo = CosmologyParams(0.31, 0.049, 0.69, 0.68, 0.965, 0.81)
     cats = Dict{String,Any}()
-    for (lab, red) in (("A_excl", false), ("B_excl+red", true))
-        m = merge_catalog(raw; verbose=true, volume_reduction=red)
+    VARIANTS = (("A_excl", false, false), ("B_excl+red", true, false), ("C_red+fortran_ties", true, true),
+                ("D_red+fortran_cap", true, false))
+    # D: emulate the local Fortran get_homel outward-search bug (peakvoidsubs.f90:447 reuses jp, so the
+    # search at :487-489 never runs): R_TH capped at the hunt radius ≈ 1.75 R_f before the merge.
+    capR(h) = typeof(h)(ntuple(i -> i == 7 ? min(h.RTHL, Float32(1.75) * h.Rf) : getfield(h, i), fieldcount(typeof(h)))...)
+    rawcap = capR.(raw)
+    @info "Fortran-cap emulation" changed = count(i -> rawcap[i].RTHL < raw[i].RTHL, eachindex(raw)) of = length(raw)
+    for (lab, red, ties) in VARIANTS
+        src = startswith(lab, "D_") ? rawcap : raw
+        m = merge_catalog(src; verbose=true, volume_reduction=red, fortran_ties=ties)
         cats[lab] = finalize_eulerian(m, cosmo, (0.0, 0.0, 0.0); ievol=0, z_out=zsn)
     end
     # Tinker08 N(>M) in the box at zsn, for rank matching
@@ -113,11 +121,11 @@ function main()
     ximm = mean(xi_mm(rcs[i]) for i in wb)
     uedges = [0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0]
     MB = [5e12, 8e12, 1.3e13, 2e13, 3.2e13, 7.9e13, 2.5e14]
-    out = open(joinpath(@__DIR__, "results", "merge_ab.txt"), "w")
+    out = open(joinpath(@__DIR__, "results", get(ENV, "MAB_OUT", "merge_ab.txt")), "w")
     say(a...) = begin s = string(a...); println(s); println(out, s) end
     say(@sprintf("snapshot z=%.2f, N=%d, L=%.1f Mpc/h, raw halos %d; <ξ_mm,lin>(6–18)=%.4f", zsn, N, L, length(raw), ximm))
     res = Dict{String,Any}()
-    for lab in ("A_excl", "B_excl+red")
+    for (lab, _, _) in VARIANTS
         h = cats[lab]; Mr = [mass(q.RTHL) for q in h]; o = sortperm(Mr; rev=true)
         Mam = similar(Mr); for (k, i) in enumerate(o); Mam[i] = Mof(k); end
         x = [mod(Float64(q.x), L) for q in h]; y = [mod(Float64(q.y), L) for q in h]; z = [mod(Float64(q.z), L) for q in h]
@@ -135,7 +143,14 @@ function main()
             say(@sprintf("  b(M %.1e-%.1e) = %.3f   Tinker10 %.3f   b/Tk %.3f", MB[i], MB[i+1], bs[i], tb(sqrt(MB[i] * MB[i+1])), bs[i] / tb(sqrt(MB[i] * MB[i+1]))))
         end
     end
-    A = res["A_excl"]; B = res["B_excl+red"]
+    A = res["A_excl"]; B = res["B_excl+red"]; Cv = res["C_red+fortran_ties"]; Dv = res["D_red+fortran_cap"]
+    say("\n== D/B (Fortran R_TH cap at 1.75 R_f, on top of reduction) — residual to explain: Websky/ours full sky ξ(3–15) 0.948 ± 0.002")
+    say(@sprintf("ξ(3–15) D/B %.4f   ξ(1–3) D/B %.4f", mean(Dv.xi[wx]) / mean(B.xi[wx]), mean(Dv.xi[w13]) / mean(B.xi[w13])))
+    for i in 1:length(MB)-1; say(@sprintf("b(M %.1e-%.1e) D/B %.4f", MB[i], MB[i+1], Dv.b[i] / B.b[i])); end
+    say("\n== C/B (Fortran double reduction of equal-radius pairs, on top of reduction) — residual to explain: Websky/ours full sky ξ(3–15) 0.948 ± 0.002")
+    say(@sprintf("ξ(3–15) C/B %.4f   ξ(1–3) C/B %.4f", mean(Cv.xi[wx]) / mean(B.xi[wx]), mean(Cv.xi[w13]) / mean(B.xi[w13])))
+    for i in 1:length(MB)-1; say(@sprintf("b(M %.1e-%.1e) C/B %.4f", MB[i], MB[i+1], Cv.b[i] / B.b[i])); end
+    for k in 1:length(uedges)-1; say(@sprintf("close pairs/halo u %.2f-%.2f: C/B %.3f", uedges[k], uedges[k+1], Cv.up[k] / B.up[k])); end
     say("\n== B/A (reduction on / off) — compare the Websky/ours Tier-A ratios in brackets")
     say(@sprintf("ξ(3–15) B/A %.3f   [W/ours 0.877 ± 0.029]", mean(B.xi[wx]) / mean(A.xi[wx])))
     say(@sprintf("ξ(1–3)  B/A %.3f   [W/ours 0.79]", mean(B.xi[w13]) / mean(A.xi[w13])))
