@@ -11,7 +11,7 @@ const D = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"
 const W = "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref"
 const T = joinpath(@__DIR__, "..", "paper_theory", "results")
 const C = get(ENV, "CAMPAIGN", "v2")               # campaign under test; kSZ "before" column = frozen (v2) or v2 (v3)
-const CB = C == "v2" ? "prod" : C == "v3" ? "v2" : C == "v4fs" ? "v3fs" : "v3"
+const CB = C == "v2" ? "prod" : C == "v3" ? "v2" : C in ("v4fs", "v4kres") ? "v3fs" : "v3"
 
 kl = readdlm(joinpath(T, "kappa_limber.txt"); comments=true)          # ell, lin..., halofit...
 kl_ell = kl[:, 1]; kl_lin45 = kl[:, 3]; kl_hf45 = kl[:, 6]
@@ -48,6 +48,7 @@ write_table(joinpath(@__DIR__, "results", "theory_$(C)_kappa.txt"),
             le, co, cf, cw, thf, tlin)
 
 # ---- field kSZ ----
+isfile(joinpath(D, "fullsky_$(C)", "ksz_field_uK_$(C)_fullsky_nside4096.fits")) || (println("no field-kSZ map for $(C); κ only"); exit(0))
 e2 = lbins(1000; lmin=20)
 edges = e2
 theo = bin_theory(l -> 2π / (l * (l + 1)) * (interp(dop[:, 1], dop[:, 4], l) + interp(ov[:, 1], ov[:, 2], l)), e2)

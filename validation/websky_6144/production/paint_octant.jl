@@ -110,6 +110,13 @@ function make_halo(x, y, z3, vx, vy, vz, R, obs, chi2z, TK)
 end
 maxrad(h::Halo, P) = max(P.kappa ? h.Rk : 0.0, P.tsz ? 4h.θv : 0.0, (P.ksz && h.ksz) ? 4h.θv : 0.0)
 
+# Fortran pks2map emulation switches for tSZ (TSZ_PAINTERS_2026-10-01.md; haloproject.f90, maptable.f90):
+#   TSZ_TRUNC4MPC=1 — zero beyond 4 Mpc transverse comoving distance (the map table's rmaxt = 4 Mpc)
+#   TSZ_NO_NORM=1   — pixel-centre sampling only, no exact-integral residual deposit
+const TSZ_TRUNC4MPC = get(ENV, "TSZ_TRUNC4MPC", "0") == "1"
+const TSZ_NO_NORM = get(ENV, "TSZ_NO_NORM", "0") == "1"
+tsz_rad(h) = TSZ_TRUNC4MPC ? min(4h.θv, 4.0 * hub / h.χ) : 4h.θv
+
 # ------------------------------- per-product evaluation ----------------------------------
 mutable struct Acc
     k0::Float64; kc::Float64; y::Float64; w::Float64; wc::Float64
@@ -129,7 +136,7 @@ function visit!(acc::Acc, maps, R::Rings, h::Halo, P, TY, TK, rlo, rhi)
         end
     end
     if P.tsz
-        rad = 4h.θv
+        rad = tsz_rad(h)
         a, b = ring_range(R, h.θ0, rad); a = max(a, rlo); b = min(b, rhi)
         disc_walk(R, h.θ0, h.ϕ0, h.v, rad, a, b) do pix, θ
             yv = h.yamp * sigma_interp(TY, θ / h.θv, h.mh, h.z)
@@ -173,7 +180,7 @@ function paint_chunk!(maps, R::Rings, halos::Vector{Halo}, P, TY, TK, Ωpix, nba
         t = targets(h, TY, Ωpix)
         dep[1, i] = P.kappa ? t[1] - acc.k0 : 0.0
         dep[2, i] = P.kappa ? -acc.kc : 0.0
-        dep[3, i] = P.tsz ? t[3] - acc.y : 0.0
+        dep[3, i] = (P.tsz && !TSZ_NO_NORM) ? t[3] - acc.y : 0.0
         dep[4, i] = (P.ksz && h.ksz) ? t[4] - acc.w : 0.0
         dep[5, i] = (P.ksz && h.ksz) ? -acc.wc : 0.0
         cpix[i] = Healpix.ang2pixRing(R.res, h.θ0, h.ϕ0)
@@ -306,6 +313,13 @@ function main(ARGS)
 
     R = Rings(nside); npix = 12nside^2; Ωpix = 4π / npix
     maps = newmaps(npix, P)
+    # Optional Websky κ resolution rule (Stein+2020 §3.2.3): halos whose r200m disc subtends less
+    # than 2 pixel solid angles are "unresolved" and left in the field component only, i.e. not
+    # painted. Only meaningful for a κ-only run (the cut would otherwise also drop tSZ/kSZ halos).
+    kres = get(ENV, "KAPPA_RESOLVED_ONLY", "0") == "1"
+    kres && (P.tsz || P.ksz) && error("KAPPA_RESOLVED_ONLY=1 needs products=kappa only")
+    θres = sqrt(2Ωpix / π); nunres = 0
+    kres && @info "κ: painting only halos with θ(r200m) ≥ $(round(rad2deg(θres) * 60; digits=3))′ (Websky resolution rule)"
     nband = 8 * Threads.nthreads()
     nh_tot = open(io -> Int(read(io, Int32)), CAT)
     tot = zeros(5); nsel = zeros(Int, 3); nused = 0
@@ -323,6 +337,9 @@ function main(ARGS)
                 dx = buf[b+1] - obs[1]; dy = buf[b+2] - obs[2]; dz = buf[b+3] - obs[3]
                 r = sqrt(Float64(dx)^2 + Float64(dy)^2 + Float64(dz)^2)
                 (30.0 <= r <= chimax) || continue
+                if kres && r200m(4 / 3 * π * rho_mh * Float64(buf[b+7])^3) / r < θres
+                    nunres += 1; continue
+                end
                 push!(halos, make_halo(Float64(buf[b+1]), Float64(buf[b+2]), Float64(buf[b+3]),
                                        Float64(buf[b+4]), Float64(buf[b+5]), Float64(buf[b+6]),
                                        Float64(buf[b+7]), obs, chi2z, TK))
@@ -339,7 +356,7 @@ function main(ARGS)
         end
     end
 
-    @printf("\nhalos painted: %d of %d (30 ≤ χ ≤ %.1f Mpc/h); kSZ-selected: %d\n", nused, nh_tot, chimax, nsel[3])
+    @printf("\nhalos painted: %d of %d (30 ≤ χ ≤ %.1f Mpc/h); kSZ-selected: %d; κ-unresolved skipped: %d\n", nused, nh_tot, chimax, nsel[3], nunres)
     if P.kappa
         @printf("κ plain: Σpix = %.6e, analytic = %.6e (ratio %.9f); κ comp Σpix/plain = %.2e\n",
                 sum(maps.k0), tot[1], sum(maps.k0) / tot[1], sum(maps.kc) / tot[1])
