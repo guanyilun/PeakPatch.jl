@@ -189,14 +189,42 @@ already reproduce ~70% of the effect:
 
 The rest comes from peak selection and positions.
 
-**Open (running):**
-- field-level error spectra of δ, ψ1, ψ2 vs k and vs distance from the tile edge, with and without an
-  extended residual shell (`matched/split_field_error.jl`; cf 22 and cf 8);
-- split vs exact at the production tile size (N 1536, nsub 384, block 12; `configs/exact_n1536.toml` vs
-  `merge_ab_z07.toml`).
+**The error sits in ψ1, in a band just above the coarse Nyquist** (`results/split_field_error_cf{22,8}.txt`;
+2³ central tiles, core cells vs the exact global fields).
 
-**Implication if confirmed at production tile size:** v4 halo R_TH, positions and velocities carry a
-split-induced error of this size. Our own production systematic, independent of Websky.
+| block | k_Nyq,coarse | δ rms err | ψ1 rms err | ψ2 rms err | worst ψ1 band: P_err/P_ref, r(k) |
+|---|---|---|---|---|---|
+| 12 (production) | 0.307 h/Mpc (λ 20.5) | 4.5% | **14.1%** | 11.5% | **0.30 at k 0.38**, r 0.85; 0.11 at 0.54 |
+| 33 | 0.112 h/Mpc (λ 56) | 2.9% | **23.0%** | 12.3% | **0.23 at k 0.13**, r 0.88; 0.14 at 0.19 |
+
+- **δ is accurate.** P_err/P_ref ≤ 1.2% at every k, with r ≥ 0.994. So peak finding sees nearly the right
+  field.
+- **ψ1 is badly wrong in a band just above the coarse Nyquist**, and that band moves with the block size. At
+  block 12 it sits at λ ≈ 11–20 Mpc/h, which are the scales of the shell-averaged strain that sets ellipticity
+  and R_TH.
+- This is the uncompensated aliased part of the coarse/fine splice. The D/T compensation fixes only the
+  diagonal part below the coarse Nyquist. ψ ∝ δ/k weights the coarse-dominated band, so the aliasing
+  residual that is ~1% in δ becomes ~30% in ψ1.
+- **ψ2 errors are largest at low k** (22% at k 0.033). That is expected from the tile-periodic 2LPT, and
+  matters less.
+- **The missing outer residual is not the cause.** An extended residual shell (nshell 24) changes nothing,
+  and the error is flat with distance from the tile edge.
+
+**Interpretation.** The production field's displacements are wrong by ~14% rms, concentrated at ~10–20 Mpc/h.
+That changes the strain, hence R_TH (§8), and gives the ~0.8 Mpc/h Eulerian position errors. It is the
+dominant cause of the split's +3.7% ξ.
+
+The block-33 ξ/b behaviour (§7) is the same error moved into the k < 0.1 bias band, where it decorrelates
+(b_E 0.93 at block 66).
+
+**Fix direction (not yet done).** Make the splice consistent for ψ:
+- either subtract the same interpolated coarse noise that is added back, instead of the nearest-neighbour block
+  mean;
+- or split in k-space with an anti-aliasing filter, as in MUSIC.
+
+Then re-measure the ψ1 band error and the halo ratios.
+
+**Still running:** split vs exact at the production tile size (N 1536, nsub 384; exact CPU job 5902860).
 
 ## Files
 
