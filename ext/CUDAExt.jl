@@ -1311,6 +1311,13 @@ end
 # nhunt=23 → 443 shells, nhunt=30 → ~700 shells.
 const _MAX_SHELLS_GPU = Int32(512)
 
+# The post-process kernel keeps each peak's radial profile in shared memory sized for
+# _MAX_SHELLS_GPU shells; more shells overflow silently and most peaks then fail to collapse
+# (nbuff 26 → nhunt 25 → 523 shells gave ~10× too few halos, MATCHED_FORTRAN_2026-10.md §5).
+_check_shell_capacity(nshells::Integer) = nshells <= _MAX_SHELLS_GPU || error(
+    "GPU shell analysis supports at most $(_MAX_SHELLS_GPU) radial shells but the hunt radius gives " *
+    "$(nshells): use nbuff ≤ 25 (nhunt = min(nbuff−1, 1.75·Rf_max/a) ≤ 24) or the CPU path")
+
 # Device helper: write `no_collapse` zeros across all PeakResult outputs.
 # Mirrors `RadialShell.no_collapse()` which zeros every field except
 # RTHL = -1.0 and zvir_half = -1.0.
@@ -2228,6 +2235,7 @@ function PeakPatch.analyse_peak_gpu_cuda(
     end
 
     # Shared memory: rad + Fbar + 3*Gn + 3*Gfn + 9*SRn = 17 Float32 × MAX_SHELLS
+    _check_shell_capacity(stab.nshells)
     shmem_bytes = 17 * Int(_MAX_SHELLS_GPU) * sizeof(Float32)
 
     Rfclvi_r2 = Float32((Rfclvi / alatt)^2)
@@ -2366,6 +2374,7 @@ function PeakPatch.analyse_peaks_gpu_cuda_multirf(
     hlatt_1 = 1.0
     hlatt_2 = 1.0
 
+    _check_shell_capacity(stab.nshells)
     shmem_bytes = 17 * Int(_MAX_SHELLS_GPU) * sizeof(Float32)
 
     # Compute max peaks per sub-batch to stay within GPU memory.

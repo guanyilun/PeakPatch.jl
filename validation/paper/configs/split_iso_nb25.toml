@@ -1,0 +1,42 @@
+# split-path bug isolation: periodic, nbuff 25 (n 314), cf 22 (M = 88, block 12)
+
+[cosmology]
+Om   = 0.31
+OB   = 0.049
+OL   = 0.69
+h    = 0.68
+
+[grid]
+n       = 314
+boxsize = 267.5950
+nbuff   = 25
+periodic_cores = true
+cenx    = 0.0
+ceny    = 0.0
+cenz    = 0.0
+
+[run]
+z_out     = 0.7
+z_max     = 4.5
+ievol     = 0
+ilpt      = 2
+ioutshear = 1
+wsmooth   = 1
+rmax2rs   = 0.0
+NonGauss  = 0
+fNL       = 0.0
+seed      = 12345
+ntile     = 4
+coarse_factor = 22
+coarse_compensation = true
+generate_table = false
+
+[files]
+pk         = "validation/websky_6144/data/pk_websky.dat"
+filterbank = "validation/websky_6144/data/filters_websky_finecell.dat"
+homeltab   = "validation/websky_6144/data/HomelTab_websky.dat"
+output     = "matched.pksc"
+
+[output]
+format = "pksc"
+path   = "/home/yguan/scratch/websky_6144/fortran_matched/run/julia"

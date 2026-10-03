@@ -6,11 +6,12 @@ Geometry must equal configs/matched_fortran.toml AND the compiled hpkvd (arrays.
 All lengths are Mpc/h (the Julia convention; the snapshot run has no chi(z), so Fortran is unit-agnostic
 as long as box, P(k) and filters agree). ireadfield = 1 reads fields/Fvec_jmatched (written by
 matched_julia.jl field). Parameter order follows hpkvd.f90 read_parameters (46 words + 7 strings).
-  usage: python3 gen_fortran_inputs.py <rundir>
+  usage: python3 gen_fortran_inputs.py <rundir> [filterbank file, default filters_websky_finecell.dat]
 """
 import struct, sys, os
 
 run = sys.argv[1]
+fbank = sys.argv[2] if len(sys.argv) > 2 else 'filters_websky_finecell.dat'
 nmesh, nbuff, ntile, cell, z = 303, 26, 4, 258.2207 / 303, 0.7
 Om, OB, OL, h = 0.31, 0.049, 0.69, 0.68
 nsub = nmesh - 2 * nbuff
@@ -29,7 +30,7 @@ b += i(50) + i(20) + i(20) + f(1.5) + f(8.0) + f(0.0) + f(0.5) + f(-1 + 1e-4) + 
 b += i(1) + f(0.0) + i(0) + i(0) + f(0) + f(0) + f(0) + f(0)  # wsmooth rmax2rs ioutfield NonGauss fNL A B R
 b += i(2) + i(0) + i(0)                                      # ilpt iwant_field_part largerun
 assert len(b) == 4 * 46
-for s in ['fields/', 'jmatched', 'jmatched', 'pk_websky_nc.dat', 'filters_websky_finecell.dat',
+for s in ['fields/', 'jmatched', 'jmatched', 'pk_websky_nc.dat', fbank,
           'output/fortran_raw.pksc', 'HomelTab_websky.dat']:
     b += i(len(s)) + s.encode('ascii')
 open(os.path.join(run, 'hpkvd_params.bin'), 'wb').write(b)

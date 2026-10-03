@@ -99,22 +99,72 @@ Hybrids: Fortran R_TH applied to a subset of the Julia raw peaks.
 - Bug (b) mostly moves ξ, through which small-R_f peaks cross the abundance-matching threshold and survive
   exclusion and volume reduction.
 
-## 4. What this does and does not explain
+## 4. What the code differences alone explain
 
-- **Explained:** the code differences account for ~2.0 of the 5.2-point full-sky ξ gap, in the right direction.
-- **Unexplained:** ~3.2 points come from something outside this box. Candidates:
-  - the lightcone and per-tile threshold;
-  - periodic production tiling;
-  - inputs (filter bank: −1.7 points in the Julia-only bank A/B, not additive with the above; P(k));
-  - Websky's production binary differing from this clone.
-- **Framing (neutral):** these are differences between our code and the local Fortran clone. Whether Websky's
-  production run had them is not established. No upstream contact without the user's go-ahead.
+The two bugs account for ~2.0 of the 5.2-point full-sky ξ gap (F/JE), in the right direction. §6–7 locate the
+rest.
 
-## 5. Side finding: the non-periodic split path
+**Framing (neutral):** these are differences between our code and the local Fortran clone. Whether Websky's
+production run had them is not established. No upstream contact without the user's go-ahead.
 
-`run_multitile_split` with `periodic_cores = false` (same field geometry, cf 22, block 12) returned 252k merged
-halos vs 2.58M exact. Its tile offsets assume the periodic layout (`i0 = (it−1)·nsub + 1 − nbuff`). Production
-uses `periodic_cores = true`, so production is unaffected. Under investigation.
+## 5. Side finding: GPU shell-table overflow at nbuff ≥ 26 (fixed)
+
+`run_multitile_split` returned ~10× too few halos for every nbuff = 26 configuration (periodic or not, cf 22 or
+24). The cause: the GPU post-process kernel keeps each peak's radial profile in shared memory sized for
+`_MAX_SHELLS_GPU = 512` distinct shells (`ext/CUDAExt.jl`).
+
+- nhunt = nbuff − 1 = 25 gives 523 shells. The overflow is silent, and ~80% of peaks then fail to collapse.
+- nbuff 25 (482 shells) fits, so production v1–v4 (nbuff ≤ 25) is unaffected.
+- Fix: `_check_shell_capacity` now errors at both kernel launch sites. Tested: nbuff 26 errors; nbuff 25 output
+  is identical (6,907,598 raw → 2,997,974 merged).
+
+## 6. Code × filter bank × field construction on the same field (`results/matched_bank.txt`)
+
+Labels:
+- F2: Fortran with the bank the Websky paper documents (R_f,min = 2 a_latt → 36 Mpc;
+  `filters_paper_2cell.dat`, 1.704 → 24.26 Mpc/h, 20 × 1.15).
+- JE2: Julia exact with the same bank.
+- JSP: our production path (GPU multires split, periodic cores, nbuff 25, cf 22 → block 12 as in production
+  6144/(16·32)) on the same δ. Threefry noise is indexed globally, so the field is identical.
+
+| ratio | ξ(3–15) | b_E M>5e12 |
+|---|---|---|
+| F/JE (code) | 0.980 | 0.992 ± 0.001 |
+| F2/F (bank, Fortran) | 0.995 | 0.997 ± 0.002 |
+| JE2/JE (bank, Julia) | 0.984 | 0.992 ± 0.001 |
+| JSP/JE (split vs exact field) | **1.037** | **1.017 ± 0.002** |
+| **F2/JSP (documented Websky vs our production)** | **0.940** | **0.973 ± 0.002** |
+| full sky, Websky/ours v4fs | 0.948 ± 0.002 | ≈ 0.95–0.96 below 8e13 |
+
+**The gap is reproduced in one box on one field.** F2/JSP b_E is 0.956–0.986 below 8e13. Rough budget in ξ
+points: split ~3.7, code ~2.0, bank ~0.5. These are not exactly additive, and the box is a snapshot, not the
+lightcone.
+
+## 7. The multires split changes halo clustering (`results/matched_split_scan.txt`)
+
+Production split path vs the exact global field, same δ, periodic, nbuff 25. The exact field is the ground
+truth, so any departure from 1 is a split error.
+
+| cf | block | ξ(3–15) JS/JE | b_E JS/JE M>5e12 |
+|---|---|---|---|
+| 4 | 66 | 0.986 | 0.930 ± 0.001 |
+| 8 | 33 | 0.968 | 1.004 ± 0.001 |
+| 11 | 24 | 0.974 | 1.010 ± 0.001 |
+| 22 | 12 (production block) | 1.037 | 1.017 ± 0.002 |
+| 33 | 8 | 1.058 | 1.018 ± 0.002 |
+
+**The effect is not a monotone convergence.**
+- At block 66 the coarse Nyquist (k ≈ 0.056 h/Mpc) falls inside the k < 0.1 bias band, giving large-scale
+  decorrelation (b_E 0.93).
+- At small blocks, clustering is enhanced.
+
+**Caveat:** this box has smaller tiles than production (nsub 264 vs 384). The isolated-convolution error
+depends on tile size too.
+
+**Next:**
+- (a) field-level split error vs k and tile position (`compare_fields_split`);
+- (b) split vs exact at the production tile size (N 1536, nsub 384);
+- (c) fix, then decide on rerunning production.
 
 ## Files
 
@@ -122,4 +172,7 @@ uses `periodic_cores = true`, so production is unaffected. Under investigation.
 - `matched/matched_compare.jl`, `matched/matched_rth_diag.jl`, `matched/matched_rth_shell.jl`,
   `matched/matched_rth_hybrid.jl`.
 - `matched/matched_peak_dbg.jl` + `matched/radialshell_dbg_hook.patch` + `matched/fortran_dbg_patch.py`.
+- `matched/matched_bank_compare.jl`, `matched/matched_split_scan.jl`.
+- Configs: `configs/matched_fortran_bank2.toml`, `configs/split_iso_*.toml`, `configs/split_scan_cf*.toml`
+  (`matched_split_periodic.toml` = the nbuff 26 overflow case).
 - Run data: `/home/yguan/scratch/websky_6144/fortran_matched/{run,run_dbg}`.
