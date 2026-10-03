@@ -224,7 +224,15 @@ The block-33 ξ/b behaviour (§7) is the same error moved into the k < 0.1 bias 
 
 Then re-measure the ψ1 band error and the halo ratios.
 
-**Still running:** split vs exact at the production tile size (N 1536, nsub 384; exact CPU job 5902860).
+**Production tile size confirms it** (`results/split_vs_exact_n1536_cf32.txt`). Setup: N 1536, nsub 384,
+block 12. The split is `merge_ab_z07.toml`; the exact field is `configs/exact_n1536.toml`, on the same δ.
+
+| | ξ(3–15) S/E | b_E S/E | same cell | R_TH > 2% off | Eulerian Δ (median) |
+|---|---|---|---|---|---|
+| this box | 1.035 | 1.017 ± 0.002 | 85.4% | 74% | 0.82 Mpc/h |
+
+The result is identical to the nsub 264 box. The error does not depend on tile size, and the v4 catalogues
+carry it.
 
 ## Files
 
