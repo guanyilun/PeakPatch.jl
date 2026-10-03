@@ -140,6 +140,22 @@ import PeakPatch.Cosmology: CosmologyParams, build_chi_to_z, chi_to_z, chi
                 Dict{String,Any}("periodic_cores" => true))))); ntile=ntile, seed=1)
     end
 
+    @testset "gaussian_split field maps" begin
+        # N = 112 → coarse grid 14 (block 8 ≤ nbuff, r_s = 4); compare with the original splice at the same M
+        cfg_g = PipelineConfig(merge(config, Dict("run" => merge(config["run"], Dict{String,Any}("gaussian_split" => true)))))
+        mo = run(; kernels=K, subdiv_max=1, coarse_grid=14)
+        mg = run_multitile_fieldmap(cfg_g; ntile=ntile, seed=12345, npix=npix, vec2pix=v2p, use_gpu=false,
+                                    verbose=false, kernels=K, subdiv_max=1, coarse_grid=14)
+        @test sum(mg[:mass]) ≈ sum(mo[:mass]) rtol=1e-6          # cell bookkeeping is field-independent
+        cov = findall(!iszero, mo[:mass])
+        c(a, b) = (x = a[cov] .- sum(a[cov]) / length(cov); y = b[cov] .- sum(b[cov]) / length(cov); sum(x .* y) / sqrt(sum(abs2, x) * sum(abs2, y)))
+        # κ near the observer (z < 0.1, 8 Mpc/h cells) is dominated by a few displaced cells: even the original
+        # splice at coarse grids 14/28/56 correlates only 0.38–0.44 with itself, so only ISW is compared here
+        @test c(mg[:isw], mo[:isw]) > 0.95
+        @test abs(sum(mg[:kappa]) / sum(mo[:kappa]) - 1) < 0.01
+        @test all(isfinite, mg[:ksz])
+    end
+
     @testset "cross-tile exclusion mask == brute force" begin
         hb = (x=[0.0], y=[-200.0], z=[-200.0], R=[30.0])     # straddles the x=0 tile boundary
         dcore = nsub * alatt; x0 = -(ntile / 2) * dcore

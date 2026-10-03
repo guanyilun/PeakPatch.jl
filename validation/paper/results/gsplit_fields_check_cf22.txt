@@ -1,0 +1,8 @@
+N=1056 nsub=264 nbuff=25 block=12 r_s=9.0; k_N,coarse=0.307; 2³ central tiles, cores
+field   splice   rms err/rms   err power k∈[kN,2kN)
+δ       orig         0.0448      8.81e-03
+δ       gsplit       0.0031      3.73e-05
+ψ1      orig         0.1412      2.18e-01
+ψ1      gsplit       0.0413      1.15e-03
+φ       orig         0.0384      5.92e-03
+φ       gsplit       0.0289      3.08e-03

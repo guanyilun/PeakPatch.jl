@@ -2962,26 +2962,42 @@ function _periodic_kernel!(arr_k, dk::Float64, n::Int32,
     return
 end
 
-function PeakPatch.isolated_poisson_psi_gpu(dS::CuArray{Float32,3}, boxsize_local::Real; threads::Integer=256)
+function PeakPatch.isolated_poisson_psi_gpu(dS::CuArray{Float32,3}, boxsize_local::Real;
+                                           pot::Bool=false, threads::Integer=256)
     n = size(dS, 1); n2 = 2n
     padded = CUDA.zeros(Float32, n2, n2, n2)
     padded[1:n, 1:n, 1:n] .= dS
     fk = _cufft_rfft(padded)
     CUDA.unsafe_free!(padded)
     dk = 2π / (2 * Float64(boxsize_local))          # padded box = 2 × tile box
-    blocks = cld(size(fk, 1) * n2 * n2, threads)
-    out = ntuple(3) do dim
+    nk = size(fk, 1)
+    blocks = cld(nk * n2 * n2, threads)
+    out = Any[]
+    for dim in 1:3
         g = copy(fk)
         # kernel id 2 is the 2LPT kernel −i k_dim/k² (Nyquist planes and k=0 zeroed); 1LPT is its negative
         @cuda threads=threads blocks=blocks _periodic_kernel!(g, Float64(dk), Int32(n2), Int32(2), Int32(dim), Int32(0))
         r = _cufft_irfft(g, n2)
         CUDA.unsafe_free!(g)
-        res = -r[1:n, 1:n, 1:n]
+        push!(out, -r[1:n, 1:n, 1:n])
         CUDA.unsafe_free!(r)
-        res
+    end
+    if pot
+        # potential −δ_k/k², Nyquist planes and k = 0 zeroed (CPU _isolated_poisson_psi parity)
+        kx = CuArray(reshape(Float32.(collect(0:nk-1) .* dk), nk, 1, 1))
+        fq = Float32[(i <= n2 ÷ 2 ? i : i - n2) * dk for i in 0:n2-1]
+        ky = CuArray(reshape(fq, 1, n2, 1)); kz = CuArray(reshape(fq, 1, 1, n2))
+        k2 = kx .^ 2 .+ ky .^ 2 .+ kz .^ 2
+        g = fk .* ComplexF32.(ifelse.(k2 .== 0f0, 0f0, -1f0 ./ k2))
+        CUDA.unsafe_free!(k2)
+        g[nk, :, :] .= 0; g[:, n2 ÷ 2 + 1, :] .= 0; g[:, :, n2 ÷ 2 + 1] .= 0
+        r = _cufft_irfft(g, n2)
+        CUDA.unsafe_free!(g)
+        push!(out, r[1:n, 1:n, 1:n])
+        CUDA.unsafe_free!(r)
     end
     CUDA.unsafe_free!(fk)
-    return out
+    return Tuple(out)
 end
 
 function PeakPatch.compute_2lpt_gpu(delta_tile::AbstractArray{<:Real,3},

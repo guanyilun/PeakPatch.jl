@@ -283,33 +283,112 @@ function _isolated_convolve(noise::Array{Float32,3}, pk, boxsize_local::Float64,
 end
 
 """
-    _isolated_poisson_psi(f, boxsize_local) -> NTuple{3,Array{Float32,3}}
+    _gaussian_split_rs(rs_cfg, block, nbuff) -> r_s in fine cells
+
+Handoff scale for `gaussian_split`. Two constraints (validation/paper/MATCHED_FORTRAN_2026-10.md §9,
+docs/split_psi_fix_literature_2026-10.md):
+- r_s ≥ block/2, so the coarse level is negligible at its Nyquist: G(k_N) = exp(−(π r_s/block)²) ≤ 0.085.
+- r_s ≤ nbuff/2, so the isolated tile solves contain the short-range kernel (validated up to r_s = 12 at nbuff 25).
+
+Default: min(0.75·block, nbuff/2). Errors if no r_s satisfies both, i.e. block > nbuff (use a larger
+coarse_factor or nbuff).
+"""
+function _gaussian_split_rs(rs_cfg::Real, block::Integer, nbuff::Integer)
+    rs = rs_cfg > 0 ? Float64(rs_cfg) : min(0.75 * block, 0.5 * nbuff)
+    lo, hi = 0.5 * block, 0.5 * nbuff
+    lo <= rs <= hi + 1e-9 || error("gaussian_split: r_s = $(rs) cells outside [block/2, nbuff/2] = [$(lo), $(hi)] " *
+        "(block $(block), nbuff $(nbuff)); " * (lo > hi ? "the coarse block is larger than the buffer — use a larger coarse_factor or nbuff" :
+        "choose gaussian_split_rs in this range"))
+    return rs
+end
+
+"""
+    _isolated_poisson_psi(f, boxsize_local; pot=false) -> NTuple{3 or 4,Array{Float32,3}}
 
 1LPT displacement ψ_k = i k δ_k / k² of a tile-local density `f`, with isolated (2×-zero-padded)
-boundary conditions: the field outside the tile is taken as zero. One forward FFT, three inverse.
-Used by `gaussian_split` on the short-range part δ_S of the tile density.
+boundary conditions: the field outside the tile is taken as zero. With `pot=true` a fourth field is the
+potential −δ_k/k² (`_kernel_pot` convention). One forward FFT. Used by `gaussian_split` on the short-range
+part δ_S of the tile density.
 """
-function _isolated_poisson_psi(f::Array{Float32,3}, boxsize_local::Float64)
+function _isolated_poisson_psi(f::Array{Float32,3}, boxsize_local::Float64; pot::Bool=false)
     n = size(f, 1); n2 = 2n; dx = boxsize_local / n
     padded = zeros(Float32, n2, n2, n2)
     padded[1:n, 1:n, 1:n] .= f
     fk = rfft(padded); padded = nothing
     dk = 2π / (n2 * dx)
     kxa = FFTW.rfftfreq(n2, n2 * dk); kya = FFTW.fftfreq(n2, n2 * dk)
-    out = ntuple(3) do dim
+    out = ntuple(pot ? 4 : 3) do comp
         g = similar(fk)
         Threads.@threads for iz in 1:n2
             @inbounds for iy in 1:n2, ix in 1:size(fk, 1)
                 kx = Float64(kxa[ix]); ky = Float64(kya[iy]); kz = Float64(kya[iz])
                 k2 = kx^2 + ky^2 + kz^2
-                ki = dim == 1 ? kx : dim == 2 ? ky : kz
                 nyq = ix == size(fk, 1) || iy == n + 1 || iz == n + 1     # padded Nyquist planes (GPU parity)
-                g[ix, iy, iz] = (k2 == 0.0 || nyq) ? zero(eltype(g)) : fk[ix, iy, iz] * (im * ki / k2)
+                if k2 == 0.0 || nyq
+                    g[ix, iy, iz] = zero(eltype(g))
+                elseif comp == 4
+                    g[ix, iy, iz] = fk[ix, iy, iz] * (-1 / k2)
+                else
+                    ki = comp == 1 ? kx : comp == 2 ? ky : kz
+                    g[ix, iy, iz] = fk[ix, iy, iz] * (im * ki / k2)
+                end
             end
         end
         Float32.(irfft(g, n2)[1:n, 1:n, 1:n])
     end
     return out
+end
+
+"""
+    _gsplit_setup(coarse_noise, pk, M, boxsize_full, comp, rs_cells, alatt; need_pot=false)
+
+Long-range coarse fields for `gaussian_split`: G·δ, G·ψ (and G·potential), G = exp(−k² r_s²), from the
+same coarse noise with the same compensation (so δ_L, ψ_L stay a Poisson pair after interpolation), plus
+`pk_short(k) = P(k)(1 − G)²` for the tile's short part of the spread block mean.
+"""
+function _gsplit_setup(coarse_noise, pk, M::Int, boxsize_full::Float64, comp, rs_cells::Float64,
+                       alatt::Float64; need_pot::Bool=false)
+    rs2 = (rs_cells * alatt)^2
+    G(k2) = exp(-k2 * rs2)
+    conv(kern) = (q = rfft(coarse_noise); _periodic_convolve!(q, pk, M, boxsize_full; kernel_fn=kern, comp=comp); irfft(q, M))
+    dL = conv((kx, ky, kz, k2) -> G(k2))
+    psiL = [conv((kx, ky, kz, k2) -> G(k2) * _kernel_1lpt(d)(kx, ky, kz, k2)) for d in 1:3]
+    potL = need_pot ? conv((kx, ky, kz, k2) -> G(k2) * _kernel_pot()(kx, ky, kz, k2)) : nothing
+    pk_short = k -> pk(k) * (1 - exp(-k^2 * rs2))^2
+    return (dL=dL, psiL=psiL, potL=potL, pk_short=pk_short)
+end
+
+"""
+    _gsplit_tile(gs, use_gpu, delta_self, coarse_noise, it, jt, kt, nsub, nmesh, N, M, boxsize_local; need_pot=false)
+        -> (delta_tile, psi_tile::Vector, pot_tile or nothing)
+
+Tile fields under `gaussian_split`: δ_S = δ_self (√P·residual) + isolated[(1 − G)√P · spread(block mean)],
+δ = interp(δ_L) + δ_S, ψ = interp(ψ_L) + isolated Poisson(δ_S), potential likewise. Host Arrays on the CPU,
+CuArrays on the GPU (`delta_self` must already live there).
+"""
+function _gsplit_tile(gs, use_gpu::Bool, delta_self, coarse_noise, it::Int, jt::Int, kt::Int,
+                      nsub::Int, nmesh::Int, N::Int, M::Int, boxsize_local::Float64; need_pot::Bool=false)
+    block = N ÷ M
+    pc = _spread_coarse_to_tile(coarse_noise, it, jt, kt, nsub, nmesh, N, M) .* Float32(1 / sqrt(Float64(block)^3))
+    if use_gpu
+        fn_int = getglobal(_pp_parent(), :interpolate_to_tile_gpu)
+        pcS = getglobal(_pp_parent(), :isolated_convolve_gpu_multi)(pc, gs.pk_short, boxsize_local, nmesh;
+                        kernels=[(0, 0, 0)], nshell=0, return_device=true)[1]
+        dS = delta_self .+ pcS
+        pcS = nothing
+        delta = dS .+ fn_int(gs.dL, it, jt, kt, nsub, nmesh, N, M; return_device=true)
+        sol = getglobal(_pp_parent(), :isolated_poisson_psi_gpu)(dS, boxsize_local; pot=need_pot)
+        dS = nothing
+        psi = Any[fn_int(gs.psiL[d], it, jt, kt, nsub, nmesh, N, M; return_device=true) .+ sol[d] for d in 1:3]
+        pot = need_pot ? fn_int(gs.potL, it, jt, kt, nsub, nmesh, N, M; return_device=true) .+ sol[4] : nothing
+    else
+        dS = delta_self .+ _isolated_convolve(pc, gs.pk_short, boxsize_local, nmesh)
+        delta = dS .+ _interpolate_to_tile(gs.dL, it, jt, kt, nsub, nmesh, N, M)
+        sol = _isolated_poisson_psi(dS, boxsize_local; pot=need_pot)
+        psi = Any[_interpolate_to_tile(gs.psiL[d], it, jt, kt, nsub, nmesh, N, M) .+ sol[d] for d in 1:3]
+        pot = need_pot ? _interpolate_to_tile(gs.potL, it, jt, kt, nsub, nmesh, N, M) .+ sol[4] : nothing
+    end
+    return delta, psi, pot
 end
 
 """
@@ -753,26 +832,12 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
         end
     end
 
-    # gaussian_split: long-range coarse δ_L, ψ_L = G·(δ, ψ)_coarse (same noise, compensation and interpolator,
-    # so they stay a Poisson pair); with r_s ≳ 0.75 block, G(k_N,coarse) ≲ 4e-3 and the interpolation images
-    # vanish. The tile carries the short part with the (1 − G)·√P kernel on the spread block mean (pk_gshort).
+    # gaussian_split: Gaussian long/short handoff (see _gsplit_setup / _gsplit_tile)
     gsplit = cfg.gaussian_split
-    delta_L_coarse = nothing; psi_L_coarse = nothing; pk_gshort = nothing
+    gs = nothing
     if gsplit
-        rs_cells = cfg.gaussian_split_rs > 0 ? cfg.gaussian_split_rs : 0.75 * block
-        rs2 = (rs_cells * alatt)^2
-        Gsplit = (kx, ky, kz, k2) -> exp(-k2 * rs2)
-        pk_gshort = k -> pk(k) * (1 - exp(-k^2 * rs2))^2
-        dLk = rfft(coarse_noise)
-        _periodic_convolve!(dLk, pk, M, boxsize_full; kernel_fn=Gsplit, comp=comp)
-        delta_L_coarse = irfft(dLk, M)
-        psi_L_coarse = Vector{Array{Float32,3}}(undef, 3)
-        for dim in 1:3
-            pLk = rfft(coarse_noise)
-            k1 = _kernel_1lpt(dim)
-            _periodic_convolve!(pLk, pk, M, boxsize_full; kernel_fn=(kx, ky, kz, k2) -> Gsplit(kx, ky, kz, k2) * k1(kx, ky, kz, k2), comp=comp)
-            psi_L_coarse[dim] = irfft(pLk, M)
-        end
+        rs_cells = _gaussian_split_rs(cfg.gaussian_split_rs, block, nbuff)
+        gs = _gsplit_setup(coarse_noise, pk, M, boxsize_full, comp, rs_cells, alatt)
         verbose && @info "gaussian_split: long/short handoff" rs_cells block
     end
 
@@ -887,31 +952,13 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
 
         psi_tile = Vector{Any}(undef, 3)
         if gsplit
-            # δ_S = √P·residual (delta_self) + (1 − G)·√P·spread(block mean); δ = interp(δ_L) + δ_S;
-            # ψ = interp(ψ_L) + isolated Poisson(δ_S)
             t0 = _tic()
-            local pc_tile = _spread_coarse_to_tile(coarse_noise, it, jt, kt, nsub, nmesh, N, M) .* Float32(1 / sqrt(Float64(block)^3))
-            if use_gpu
-                local fn_int = getglobal(_pp_parent(), :interpolate_to_tile_gpu)
-                local pcS_dev = getglobal(_pp_parent(), :isolated_convolve_gpu_multi)(pc_tile, pk_gshort, boxsize_local, nmesh;
-                                    kernels=[(0, 0, 0)], nshell=0, return_device=true)[1]
-                local dS_dev = delta_self .+ pcS_dev
-                pcS_dev = nothing
-                delta_tile = dS_dev .+ fn_int(delta_L_coarse, it, jt, kt, nsub, nmesh, N, M; return_device=true)
-                local psiS_dev = getglobal(_pp_parent(), :isolated_poisson_psi_gpu)(dS_dev, boxsize_local)
-                dS_dev = nothing
-                for dim in 1:3
-                    psi_tile[dim] = fn_int(psi_L_coarse[dim], it, jt, kt, nsub, nmesh, N, M; return_device=true) .+ psiS_dev[dim]
-                end
-            else
-                local dS_tile = delta_self .+ _isolated_convolve(pc_tile, pk_gshort, boxsize_local, nmesh)
-                delta_tile = dS_tile .+ _interpolate_to_tile(delta_L_coarse, it, jt, kt, nsub, nmesh, N, M)
-                local psiS_tile = _isolated_poisson_psi(dS_tile, boxsize_local)
-                for dim in 1:3
-                    psi_tile[dim] = _interpolate_to_tile(psi_L_coarse[dim], it, jt, kt, nsub, nmesh, N, M) .+ psiS_tile[dim]
-                end
+            delta_tile, psi_g, _ = _gsplit_tile(gs, use_gpu, delta_self, coarse_noise, it, jt, kt,
+                                                nsub, nmesh, N, M, boxsize_local)
+            for dim in 1:3
+                psi_tile[dim] = psi_g[dim]
             end
-            delta_self = nothing
+            psi_g = nothing; delta_self = nothing
             _toc!("03_gaussian_split", t0)
         else
         # 3. δ_coarse interpolated from global coarse field

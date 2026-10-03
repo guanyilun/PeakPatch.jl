@@ -54,7 +54,7 @@ Base.@kwdef struct PipelineConfig
     # false = the original splice (all catalogues up to v4): ~4.5% rms δ and ~14% rms ψ error from uncancelled
     # aliasing just above the coarse Nyquist (validation/paper/MATCHED_FORTRAN_2026-10.md §8). CPU and GPU.
     gaussian_split::Bool = false
-    # handoff scale r_s in fine cells for gaussian_split; ≤ 0 → 0.75 × block
+    # handoff scale r_s in fine cells for gaussian_split; ≤ 0 → min(0.75 block, nbuff/2); must lie in [block/2, nbuff/2]
     gaussian_split_rs::Float64 = 0.0
     ioutshear::Int = 0
     wsmooth::Int = 0

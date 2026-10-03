@@ -284,7 +284,40 @@ painting systematics. The remaining ψ2 error is subdominant, because |ψ2| ≈ 
 - new: gaussian_split vs global FFT, halo count 2122 vs 2101;
 - new: gaussian_split CPU = GPU (2122 = 2122).
 
-**Open:** the user's decision on a production rerun (v5 = v4 + `gaussian_split = true`).
+**Toward making it the default (2026-10-03).**
+
+1. **Handoff-scale guard.** `_gaussian_split_rs`: r_s ∈ [block/2, nbuff/2], with default min(0.75·block,
+   nbuff/2). A block larger than nbuff is an error.
+   Halo-level check at other block sizes, on the same field (`results/split_vs_exact_n1056_cf{33,11}_gsplit.txt`):
+
+   | block (r_s) | ξ S/E | b_E S/E (M>5e12) | same cell | R_TH > 2% off | Eulerian Δ |
+   |---|---|---|---|---|---|
+   | 8 (6) | 1.001 | 1.001 ± 0.001 | 99.1% | 2.3% | 0.19 Mpc/h |
+   | 12 (9) | 1.001 | 1.000 ± 0.001 | 99.3% | 2.9% | 0.23 Mpc/h |
+   | 24 (12.5, at the guard edge) | 0.996 | 0.997 ± 0.001 | 99.1% | 6.2% | 0.34 Mpc/h |
+
+2. **Field maps.** `src/FieldMap.jl` now uses the same helpers (`_gsplit_setup`, `_gsplit_tile`; CPU + GPU),
+   including the potential. Field-level check of the production helpers at block 12
+   (`results/gsplit_fields_check_cf22.txt`), rms error, original → gsplit:
+   - δ 4.5% → 0.31%;
+   - ψ1 14.1% → 4.1%;
+   - potential φ 3.8% → 2.9%.
+
+   **φ improves least.** It is dominated by low k, where both constructions are limited by the isolated tile
+   solves. In a toy geometry with buffer 2 r_s (nbuff 8, r_s 4) φ is slightly worse (15% vs 11%). φ enters only
+   ISW. In that toy box, ISW maps from gsplit vs the original correlate at 0.999.
+
+**Tests.** Job 5913707: Pkg.test 2341/2341; GPU multires tests pass. New:
+- r_s guard;
+- gaussian_split halo count vs global;
+- CPU = GPU for halos;
+- field maps: CPU mass/κ/ISW checks;
+- GPU = CPU ISW to 1e-13 (κ/mass in the toy differ CPU vs GPU by ~3% for the original splice too, from Float32
+  painting near the observer).
+
+**Still open before the default flips:**
+- a production-size lightcone octant (time, memory, full-sky Tier-A shift);
+- the user's decision on v5.
 
 ## Files
 

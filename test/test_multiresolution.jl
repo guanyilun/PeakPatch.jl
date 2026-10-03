@@ -186,15 +186,26 @@ end
 
 @testset "Halo count comparison, gaussian_split (ntile=2, 2LPT)" begin
     tmpdir = mktempdir()
-    cfg = _make_config(tmpdir; n=68, boxsize=226.67, z=0.0, ilpt=2, nbuff=8)
-    cfg_g = _make_config(tmpdir; n=68, boxsize=226.67, z=0.0, ilpt=2, nbuff=8, gaussian_split=true)
+    # n=76, nbuff=12 → nsub 52, N=128; cf 8 → M 16, block 8 → r_s = 6 ∈ [block/2, nbuff/2]
+    cfg = _make_config(tmpdir; n=76, boxsize=253.33, z=0.0, ilpt=2, nbuff=12)
+    cfg_g = _make_config(tmpdir; n=76, boxsize=253.33, z=0.0, ilpt=2, nbuff=12, gaussian_split=true)
     halos_global = PeakPatch.run_multitile(cfg; ntile=2, seed=42, verbose=false)
-    halos_split = PeakPatch.run_multitile_split(cfg_g; ntile=2, seed=42, verbose=false, coarse_factor=5)
+    halos_split = PeakPatch.run_multitile_split(cfg_g; ntile=2, seed=42, verbose=false, coarse_factor=8)
     n_g = length(halos_global); n_s = length(halos_split)
     println("  Global FFT: $n_g halos; gaussian_split: $n_s halos")
     @test n_g > 0
     @test abs(n_s - n_g) / n_g < 0.05 || abs(n_s - n_g) <= 3
     rm(tmpdir; recursive=true)
+end
+
+@testset "Gaussian split: handoff scale guard" begin
+    rs = PeakPatch.MultiResolution._gaussian_split_rs
+    @test rs(0.0, 12, 25) == 9.0                 # production: 0.75·block
+    @test rs(0.0, 24, 25) == 12.5                # capped at nbuff/2
+    @test rs(6.0, 12, 25) == 6.0
+    @test_throws ErrorException rs(0.0, 66, 25)  # block > nbuff: no valid r_s
+    @test_throws ErrorException rs(4.0, 12, 25)  # below block/2
+    @test_throws ErrorException rs(14.0, 12, 25) # above nbuff/2
 end
 
 @testset "Splice compensation D/T" begin

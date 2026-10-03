@@ -9,6 +9,7 @@ using PeakPatch
 using CUDA
 using Test
 using Printf
+import Healpix
 
 if !CUDA.functional()
     @warn "CUDA not functional — skipping GPU end-to-end test"
@@ -105,11 +106,35 @@ end
 
 @testset "run_multitile_split use_gpu=true vs CPU (gaussian_split, 2LPT)" begin
     tmpdir = mktempdir()
-    cfg = _make_config(tmpdir; n=68, boxsize=226.67, z=0.0, ilpt=2, nbuff=8, gaussian_split=true)
-    halos_cpu = PeakPatch.run_multitile_split(cfg; ntile=2, seed=42, verbose=false, coarse_factor=5, use_gpu=false)
-    halos_gpu = PeakPatch.run_multitile_split(cfg; ntile=2, seed=42, verbose=false, coarse_factor=5, use_gpu=true)
+    cfg = _make_config(tmpdir; n=76, boxsize=253.33, z=0.0, ilpt=2, nbuff=12, gaussian_split=true)
+    halos_cpu = PeakPatch.run_multitile_split(cfg; ntile=2, seed=42, verbose=false, coarse_factor=8, use_gpu=false)
+    halos_gpu = PeakPatch.run_multitile_split(cfg; ntile=2, seed=42, verbose=false, coarse_factor=8, use_gpu=true)
     _compare_halos(halos_cpu, halos_gpu; label="gaussian_split 2LPT ntile=2")
     rm(tmpdir; recursive=true)
+end
+
+@testset "run_multitile_fieldmap gaussian_split: GPU == CPU" begin
+    datadir = joinpath(@__DIR__, "..", "validation", "websky_6144", "data")
+    alatt = 8.0; nmesh = 64; nbuff = 8; obs = (-384.0, -384.0, -384.0)
+    config = Dict{String,Any}("cosmology" => Dict{String,Any}("Om" => 0.31, "OB" => 0.049, "OL" => 0.69, "h" => 0.68),
+        "grid" => Dict{String,Any}("n" => nmesh, "boxsize" => nmesh * alatt, "nbuff" => nbuff,
+                                   "cenx" => obs[1], "ceny" => obs[2], "cenz" => obs[3]),
+        "run" => Dict{String,Any}("ievol" => 1, "z_max" => 0.1, "z_out" => 0.0, "ilpt" => 2, "ioutshear" => 0,
+                                  "gaussian_split" => true),
+        "files" => Dict{String,Any}("pk" => joinpath(datadir, "pk_websky.dat"), "filterbank" => joinpath(datadir, "filters_websky.dat"),
+                                    "homeltab" => joinpath(datadir, "HomelTab_websky.dat"), "output" => joinpath(mktempdir(), "fm.pksc")))
+    cfg = PipelineConfig(config)
+    nside = 64; res = Healpix.Resolution(nside); npix = Healpix.nside2npix(nside)
+    v2p = (x, y, z) -> Healpix.vec2pixRing(res, x, y, z)
+    K = [:kappa, :mass, :isw]
+    run(g) = run_multitile_fieldmap(cfg; ntile=2, seed=12345, npix=npix, vec2pix=v2p, use_gpu=g, verbose=false,
+                                    kernels=K, subdiv_max=1, coarse_grid=14)
+    mc = run(false); mg = run(true)
+    @test sum(mg[:mass]) ≈ sum(mc[:mass]) rtol=1e-6
+    # ISW depends on the fields only: GPU and CPU must agree to float precision. κ and the mass map paint
+    # displaced cells, and in this toy (z < 0.1, 8 Mpc/h cells) Float32 position differences near the observer
+    # move cells between pixels — the original splice differs by the same ~3% (CPU vs GPU), so they are not compared.
+    @test sum(abs2, mg[:isw] .- mc[:isw]) / sum(abs2, mc[:isw]) < 1e-8
 end
 
 @testset "GPU shell early exit is exact (2LPT, ioutshear=1)" begin

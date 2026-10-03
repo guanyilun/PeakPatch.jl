@@ -435,7 +435,11 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
         pot_coarse = irfft(pot_k, M)
     end
     coarse_k = nothing
-    verbose && @info "fieldmap Phase 1a: coarse fields done (N=$N, M=$M)"
+    # gaussian_split: long/short handoff for δ, ψ and the potential (MultiResolution._gsplit_setup)
+    gsplit = cfg.gaussian_split
+    gs = gsplit ? _gsplit_setup(coarse_noise, pk, M, boxsize_full, comp,
+                                _gaussian_split_rs(cfg.gaussian_split_rs, N ÷ M, nbuff), alatt; need_pot=needs_pot) : nothing
+    verbose && @info "fieldmap Phase 1a: coarse fields done (N=$N, M=$M)" gsplit
 
     # ---- Tile list with horizon pruning (identical to run_multitile_split) ----
     tile_ids = NTuple{3,Int}[]
@@ -469,12 +473,17 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
         pot_dev = nothing
         if use_gpu
             fn_multi = getglobal(_pp_parent(), :isolated_convolve_gpu_multi)
-            klist = needs_pot ?
+            klist = gsplit ? [(0, 0, 0)] : needs_pot ?
                 [(0, 0, 0), (1, 1, 0), (1, 2, 0), (1, 3, 0), (5, 0, 0)] :
                 [(0, 0, 0), (1, 1, 0), (1, 2, 0), (1, 3, 0)]
             outs = fn_multi(residual, pk, boxsize_local, nmesh;
                              kernels=klist, nshell=0, return_device=true)
             delta_self = outs[1]
+            if gsplit
+                delta_tile, psi_dev, pot_dev = _gsplit_tile(gs, true, delta_self, coarse_noise, it, jt, kt,
+                                                            nsub, nmesh, N, M, boxsize_local; need_pot=needs_pot)
+                delta_self = nothing
+            else
             fn_interp = getglobal(_pp_parent(), :interpolate_to_tile_gpu)
             delta_tile = delta_self .+ fn_interp(delta_coarse, it, jt, kt, nsub, nmesh, N, M;
                                                   return_device=true)
@@ -491,6 +500,7 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
                                       return_device=true)
                 pot_dev = outs[5] .+ pot_long
                 pot_long = nothing
+            end
             end
             if ilpt >= 2
                 fn2 = getglobal(_pp_parent(), :compute_2lpt_gpu)
@@ -518,6 +528,14 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
         else
             delta_self = _isolated_convolve_dispatch(false, residual, pk,
                                                       boxsize_local, nmesh, 0, 0, 0)
+            if gsplit
+                delta_tile, psi_g, pot_host = _gsplit_tile(gs, false, delta_self, coarse_noise, it, jt, kt,
+                                                           nsub, nmesh, N, M, boxsize_local; need_pot=needs_pot)
+                for dim in 1:3
+                    psi_host[dim] = psi_g[dim]
+                end
+                psi_g = nothing; delta_self = nothing
+            else
             delta_tile = delta_self .+ _interpolate_to_tile(delta_coarse, it, jt, kt,
                                                              nsub, nmesh, N, M)
             delta_self = nothing
@@ -532,6 +550,7 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
                                                         boxsize_local, nmesh, 5, 0, 0)
                 pot_host = pot_self .+ _interpolate_to_tile(pot_coarse, it, jt, kt,
                                                              nsub, nmesh, N, M)
+            end
             end
             if ilpt >= 2
                 delta_tile_k = rfft(delta_tile)
