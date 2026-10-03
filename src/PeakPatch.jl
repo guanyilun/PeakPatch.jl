@@ -327,6 +327,16 @@ Defined in `ext/CUDAExt.jl` — requires `using CUDA`.
 function compute_laplacian_gpu end
 
 """
+    isolated_poisson_psi_gpu(dS, boxsize_local) -> NTuple{3,CuArray{Float32,3}}
+
+GPU port of `MultiResolution._isolated_poisson_psi`: 1LPT displacement ψ_k = i k δ_k / k² of a
+tile-local density (2×-zero-padded, isolated boundary). Used by `[run] gaussian_split`.
+
+Defined in `ext/CUDAExt.jl` — requires `using CUDA`.
+"""
+function isolated_poisson_psi_gpu end
+
+"""
     interpolate_to_tile_gpu(coarse, it, jt, kt, nsub, nmesh, N, M) -> Array{Float32,3}
 
 GPU port of `MultiResolution._interpolate_to_tile` — a tri-cubic

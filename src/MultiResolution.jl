@@ -283,6 +283,36 @@ function _isolated_convolve(noise::Array{Float32,3}, pk, boxsize_local::Float64,
 end
 
 """
+    _isolated_poisson_psi(f, boxsize_local) -> NTuple{3,Array{Float32,3}}
+
+1LPT displacement ψ_k = i k δ_k / k² of a tile-local density `f`, with isolated (2×-zero-padded)
+boundary conditions: the field outside the tile is taken as zero. One forward FFT, three inverse.
+Used by `gaussian_split` on the short-range part δ_S of the tile density.
+"""
+function _isolated_poisson_psi(f::Array{Float32,3}, boxsize_local::Float64)
+    n = size(f, 1); n2 = 2n; dx = boxsize_local / n
+    padded = zeros(Float32, n2, n2, n2)
+    padded[1:n, 1:n, 1:n] .= f
+    fk = rfft(padded); padded = nothing
+    dk = 2π / (n2 * dx)
+    kxa = FFTW.rfftfreq(n2, n2 * dk); kya = FFTW.fftfreq(n2, n2 * dk)
+    out = ntuple(3) do dim
+        g = similar(fk)
+        Threads.@threads for iz in 1:n2
+            @inbounds for iy in 1:n2, ix in 1:size(fk, 1)
+                kx = Float64(kxa[ix]); ky = Float64(kya[iy]); kz = Float64(kya[iz])
+                k2 = kx^2 + ky^2 + kz^2
+                ki = dim == 1 ? kx : dim == 2 ? ky : kz
+                nyq = ix == size(fk, 1) || iy == n + 1 || iz == n + 1     # padded Nyquist planes (GPU parity)
+                g[ix, iy, iz] = (k2 == 0.0 || nyq) ? zero(eltype(g)) : fk[ix, iy, iz] * (im * ki / k2)
+            end
+        end
+        Float32.(irfft(g, n2)[1:n, 1:n, 1:n])
+    end
+    return out
+end
+
+"""
     _splice_compensation(M, block) -> Vector{Float64}
 
 Per-axis coarse-kernel factor D(k)/T(k) on the M-point coarse grid (fftfreq order;
@@ -723,6 +753,29 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
         end
     end
 
+    # gaussian_split: long-range coarse δ_L, ψ_L = G·(δ, ψ)_coarse (same noise, compensation and interpolator,
+    # so they stay a Poisson pair); with r_s ≳ 0.75 block, G(k_N,coarse) ≲ 4e-3 and the interpolation images
+    # vanish. The tile carries the short part with the (1 − G)·√P kernel on the spread block mean (pk_gshort).
+    gsplit = cfg.gaussian_split
+    delta_L_coarse = nothing; psi_L_coarse = nothing; pk_gshort = nothing
+    if gsplit
+        rs_cells = cfg.gaussian_split_rs > 0 ? cfg.gaussian_split_rs : 0.75 * block
+        rs2 = (rs_cells * alatt)^2
+        Gsplit = (kx, ky, kz, k2) -> exp(-k2 * rs2)
+        pk_gshort = k -> pk(k) * (1 - exp(-k^2 * rs2))^2
+        dLk = rfft(coarse_noise)
+        _periodic_convolve!(dLk, pk, M, boxsize_full; kernel_fn=Gsplit, comp=comp)
+        delta_L_coarse = irfft(dLk, M)
+        psi_L_coarse = Vector{Array{Float32,3}}(undef, 3)
+        for dim in 1:3
+            pLk = rfft(coarse_noise)
+            k1 = _kernel_1lpt(dim)
+            _periodic_convolve!(pLk, pk, M, boxsize_full; kernel_fn=(kx, ky, kz, k2) -> Gsplit(kx, ky, kz, k2) * k1(kx, ky, kz, k2), comp=comp)
+            psi_L_coarse[dim] = irfft(pLk, M)
+        end
+        verbose && @info "gaussian_split: long/short handoff" rs_cells block
+    end
+
     # Laplacian on coarse grid
     lapd_coarse = nothing
     if ioutshear >= 1
@@ -810,19 +863,21 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             t0 = _tic()
             fn_multi = getglobal(_pp_parent(), :isolated_convolve_gpu_multi)
             outs = fn_multi(residual, pk, boxsize_local, nmesh;
-                             kernels=[(0, 0, 0), (1, 1, 0), (1, 2, 0), (1, 3, 0)],
+                             kernels=gsplit ? [(0, 0, 0)] : [(0, 0, 0), (1, 1, 0), (1, 2, 0), (1, 3, 0)],
                              nshell=0, return_device=true)
             delta_self = outs[1]                    # CuArray{Float32,3}
-            psi_self_arr[1] = outs[2]               # CuArray
-            psi_self_arr[2] = outs[3]
-            psi_self_arr[3] = outs[4]
+            if !gsplit
+                psi_self_arr[1] = outs[2]           # CuArray
+                psi_self_arr[2] = outs[3]
+                psi_self_arr[3] = outs[4]
+            end
             _toc!("02_iso_fft_delta", t0)
         else
             t0 = _tic()
             delta_self = _isolated_convolve_dispatch(false, residual, pk,
                                                       boxsize_local, nmesh, 0, 0, 0)
             _toc!("02_iso_fft_delta", t0)
-            for dim in 1:3
+            gsplit || for dim in 1:3
                 t0p = _tic()
                 psi_self_arr[dim] = _isolated_convolve_dispatch(false, residual, pk,
                                                                   boxsize_local, nmesh, 1, dim, 0)
@@ -830,6 +885,35 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             end
         end
 
+        psi_tile = Vector{Any}(undef, 3)
+        if gsplit
+            # δ_S = √P·residual (delta_self) + (1 − G)·√P·spread(block mean); δ = interp(δ_L) + δ_S;
+            # ψ = interp(ψ_L) + isolated Poisson(δ_S)
+            t0 = _tic()
+            local pc_tile = _spread_coarse_to_tile(coarse_noise, it, jt, kt, nsub, nmesh, N, M) .* Float32(1 / sqrt(Float64(block)^3))
+            if use_gpu
+                local fn_int = getglobal(_pp_parent(), :interpolate_to_tile_gpu)
+                local pcS_dev = getglobal(_pp_parent(), :isolated_convolve_gpu_multi)(pc_tile, pk_gshort, boxsize_local, nmesh;
+                                    kernels=[(0, 0, 0)], nshell=0, return_device=true)[1]
+                local dS_dev = delta_self .+ pcS_dev
+                pcS_dev = nothing
+                delta_tile = dS_dev .+ fn_int(delta_L_coarse, it, jt, kt, nsub, nmesh, N, M; return_device=true)
+                local psiS_dev = getglobal(_pp_parent(), :isolated_poisson_psi_gpu)(dS_dev, boxsize_local)
+                dS_dev = nothing
+                for dim in 1:3
+                    psi_tile[dim] = fn_int(psi_L_coarse[dim], it, jt, kt, nsub, nmesh, N, M; return_device=true) .+ psiS_dev[dim]
+                end
+            else
+                local dS_tile = delta_self .+ _isolated_convolve(pc_tile, pk_gshort, boxsize_local, nmesh)
+                delta_tile = dS_tile .+ _interpolate_to_tile(delta_L_coarse, it, jt, kt, nsub, nmesh, N, M)
+                local psiS_tile = _isolated_poisson_psi(dS_tile, boxsize_local)
+                for dim in 1:3
+                    psi_tile[dim] = _interpolate_to_tile(psi_L_coarse[dim], it, jt, kt, nsub, nmesh, N, M) .+ psiS_tile[dim]
+                end
+            end
+            delta_self = nothing
+            _toc!("03_gaussian_split", t0)
+        else
         # 3. δ_coarse interpolated from global coarse field
         t0 = _tic()
         delta_long = if use_gpu
@@ -847,7 +931,6 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
 
         # 1LPT displacements: combine self (precomputed above) with
         # interpolated coarse field.
-        psi_tile = Vector{Any}(undef, 3)
         for dim in 1:3
             t0 = _tic()
             psi_long = if use_gpu
@@ -859,6 +942,7 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
             _toc!("05_interp_coarse_psi1", t0)
             psi_tile[dim] = psi_self_arr[dim] .+ psi_long
             psi_self_arr[dim] = nothing
+        end
         end
 
         residual = nothing  # free after all isolated convolutions done

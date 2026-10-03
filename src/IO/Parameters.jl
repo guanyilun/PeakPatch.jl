@@ -48,6 +48,14 @@ Base.@kwdef struct PipelineConfig
     # to v3fs); true = fsc_of_z(z_tile) with z_tile from the tile centre's distance to the
     # observer, as Fortran hpkvd does for ievol=1 (hpkvd.f90:510-514, 612; peakvoidsubs.f90:82).
     peak_threshold_per_tile::Bool = false
+    # Multires splice with a Gaussian long/short handoff G = exp(−k² r_s²) (docs/split_psi_fix_literature_2026-10.md):
+    #   δ = interp(G·δ_coarse) + isolated[√P·residual + (1 − G)·√P·spread(block mean)]
+    #   ψ = interp(G·ψ_coarse) + isolated Poisson solve of the short part of δ
+    # false = the original splice (all catalogues up to v4): ~4.5% rms δ and ~14% rms ψ error from uncancelled
+    # aliasing just above the coarse Nyquist (validation/paper/MATCHED_FORTRAN_2026-10.md §8). CPU and GPU.
+    gaussian_split::Bool = false
+    # handoff scale r_s in fine cells for gaussian_split; ≤ 0 → 0.75 × block
+    gaussian_split_rs::Float64 = 0.0
     ioutshear::Int = 0
     wsmooth::Int = 0
     rmax2rs::Float64 = 0.0
@@ -134,6 +142,8 @@ function PipelineConfig(config::Dict{String,Any})
         ilpt      = Int(get(run, "ilpt", 2)),
         coarse_compensation = Bool(get(run, "coarse_compensation", false)),
         peak_threshold_per_tile = Bool(get(run, "peak_threshold_per_tile", false)),
+        gaussian_split = Bool(get(run, "gaussian_split", false)),
+        gaussian_split_rs = Float64(get(run, "gaussian_split_rs", 0.0)),
         ioutshear = Int(get(run, "ioutshear", 0)),
         wsmooth   = Int(get(run, "wsmooth", 0)),
         rmax2rs   = Float64(get(run, "rmax2rs", 0.0)),

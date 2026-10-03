@@ -2962,6 +2962,28 @@ function _periodic_kernel!(arr_k, dk::Float64, n::Int32,
     return
 end
 
+function PeakPatch.isolated_poisson_psi_gpu(dS::CuArray{Float32,3}, boxsize_local::Real; threads::Integer=256)
+    n = size(dS, 1); n2 = 2n
+    padded = CUDA.zeros(Float32, n2, n2, n2)
+    padded[1:n, 1:n, 1:n] .= dS
+    fk = _cufft_rfft(padded)
+    CUDA.unsafe_free!(padded)
+    dk = 2π / (2 * Float64(boxsize_local))          # padded box = 2 × tile box
+    blocks = cld(size(fk, 1) * n2 * n2, threads)
+    out = ntuple(3) do dim
+        g = copy(fk)
+        # kernel id 2 is the 2LPT kernel −i k_dim/k² (Nyquist planes and k=0 zeroed); 1LPT is its negative
+        @cuda threads=threads blocks=blocks _periodic_kernel!(g, Float64(dk), Int32(n2), Int32(2), Int32(dim), Int32(0))
+        r = _cufft_irfft(g, n2)
+        CUDA.unsafe_free!(g)
+        res = -r[1:n, 1:n, 1:n]
+        CUDA.unsafe_free!(r)
+        res
+    end
+    CUDA.unsafe_free!(fk)
+    return out
+end
+
 function PeakPatch.compute_2lpt_gpu(delta_tile::AbstractArray{<:Real,3},
                                       nmesh::Integer, boxsize_local::Real;
                                       threads::Integer=256,

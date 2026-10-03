@@ -234,6 +234,41 @@ block 12. The split is `merge_ab_z07.toml`; the exact field is `configs/exact_n1
 The result is identical to the nsub 264 box. The error does not depend on tile size, and the v4 catalogues
 carry it.
 
+## 9. Fix: Gaussian long/short handoff (`[run] gaussian_split`, opt-in)
+
+Design and literature: `docs/split_psi_fix_literature_2026-10.md`.
+
+**The construction.** G = exp(−k² r_s²), with r_s = 9 fine cells (0.75 block).
+
+- δ = interp(G·δ_coarse) + isolated[√P·residual + (1 − G)·√P·spread(block mean)]
+- ψ = interp(G·ψ_coarse) + isolated Poisson(δ_short)
+
+CPU and GPU (`ext/CUDAExt.jl: isolated_poisson_psi_gpu`). The default is off, and the off path is unchanged.
+
+**Field level** (`results/split_fix_proto_cf22_deltafix.txt`): δ rms error 4.5% → 0.3%; ψ1 13.8% → 3.8%. The
+remaining ψ error is a low-k (k < k_N/2) bulk term from the isolated solves, at the same level as the original
+splice.
+
+**Halo level** (same field, GPU production path vs exact; `results/split_vs_exact_n1056_cf22_gsplit.txt`):
+
+| split vs exact | original | ψ from δ only | **gaussian_split (δ + ψ)** |
+|---|---|---|---|
+| ξ(3–15), M>5e12 | 1.037 | 1.024 | **1.001** |
+| b_E M>5e12 | 1.017 ± 0.002 | 1.007 ± 0.001 | **1.000 ± 0.0005** |
+| b_E per bin (5e12–2.5e14) | 0.99–1.02 | 1.00–1.01 | **0.999–1.002** |
+| peaks in the same cell | 85.4% | 87.7% | **99.3%** |
+| R_TH off by >2% | 74% | 53% | **2.9%** |
+| Eulerian Δ median | 0.84 Mpc/h | 0.31 Mpc/h | 0.23 Mpc/h (low-k bulk ψ) |
+
+**Verdict.** With gaussian_split the production path reproduces the exact-field halo catalogue on the same δ:
+clustering to 0.1% and bias to 0.05%. Peak selection agrees as well as Fortran vs Julia exact did (99.3%).
+
+**Open:**
+- the low-k ψ bulk error (0.23 Mpc/h), which matters for velocity products such as kSZ;
+- 2LPT (tile-periodic, unchanged);
+- GPU timing;
+- the user's decision on a production rerun (v5).
+
 ## Files
 
 - `matched/matched_julia.jl` (field / exact / split), `matched/gen_fortran_inputs.py`.

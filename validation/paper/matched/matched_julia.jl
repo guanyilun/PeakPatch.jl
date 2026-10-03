@@ -7,6 +7,7 @@
 #   mode "exact" : CPU run_multitile on that same global field (no multires split)
 #   mode "split" : GPU run_multitile_split, same noise (Threefry counter → same white noise), cf 22 →
 #                  coarse block 12 as in production (6144 / (16·32))
+#   mode "splitcpu": the same on the CPU (CPU reference for [run] gaussian_split); writes julia_split_*
 # Raw and merged (exclusion + volume reduction, Lagrangian + displacements) catalogs are written as pksc.
 #   usage: julia --project=validation -t N matched_julia.jl <config.toml> <field|exact|split> <outdir>
 using TOML, Printf
@@ -31,15 +32,18 @@ function main()
     end
     raw = if MODE == "exact"
         run_multitile(cfg; ntile=ntile, seed=seed, verbose=true)
+    elseif MODE == "splitcpu"
+        run_multitile_split(cfg; ntile=ntile, seed=seed, coarse_factor=rc["coarse_factor"], use_gpu=false, verbose=true)
     else
         run_multitile_split(cfg; ntile=ntile, seed=seed, coarse_factor=rc["coarse_factor"], use_gpu=true,
                             devices=collect(0:length(CUDA.devices())-1), verbose=true)
     end
     raw = filter(h -> h.RTHL > 0, raw)
     zf = Float32(cfg.z_out)
-    write_pksc(joinpath(outdir, "julia_$(MODE)_raw.pksc"), raw, maximum(h.RTHL for h in raw), zf)
+    tag = MODE == "splitcpu" ? "split" : MODE
+    write_pksc(joinpath(outdir, "julia_$(tag)_raw.pksc"), raw, maximum(h.RTHL for h in raw), zf)
     m = merge_catalog(raw; verbose=true, volume_reduction=true)
-    write_pksc(joinpath(outdir, "julia_$(MODE)_merged.pksc"), m, maximum(h.RTHL for h in m), zf)
+    write_pksc(joinpath(outdir, "julia_$(tag)_merged.pksc"), m, maximum(h.RTHL for h in m), zf)
     @info "done" MODE raw = length(raw) merged = length(m)
 end
 main()

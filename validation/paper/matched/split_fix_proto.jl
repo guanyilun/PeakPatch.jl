@@ -11,7 +11,7 @@ using TOML, Printf, FFTW, Statistics
 using PeakPatch
 import PeakPatch.PowerSpectrum: load_pk
 import PeakPatch.MultiResolution: _downsample_noise, _splice_compensation, _periodic_convolve!, _kernel_1lpt,
-    _generate_extended_residual, _isolated_convolve, _interpolate_to_tile
+    _generate_extended_residual, _isolated_convolve, _interpolate_to_tile, _generate_tile_noise, _spread_coarse_to_tile
 
 # isolated (2×-padded) convolution of a real tile field with a k-space kernel (no √P)
 function iso_kernel(f::Array{Float32,3}, Lb::Float64, kern)
@@ -39,6 +39,26 @@ function errspec(r, s, a, kNc)
     end
     ed, Pr, Pe
 end
+# isolated[ √P·n − G·√P·pc ] (2×-padded), with the √P normalisation of _isolated_convolve
+function iso_noise2(nf::Array{Float32,3}, pc::Array{Float32,3}, pk, Lb::Float64, G)
+    n = size(nf, 1); n2 = 2n; dx = Lb / n
+    p1 = zeros(Float32, n2, n2, n2); p1[1:n, 1:n, 1:n] .= nf; f1 = rfft(p1)
+    p1 .= 0; p1[1:n, 1:n, 1:n] .= pc; f2 = rfft(p1); p1 = nothing
+    dk = 2π / (n2 * dx); kx = FFTW.rfftfreq(n2, n2 * dk); ky = FFTW.fftfreq(n2, n2 * dk)
+    Threads.@threads for iz in 1:n2
+        @inbounds for iy in 1:n2, ix in 1:size(f1, 1)
+            k2 = kx[ix]^2 + ky[iy]^2 + ky[iz]^2
+            if k2 == 0
+                f1[ix, iy, iz] = 0
+            else
+                amp = sqrt(pk(sqrt(k2)) * dk^3 * n2^3)
+                f1[ix, iy, iz] = amp * (f1[ix, iy, iz] - G(k2) * f2[ix, iy, iz])
+            end
+        end
+    end
+    irfft(f1, n2)[1:n, 1:n, 1:n]
+end
+
 function errstats(r, s, a, kNc)
     e = s .- r; nsub = size(r, 1)
     R = rfft(r); E = rfft(e); kf = 2π / (nsub * a)
@@ -106,7 +126,16 @@ function main()
             end
             say(@sprintf("%-17s %8.1f %6d | %8.4f  | %12.2e         | %12.2e     | %8.4f          | %8.4f", lab, rs, nb, v[1], v[2], v[3], v[4], v[5]))
         end
-        report("prod", NaN, t -> base[t][2])
+        function reportδ(lab, rs, δof)
+            acc = zeros(5); ws = 0
+            for t in tiles
+                gi = (t[1]-1)*nsub+1:t[1]*nsub; gj = (t[2]-1)*nsub+1:t[2]*nsub; gk = (t[3]-1)*nsub+1:t[3]*nsub
+                acc .+= collect(errstats(Float64.(δg[gi, gj, gk]), Float64.(δof(t)[core, core, core]), a, kNc)); ws += 1
+            end
+            v = acc ./ ws
+            say(@sprintf("%-17s %8.1f %6d | %8.4f  | %12.2e         | %12.2e     | %8.4f          | %8.4f", lab, rs, nb, v[1], v[2], v[3], v[4], v[5]))
+        end
+        report("prod", NaN, t -> base[t][2]); reportδ("prod δ", NaN, t -> base[t][1])
         for rs in rss
             G(k2) = exp(-k2 * (rs * a)^2)
             δLc = coarse((kx, ky, kz, k2) -> G(k2)); ψLc = coarse((kx, ky, kz, k2) -> G(k2) * _kernel_1lpt(1)(kx, ky, kz, k2))
@@ -118,6 +147,17 @@ function main()
                 ψtpm[t] = ψL .+ iso_kernel(δt, Lb, (kx, ky, kz, k2) -> (1 - G(k2)) * im * kx / k2)
             end
             report("poisson", rs, t -> ψpois[t]); report("treepm", rs, t -> ψtpm[t])
+            # δ fix (Gaussian handoff for δ itself) + ψ from that δ
+            ψdfx = Dict{NTuple{3,Int},Array{Float32,3}}(); δdfx = Dict{NTuple{3,Int},Array{Float32,3}}()
+            for t in tiles
+                nf = _generate_tile_noise(t..., nsub, nmesh, N, seed)
+                pcn = _spread_coarse_to_tile(cn, t..., nsub, nmesh, N, M) .* Float32(1 / sqrt(Float64(block)^3))
+                δS = iso_noise2(nf, pcn, pk, Lb, G)
+                δL = _interpolate_to_tile(δLc, t..., nsub, nmesh, N, M)
+                δdfx[t] = δL .+ δS
+                ψdfx[t] = _interpolate_to_tile(ψLc, t..., nsub, nmesh, N, M) .+ iso_kernel(δS, Lb, (kx, ky, kz, k2) -> im * kx / k2)
+            end
+            report("δfix+poisson ψ", rs, t -> ψdfx[t]); reportδ("δfix δ", rs, t -> δdfx[t])
             GC.gc()
         end
     end
