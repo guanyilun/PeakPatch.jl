@@ -1,0 +1,17 @@
+split vs exact, same field: N=1056, region 852.2 Mpc/h; label n1056_cf22
+raw peaks in region: exact 5953420, split 5871486; exact peaks with a split peak in the same cell 0.8537 (same filter 0.7573)
+R_TH split/exact over matched: median 0.99349  mean 0.99332  p05 0.8103  p95 1.1599  |Δ|>2% 0.7412
+  M_exact 5.0e+12–1.3e+13: n=1070229  median 0.9872  mean 0.9797  frac(S>1.02E) 0.2646  frac(S<0.98E) 0.4486
+  M_exact 1.3e+13–5.0e+13: n=676854  median 0.9843  mean 0.9721  frac(S>1.02E) 0.2060  frac(S<0.98E) 0.4636
+  M_exact 5.0e+13–1.0e+16: n=146903  median 0.9887  mean 0.9744  frac(S>1.02E) 0.1392  frac(S<0.98E) 0.4007
+Eulerian position difference split−exact: median 0.8350  p90 1.3898 Mpc/h
+
+ξ(3–15), M>5e12:  S/E 1.0379   E_Rsplit/E 1.0259
+  by r (S/E): 1.026 1.000 0.993 1.020 1.046 1.074 1.056 1.019 1.038 1.035 
+b_E (k<0.1)          S/E               E_Rsplit/E
+  M>5e12             1.0171±0.0015   1.0130±0.0015   
+  5.0e+12–8.0e+12    1.0195±0.0056   1.0151±0.0046   
+  8.0e+12–1.3e+13    1.0110±0.0061   1.0076±0.0056   
+  1.3e+13–3.2e+13    1.0235±0.0042   1.0176±0.0020   
+  3.2e+13–7.9e+13    1.0140±0.0058   1.0126±0.0035   
+  7.9e+13–2.5e+14    0.9939±0.0110   0.9939±0.0085   

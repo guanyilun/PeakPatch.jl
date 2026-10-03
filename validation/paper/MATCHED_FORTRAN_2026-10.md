@@ -166,13 +166,46 @@ depends on tile size too.
 - (b) split vs exact at the production tile size (N 1536, nsub 384);
 - (c) fix, then decide on rerunning production.
 
+## 8. Where the split differs: peaks, radii, displacements (`results/split_vs_exact_n1056_cf22.txt`)
+
+Same field, production split path (block 12) vs exact, raw peaks inside the analysis region.
+
+**The two fields differ at the cell level, far more than Fortran vs Julia did.**
+- Only 85% of exact peaks have a split peak in the same cell (76% in the same filter). Fortran vs Julia
+  exact: 99.3%.
+- R_TH of matched peaks differs by more than 2% for 74% of them (median split/exact 0.993, p05 0.81,
+  p95 1.16).
+- Eulerian positions differ by a median of 0.84 Mpc/h (p90 1.39), against ~6 Mpc/h displacements.
+  Fortran vs Julia exact: 0.002. That is a ~14% displacement error, consistent with Audit C's ~15% ψ rms
+  error near the coarse Nyquist.
+
+**Most of the clustering change comes through R_TH.** Exact peaks given the split R_TH (hybrid E_Rsplit)
+already reproduce ~70% of the effect:
+
+| | S/E | E_Rsplit/E |
+|---|---|---|
+| ξ(3–15) | 1.038 | 1.026 |
+| b_E M>5e12 | 1.017 ± 0.002 | 1.013 ± 0.002 |
+
+The rest comes from peak selection and positions.
+
+**Open (running):**
+- field-level error spectra of δ, ψ1, ψ2 vs k and vs distance from the tile edge, with and without an
+  extended residual shell (`matched/split_field_error.jl`; cf 22 and cf 8);
+- split vs exact at the production tile size (N 1536, nsub 384, block 12; `configs/exact_n1536.toml` vs
+  `merge_ab_z07.toml`).
+
+**Implication if confirmed at production tile size:** v4 halo R_TH, positions and velocities carry a
+split-induced error of this size. Our own production systematic, independent of Websky.
+
 ## Files
 
 - `matched/matched_julia.jl` (field / exact / split), `matched/gen_fortran_inputs.py`.
 - `matched/matched_compare.jl`, `matched/matched_rth_diag.jl`, `matched/matched_rth_shell.jl`,
   `matched/matched_rth_hybrid.jl`.
 - `matched/matched_peak_dbg.jl` + `matched/radialshell_dbg_hook.patch` + `matched/fortran_dbg_patch.py`.
-- `matched/matched_bank_compare.jl`, `matched/matched_split_scan.jl`.
+- `matched/matched_bank_compare.jl`, `matched/matched_split_scan.jl`, `matched/split_vs_exact.jl`,
+  `matched/split_field_error.jl`.
 - Configs: `configs/matched_fortran_bank2.toml`, `configs/split_iso_*.toml`, `configs/split_scan_cf*.toml`
   (`matched_split_periodic.toml` = the nbuff 26 overflow case).
 - Run data: `/home/yguan/scratch/websky_6144/fortran_matched/{run,run_dbg}`.

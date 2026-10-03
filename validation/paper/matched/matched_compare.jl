@@ -17,12 +17,15 @@ import PeakPatch.Cosmology: CosmologyParams, growth_factor
 import PeakPatch.MassFunction: precompute_sigma, tinker_dndlnM
 
 const RUN = ARGS[1]
-const N = 1056; const NB = 26; const A = 258.2207 / 303; const L = N * A
+# geometry: defaults = the 1056³ matched box; MC_N / MC_NB / MC_A override (e.g. the 1536³ production-tile box)
+const N = parse(Int, get(ENV, "MC_N", "1056")); const NB = parse(Int, get(ENV, "MC_NB", "26"))
+const A = parse(Float64, get(ENV, "MC_A", string(258.2207 / 303))); const L = N * A
 const RHO_M = 2.775e11 * 0.31
 mass(R) = 4 / 3 * π * RHO_M * Float64(R)^3
 gidx(x) = x / A + (N + 1) / 2                         # fine-grid (1-based, cell-centred) coordinate of position x
-# analysis region: coarse (4-cell) cells 8..257 = fine cells 29..1028, inside the 27..1030 cores
-const CB = 4; const C0 = 8; const NC = 250
+# analysis region: coarse (4-cell) cells C0.. inside the non-periodic cores NB+1..N−NB (N=1056: cells 8..257 =
+# fine 29..1028 inside 27..1030)
+const CB = 4; const C0 = 8; const NC = (N - 2 * (CB * (C0 - 1))) ÷ CB
 const XLO = (CB * (C0 - 1) + 0.5 - (N + 1) / 2) * A; const XHI = XLO + NC * CB * A
 const VREG = (XHI - XLO)^3
 inreg(x, y, z) = XLO <= x < XHI && XLO <= y < XHI && XLO <= z < XHI
