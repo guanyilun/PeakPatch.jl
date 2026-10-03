@@ -88,3 +88,37 @@ short part acts on the full fine noise, and the buffer equals R.
 - `matched/split_vs_exact.jl` / `matched_split_scan.jl`: split/exact ξ(3–15) and b_E within ~0.5% of 1
   (now 1.037 / 1.017); peaks in the same cell ≳ 99%; Eulerian position error ≪ 0.8 Mpc/h.
 - Only then: cost on GPU, and a decision on rerunning production.
+
+## Prototype results (2026-10-03)
+
+Run with `validation/paper/matched/split_fix_proto.jl`. Results: `results/split_fix_proto_cf22_scan.txt` and
+`_spectrum.txt`. Setup: block 12, 2 tiles, ψ1 in the cores vs the exact global field, same noise.
+
+| variant | r_s (cells) | buffer | ψ1 rms err | P_err/P_ref, k∈[k_N,2k_N) | P_err/P_ref, k<k_N/2 |
+|---|---|---|---|---|---|
+| production | – | 25 | 13.8% | 0.218 | 4.1e-3 |
+| Poisson (ψ from tile δ) | 6 / 9 / 12 | 25 | 5.2 / 5.1 / 5.8% | 1.5e-2 / 7.9e-3 / 7.4e-3 | 2.5e-3 / 3.1e-3 / 4.3e-3 |
+| Poisson | 9 | 60 | **3.7%** | 6.7e-3 | 5.7e-4 |
+| TreePM short kernel on δ_tile | 9 | 60 | 9.9% | 8.0e-3 | 1.5e-2 |
+
+**The Poisson variant works.** The aliasing band drops 30×, from 0.31 to 0.005 at 1.24 k_N.
+
+**What is left is δ_tile's own error.** A per-bin spectrum (Poisson, r_s 9, buffer 60) gives error power
+0.0003–0.013 per bin and 0.14% in total, i.e. 3.7% rms.
+
+- At k > k_N the remaining ψ error equals the tile δ's own splice error (δ: 1.2% at 1.76 k_N, 0.3–0.5% beyond).
+  The ψ fix reaches "δ-level" accuracy.
+- At low k it is the truncation of the isolated solve (buffer 25 → 3e-3, buffer 60 → 6e-4).
+
+**TreePM fails at low k.** Its coarse G-part inherits the block-mean noise aliasing (∝ (kΔ)²), which nothing on
+the tile corrects. The Poisson form self-corrects, because δ_tile is exact at low k.
+
+**Scale of the residual.** Production ψ1 13.8% rms is only 1.7% error power. The fix brings it to 0.14–0.26%.
+
+**Next:**
+1. Halo-level acceptance on the same field (split/exact ξ, b_E, peak matching), with the fix under an opt-in
+   flag in the CPU split path.
+2. If needed, an extended field region for the isolated solve (buffer 60 for the field only, while the
+   shell-analysis buffer stays 25).
+3. ψ2 the same way.
+4. The GPU port.
