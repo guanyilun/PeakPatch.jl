@@ -1,0 +1,5 @@
+fraction of R_TH values lying exactly on a lattice shell radius √n·a
+  J < 0.98 F     n= 1598141   Fortran on-shell 0.0576   Julia on-shell 0.0773
+  |J/F−1| ≤ 2%   n= 3913526   Fortran on-shell 0.1202   Julia on-shell 0.0917
+  J > 1.02 F     n=  506280   Fortran on-shell 0.9713   Julia on-shell 0.1029
+  J<F: (R_F − R_J) in cells: median 0.071  p10 0.044  p90 0.170

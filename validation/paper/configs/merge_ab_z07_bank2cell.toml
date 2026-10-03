@@ -1,0 +1,42 @@
+# merge A/B snapshot (validation/paper/merge_ab.jl): v3 physics, N=1536 periodic box at z=0.7
+
+[cosmology]
+Om   = 0.31
+OB   = 0.049
+OL   = 0.69
+h    = 0.68
+
+[grid]
+n       = 434
+boxsize = 369.86068
+nbuff   = 25
+periodic_cores = true
+cenx    = 0.0
+ceny    = 0.0
+cenz    = 0.0
+
+[run]
+z_out     = 0.7
+z_max     = 4.5
+ievol     = 0
+ilpt      = 2
+ioutshear = 1
+wsmooth   = 1
+rmax2rs   = 0.0
+NonGauss  = 0
+fNL       = 0.0
+seed      = 12345
+ntile     = 4
+coarse_factor = 32
+coarse_compensation = true
+generate_table = false
+
+[files]
+pk         = "validation/websky_6144/data/pk_websky.dat"
+filterbank = "validation/websky_6144/data/filters_paper_2cell.dat"
+homeltab   = "validation/websky_6144/data/HomelTab_websky.dat"
+output     = "merge_ab_z07_bank2cell.pksc"
+
+[output]
+format = "pksc"
+path   = "/home/yguan/scratch/websky_6144/merge_ab"

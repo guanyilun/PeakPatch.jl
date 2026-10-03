@@ -1,0 +1,42 @@
+diff --git a/src/HaloFinder/RadialShell.jl b/src/HaloFinder/RadialShell.jl
+index dd70e89..5f7086e 100644
+--- a/src/HaloFinder/RadialShell.jl
++++ b/src/HaloFinder/RadialShell.jl
+@@ -291,6 +291,7 @@ end
+ # ---------- analyse_peak ----------
+ # Top-level orchestrator. Returns PeakResult.
+ 
++const _DBG = Ref{Union{Nothing,IO}}(nothing)   # TEMP debug hook (matched_fortran harness) — do not commit
+ function analyse_peak(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
+                       ZZon::Float64, Rfclvi::Float64, ct::CollapseTableInterp,
+                       shells::Vector{ShellCell};
+@@ -593,6 +594,13 @@ function analyse_peak(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
+     # Fortran uses uninitialized Frhoc at this point, effectively returning
+     # zvir1p = -1. Replicate this to match Fortran output.
+     zvir1p_m0 = -1.0
++    if _DBG[] !== nothing
++        println(_DBG[], "RNG ", mlow, " ", mupp, " ", m)
++        for m1 in mlow:mupp
++            println(_DBG[], "SH ", m1, " ", nshell[m1], " ", rad[m1], " ", SRshell[1][1][m1], " ", SRshell[2][2][m1], " ", SRshell[3][3][m1], " ", Sshell[1][m1])
++        end
++    end
++    _DBG[] !== nothing && println(_DBG[], "M0 ", m0, " ", rad[m0], " ", Fbar[m0], " ", Frhoh_m0, " ", e_v_m0, " ", p_v_m0, " ", zvir1p_m0, " fcrit ", fcrit, " Fbar(m0-1) ", m0 > 1 ? Fbar[m0-1] : NaN)
+ 
+     if zvir1p_m0 >= ZZon
+         # Already virialized at m0
+@@ -677,6 +685,7 @@ function analyse_peak(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
+             end
+ 
+             m0_next = mp + 1
++            _DBG[] !== nothing && println(_DBG[], "MP ", mp, " ", rad[mp], " ", Fbar[mp], " ", Frhoh_mp, " ", e_v_mp, " ", p_v_mp, " ", zvir1p_mp, " ", iflag_mp)
+             if zvir1p_mp >= ZZon
+                 m0 = m0_next
+                 zvir1p = zvir1p_mp
+@@ -724,6 +733,7 @@ function analyse_peak(pg::PeakGrid, ipp::Int, alatt::Float64, ir2min::Int,
+         RTHL = rad[m0-1]
+     end
+ 
++    _DBG[] !== nothing && println(_DBG[], "FIN ", m0, " ", RTHL, " ", zvir1, " ", zvir1p, " ", ZZon, " ", dZvir)
+     if RTHL <= 0.0
+         Threads.atomic_add!(_dump_rthl_neg, 1)
+         return no_collapse()

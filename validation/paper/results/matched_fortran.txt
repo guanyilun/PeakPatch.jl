@@ -1,0 +1,57 @@
+same-field box: N=1056, cell 0.85221 Mpc/h, z=0.70; analysis region 852.2 Mpc/h cube (core interior)
+F_raw   n=6062233  max |offset from cell centre| = 2.99e-05 cells
+JE_raw  n=6025778  max |offset from cell centre| = 1.79e-05 cells
+
+== 1. raw peaks (R_TH>0): Fortran 6062233  Julia exact 6025778
+  Fortran peaks with a Julia peak in the same cell: 0.9927  (same filter: 0.9916)
+  R_TH Julia/Fortran over matched: median 0.99239  mean 1.01085  |Δ|>1%: 0.5333  |Δ|>10%: 0.0990
+  Eulerian position difference: median 0.0023 Mpc/h (displacement median 6.099)
+  M_F 5.0e+12–1.3e+13: n=1495377  R ratio median 0.9990  p05 0.9824  p95 1.6261  frac(R_J > 1.02 R_F) 0.2631  frac(R_J < 0.98 R_F) 0.0302
+  M_F 1.3e+13–5.0e+13: n=661625  R ratio median 0.9991  p05 0.9912  p95 1.2543  frac(R_J > 1.02 R_F) 0.1376  frac(R_J < 0.98 R_F) 0.0018
+  M_F 5.0e+13–1.0e+16: n=111374  R ratio median 0.9998  p05 0.9962  p95 1.1165  frac(R_J > 1.02 R_F) 0.0965  frac(R_J < 0.98 R_F) 0.0003
+  matched peaks where Fortran R_TH sits at the 1.75 R_f hunt cap and Julia is larger: 0.0337
+
+== 2. merged catalogs (rank-matched to Tinker08 in the region)
+  F   merged 2599090, in region 2563230, M>5e12: 441089, raw R_TH of the 5e12 rank: 2.351 Mpc/h
+  FJ  merged 2597659, in region 2561812, M>5e12: 441089, raw R_TH of the 5e12 rank: 2.351 Mpc/h
+  JE  merged 2575646, in region 2540084, M>5e12: 441089, raw R_TH of the 5e12 rank: 2.330 Mpc/h
+  match F → FJ (Lagrangian position within 1 cell), fraction of F halos with a FJ counterpart:
+    M 5.0e+12–8.0e+12: n=190376  matched 0.9997  same bin 0.9990
+    M 8.0e+12–1.3e+13: n=115948  matched 0.9989  same bin 0.9983
+    M 1.3e+13–2.0e+13: n=60779  matched 0.9999  same bin 0.9998
+    M 2.0e+13–3.2e+13: n=37891  matched 0.9997  same bin 0.9996
+    M 3.2e+13–7.9e+13: n=28987  matched 0.9999  same bin 0.9999
+    M 7.9e+13–2.5e+14: n=6695  matched 1.0000  same bin 1.0000
+  match F → JE (Lagrangian position within 1 cell), fraction of F halos with a JE counterpart:
+    M 5.0e+12–8.0e+12: n=190376  matched 0.9551  same bin 0.9009
+    M 8.0e+12–1.3e+13: n=115948  matched 0.9445  same bin 0.8968
+    M 1.3e+13–2.0e+13: n=60779  matched 0.9368  same bin 0.8899
+    M 2.0e+13–3.2e+13: n=37891  matched 0.9378  same bin 0.8977
+    M 3.2e+13–7.9e+13: n=28987  matched 0.9367  same bin 0.9152
+    M 7.9e+13–2.5e+14: n=6695  matched 0.9270  same bin 0.9102
+
+== 3. cross bias with the linear field, k < 0.1 h/Mpc (b_L: Lagrangian positions, b_E: Eulerian); δ_lin scaled to z=0.7
+  b_L:            F       FJ      JE         ratios (jackknife σ)
+  M>5e12        0.9236  0.9238  0.9392     F/FJ 0.9999±0.0002  F/JE 0.9834±0.0010
+  5.0e+12–8.0e+12  0.6356  0.6360  0.6370     F/FJ 0.9994±0.0007  F/JE 0.9979±0.0047
+  8.0e+12–1.3e+13  0.8174  0.8172  0.8319     F/FJ 1.0003±0.0003  F/JE 0.9827±0.0044
+  1.3e+13–2.0e+13  1.0501  1.0500  1.0912     F/FJ 1.0001±0.0004  F/JE 0.9624±0.0050
+  2.0e+13–3.2e+13  1.3266  1.3269  1.3599     F/FJ 0.9998±0.0005  F/JE 0.9755±0.0046
+  3.2e+13–7.9e+13  1.8781  1.8781  1.9119     F/FJ 1.0000±0.0003  F/JE 0.9823±0.0054
+  7.9e+13–2.5e+14  3.0794  3.0794  3.1129     F/FJ 1.0000±0.0000  F/JE 0.9892±0.0022
+  b_E:            F       FJ      JE         ratios (jackknife σ)
+  M>5e12        1.8553  1.8554  1.8694     F/FJ 0.9999±0.0001  F/JE 0.9924±0.0006
+  5.0e+12–8.0e+12  1.5793  1.5797  1.5792     F/FJ 0.9997±0.0003  F/JE 1.0000±0.0022
+  8.0e+12–1.3e+13  1.7602  1.7600  1.7719     F/FJ 1.0001±0.0002  F/JE 0.9934±0.0023
+  1.3e+13–2.0e+13  1.9740  1.9741  2.0119     F/FJ 0.9999±0.0002  F/JE 0.9811±0.0032
+  2.0e+13–3.2e+13  2.2316  2.2318  2.2683     F/FJ 0.9999±0.0003  F/JE 0.9838±0.0029
+  3.2e+13–7.9e+13  2.7628  2.7627  2.7962     F/FJ 1.0000±0.0002  F/JE 0.9880±0.0039
+  7.9e+13–2.5e+14  3.9207  3.9207  3.9523     F/FJ 1.0000±0.0000  F/JE 0.9920±0.0023
+
+== 4. ξ(3–15 Mpc/h), M>5e12, Eulerian, region randoms
+  F   ξ(3–15) 1.2462   ξ(1–3) 5.5086
+  FJ  ξ(3–15) 1.2464   ξ(1–3) 5.5080
+  JE  ξ(3–15) 1.2721   ξ(1–3) 5.9030
+  F/FJ ξ(3–15) 0.9999   by r: 1.000 1.000 1.000 1.000 1.000 1.000 1.000 1.000 1.000 1.000
+  F/JE ξ(3–15) 0.9796   by r: 0.911 0.938 0.960 0.977 0.982 0.981 0.983 0.987 0.989 0.990
+  [full-sky Websky/ours v4fs: ξ(3–15) 0.948 ± 0.002; b ratio ≈ 0.95–0.96 below 8e13]
