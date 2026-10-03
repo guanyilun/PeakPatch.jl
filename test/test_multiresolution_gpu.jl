@@ -17,7 +17,7 @@ end
 
 # ---- Re-use the helpers from test_multiresolution.jl ----
 function _make_config(dir; n=60, boxsize=100.0, z=0.0, ilpt=1, nbuff=8,
-                      ioutshear=0, rmax2rs=0.0)
+                      ioutshear=0, rmax2rs=0.0, gaussian_split=false)
     pk_path = joinpath(dir, "test_pk.dat")
     ks = 10.0 .^ range(-4, stop=1, length=200)
     open(pk_path, "w") do f
@@ -51,7 +51,7 @@ function _make_config(dir; n=60, boxsize=100.0, z=0.0, ilpt=1, nbuff=8,
         ioutshear=ioutshear, rmax2rs=rmax2rs,
         ievol=0, z_max=0.0, cenx=0.0, ceny=0.0, cenz=0.0,
         Omx=0.261, OmB=0.049, Omvac=0.69, h=0.68,
-        NonGauss=0, fNL=0.0, wsmooth=1,
+        NonGauss=0, fNL=0.0, wsmooth=1, gaussian_split=gaussian_split,
     )
 end
 
@@ -100,6 +100,15 @@ end
     @printf "  CPU time: %.2f s  GPU time: %.2f s (%.2fx)\n" t_cpu t_gpu (t_cpu / t_gpu)
     _compare_halos(halos_cpu, halos_gpu; label="2LPT ntile=2")
 
+    rm(tmpdir; recursive=true)
+end
+
+@testset "run_multitile_split use_gpu=true vs CPU (gaussian_split, 2LPT)" begin
+    tmpdir = mktempdir()
+    cfg = _make_config(tmpdir; n=68, boxsize=226.67, z=0.0, ilpt=2, nbuff=8, gaussian_split=true)
+    halos_cpu = PeakPatch.run_multitile_split(cfg; ntile=2, seed=42, verbose=false, coarse_factor=5, use_gpu=false)
+    halos_gpu = PeakPatch.run_multitile_split(cfg; ntile=2, seed=42, verbose=false, coarse_factor=5, use_gpu=true)
+    _compare_halos(halos_cpu, halos_gpu; label="gaussian_split 2LPT ntile=2")
     rm(tmpdir; recursive=true)
 end
 

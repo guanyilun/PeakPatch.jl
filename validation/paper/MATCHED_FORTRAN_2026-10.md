@@ -263,11 +263,28 @@ splice.
 **Verdict.** With gaussian_split the production path reproduces the exact-field halo catalogue on the same δ:
 clustering to 0.1% and bias to 0.05%. Peak selection agrees as well as Fortran vs Julia exact did (99.3%).
 
-**Open:**
-- the low-k ψ bulk error (0.23 Mpc/h), which matters for velocity products such as kSZ;
-- 2LPT (tile-periodic, unchanged);
-- GPU timing;
-- the user's decision on a production rerun (v5).
+**Velocities** (`results/split_velocity.txt`; same δ; matched raw peaks with M > 5e12; v ∝ ψ1 + 2ψ2):
+
+| split vs exact | original | gaussian_split |
+|---|---|---|
+| per-halo v: rms Δ / rms | 13.1% | **4.5%** |
+| per-halo v: corr | 0.9915 | **0.9990** |
+| per-halo v: amplitude | 0.995 | 1.002 |
+| ψ2 alone: rms Δ / rms | 15.8% | 11.1% (tile-periodic 2LPT, unchanged) |
+| halo velocity field error power, k < 0.05 | 3–5e-3 | 2–3e-3 |
+| halo velocity field error power, k 0.2–0.5 | 1.1–1.9e-2 | **2e-3** (flat) |
+
+For kSZ (∝ v²) this means a power bias ≲ 0.5% (amplitude 1.002², decorrelation ~2e-3), negligible next to the
+painting systematics. The remaining ψ2 error is subdominant, because |ψ2| ≈ 0.09 |ψ1|.
+
+**Tests.** Job 5912867 (L40S):
+- Pkg.test 2331/2331 pass;
+- GPU multires tests pass;
+- new: the isolated Poisson ψ of a Gaussian blob matches the analytic free-space solution to 0.1–1%;
+- new: gaussian_split vs global FFT, halo count 2122 vs 2101;
+- new: gaussian_split CPU = GPU (2122 = 2122).
+
+**Open:** the user's decision on a production rerun (v5 = v4 + `gaussian_split = true`).
 
 ## Files
 

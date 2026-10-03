@@ -1,0 +1,15 @@
+halo displacement / velocity error, split vs exact (same δ), raw peaks matched by cell + filter, M > 5e12 (raw R)
+
+== run_split_nb25: matched 1667772 of 2211002
+  ψ1        rms|Δ|/rms|ref| 0.1327   corr 0.99125   amplitude Σab/Σa² 0.9967   rms|ref| 6.548 Mpc/h
+  ψ2        rms|Δ|/rms|ref| 0.1580   corr 0.98755   amplitude Σab/Σa² 0.9892   rms|ref| 0.611 Mpc/h
+  v∝ψ1+2ψ2  rms|Δ|/rms|ref| 0.1305   corr 0.99152   amplitude Σab/Σa² 0.9952   rms|ref| 7.149 Mpc/h
+  halo velocity field (x, summed per cell over matched halos): error power / reference power by k [h/Mpc]
+    0.00–0.02: 2.78e-03   0.02–0.05: 5.29e-03   0.05–0.10: 4.04e-03   0.10–0.20: 6.90e-03   0.20–0.30: 1.13e-02   0.30–0.50: 1.88e-02   
+
+== run_split_fix_gpu: matched 2181644 of 2211002
+  ψ1        rms|Δ|/rms|ref| 0.0441   corr 0.99904   amplitude Σab/Σa² 1.0031   rms|ref| 6.552 Mpc/h
+  ψ2        rms|Δ|/rms|ref| 0.1106   corr 0.99387   amplitude Σab/Σa² 0.9919   rms|ref| 0.611 Mpc/h
+  v∝ψ1+2ψ2  rms|Δ|/rms|ref| 0.0448   corr 0.99901   amplitude Σab/Σa² 1.0022   rms|ref| 7.155 Mpc/h
+  halo velocity field (x, summed per cell over matched halos): error power / reference power by k [h/Mpc]
+    0.00–0.02: 1.94e-03   0.02–0.05: 3.24e-03   0.05–0.10: 2.12e-03   0.10–0.20: 1.96e-03   0.20–0.30: 1.98e-03   0.30–0.50: 2.03e-03   

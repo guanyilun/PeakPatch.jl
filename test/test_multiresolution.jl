@@ -8,7 +8,7 @@ using Test
 
 # ---- Helper: create test config ----
 function _make_config(dir; n=60, boxsize=100.0, z=0.0, ilpt=1, nbuff=8,
-                      ioutshear=0, rmax2rs=0.0)
+                      ioutshear=0, rmax2rs=0.0, gaussian_split=false)
     pk_path = joinpath(dir, "test_pk.dat")
     ks = 10.0 .^ range(-4, stop=1, length=200)
     open(pk_path, "w") do f
@@ -42,7 +42,7 @@ function _make_config(dir; n=60, boxsize=100.0, z=0.0, ilpt=1, nbuff=8,
         ioutshear=ioutshear, rmax2rs=rmax2rs,
         ievol=0, z_max=0.0, cenx=0.0, ceny=0.0, cenz=0.0,
         Omx=0.261, OmB=0.049, Omvac=0.69, h=0.68,
-        NonGauss=0, fNL=0.0, wsmooth=1,
+        NonGauss=0, fNL=0.0, wsmooth=1, gaussian_split=gaussian_split,
     )
 end
 
@@ -165,6 +165,35 @@ end
         @test frac_diff < 0.05 || abs(n_s - n_g) <= 3
     end
 
+    rm(tmpdir; recursive=true)
+end
+
+@testset "Gaussian split: isolated Poisson ψ of a compact blob" begin
+    # _isolated_poisson_psi returns ψ_k = i k δ_k / k² with isolated boundaries, i.e. the free-space
+    # solution: for a Gaussian blob δ = exp(−r²/2s²), ψ_r(r) = −(1/r²) ∫₀^r δ r'² dr'.
+    MR = PeakPatch.MultiResolution
+    n = 48; L = 48.0; s = 2.5; c = (n + 1) / 2
+    δ = Float32[exp(-((i - c)^2 + (j - c)^2 + (k - c)^2) / (2s^2)) for i in 1:n, j in 1:n, k in 1:n]
+    ψx, ψy, ψz = MR._isolated_poisson_psi(δ, L)
+    encl(R) = begin h = R / 4000; sum(exp(-((m - 0.5) * h)^2 / (2s^2)) * ((m - 0.5) * h)^2 for m in 1:4000) * h end
+    jc = Int(c + 0.5)                                            # cell centre offset (0.5, 0.5) from the blob centre in y, z
+    for di in (3, 5, 8, 12)
+        i = jc + di; r = i - c; R = sqrt(r^2 + 0.5)
+        @test ψx[i, jc, jc] ≈ -encl(R) / R^2 * (r / R) rtol = 0.03
+        @test ψx[n + 1 - i, jc, jc] ≈ -ψx[i, jc, jc] rtol = 0.03  # antisymmetry about the centre
+    end
+end
+
+@testset "Halo count comparison, gaussian_split (ntile=2, 2LPT)" begin
+    tmpdir = mktempdir()
+    cfg = _make_config(tmpdir; n=68, boxsize=226.67, z=0.0, ilpt=2, nbuff=8)
+    cfg_g = _make_config(tmpdir; n=68, boxsize=226.67, z=0.0, ilpt=2, nbuff=8, gaussian_split=true)
+    halos_global = PeakPatch.run_multitile(cfg; ntile=2, seed=42, verbose=false)
+    halos_split = PeakPatch.run_multitile_split(cfg_g; ntile=2, seed=42, verbose=false, coarse_factor=5)
+    n_g = length(halos_global); n_s = length(halos_split)
+    println("  Global FFT: $n_g halos; gaussian_split: $n_s halos")
+    @test n_g > 0
+    @test abs(n_s - n_g) / n_g < 0.05 || abs(n_s - n_g) <= 3
     rm(tmpdir; recursive=true)
 end
 
