@@ -190,7 +190,8 @@ end
     cfg = _make_config(tmpdir; n=76, boxsize=253.33, z=0.0, ilpt=2, nbuff=12)
     cfg_g = _make_config(tmpdir; n=76, boxsize=253.33, z=0.0, ilpt=2, nbuff=12, gaussian_split=true)
     halos_global = PeakPatch.run_multitile(cfg; ntile=2, seed=42, verbose=false)
-    halos_split = PeakPatch.run_multitile_split(cfg_g; ntile=2, seed=42, verbose=false, coarse_factor=8)
+    # profile=true exercises the per-tile timers (a missing timer key failed the first production-size run)
+    halos_split = PeakPatch.run_multitile_split(cfg_g; ntile=2, seed=42, verbose=false, coarse_factor=8, profile=true)
     n_g = length(halos_global); n_s = length(halos_split)
     println("  Global FFT: $n_g halos; gaussian_split: $n_s halos")
     @test n_g > 0

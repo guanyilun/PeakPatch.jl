@@ -883,6 +883,7 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
         "01_residual_gen" => 0.0,
         "02_iso_fft_delta" => 0.0,
         "03_interp_coarse_delta" => 0.0,
+        "03_gaussian_split" => 0.0,
         "04_iso_fft_psi1" => 0.0,
         "05_interp_coarse_psi1" => 0.0,
         "06_2lpt_periodic_fft" => 0.0,
@@ -905,7 +906,7 @@ function run_multitile_split(cfg::PipelineConfig; ntile::Int, seed::Integer=42,
                               timings::Dict{String,Float64})
         it, jt, kt = tid
         _tic()  = profile ? time() : 0.0
-        _toc!(key::String, t0::Float64) = profile ? (timings[key] += time() - t0) : nothing
+        _toc!(key::String, t0::Float64) = profile ? (timings[key] = get(timings, key, 0.0) + time() - t0) : nothing
 
         # ---- Phase 1b: Tile-local fields (MUSIC decomposition) ----
 
