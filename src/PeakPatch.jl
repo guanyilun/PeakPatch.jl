@@ -11,6 +11,7 @@ include("HaloFinder/Filters.jl")
 include("HaloFinder/PeakFind.jl")
 include("IO/Parameters.jl")
 include("IO/Catalog.jl")
+include("IO/Provenance.jl")
 include("EllipsoidalCollapse/EllipsoidalCollapse.jl")
 include("EllipsoidalCollapse/CollapseTable.jl")
 include("HaloFinder/RadialShell.jl")
@@ -42,6 +43,8 @@ using .RadialShell: ShellCell, PeakGrid, PeakResult, no_collapse,
     fsc_of_z, get_evals, reset_dump_counters!, get_dump_counts
 using .Parameters: PipelineConfig, FortranParams, read_params_bin, write_params_bin, grid_layout
 using .Catalog: HaloRecord, ExtHaloRecord, write_pksc, read_pksc
+using .Provenance: capture_provenance, provenance_toml, write_provenance_sidecar, read_provenance_sidecar,
+    verify_provenance_inputs, add_stage!
 using .EllipsoidalCollapse: EllipsoidParams, evolve_ellipse_full,
     get_b_2, _elliptic_rd
 using .CollapseTable: CollapseTableParams, CollapseTableInterp,
@@ -65,6 +68,18 @@ function run_multitile_mpi end
 
 # HDF5 extension stub — method defined in ext/HDF5Ext.jl when HDF5 is loaded
 function write_catalog_hdf5 end
+
+"""
+    write_compact_catalog(path, halos, prov; extra_fields=false, compress=4)
+    read_compact_catalog(path) -> (; x, y, z, vx, vy, vz, M, provenance, [zform, e_v, p_v])
+
+Self-contained compact halo catalog (HDF5; `ext/HDF5Ext.jl`, requires `using HDF5`). Columns are quantised to
+fixed steps stored as attributes: positions 0.01 Mpc/h (Int32), velocities 1 km/s (Int16), log10 M 1e-4 dex
+(UInt16). Each column is byte-shuffled and deflated. The full `Provenance` dict (config text, seed, commit,
+input hashes, environment) is stored as attributes of the `/provenance` group.
+"""
+function write_compact_catalog end
+function read_compact_catalog end
 
 # CUDA extension stubs — methods defined in ext/CUDAExt.jl when CUDA.jl is loaded
 """
@@ -434,7 +449,9 @@ export
     run_multitile, run_multitile_lowmem, extract_tile, tile_center,
     run_multitile_split, compare_fields_split, run_multitile_fieldmap,
     run_multitile_mpi,
-    write_catalog_hdf5,
+    write_catalog_hdf5, write_compact_catalog, read_compact_catalog,
+    capture_provenance, provenance_toml, write_provenance_sidecar, read_provenance_sidecar,
+    verify_provenance_inputs, add_stage!,
     shell_fbar_gather_gpu,
     shell_gather_psi_gpu,
     shell_gather_strain_gpu,

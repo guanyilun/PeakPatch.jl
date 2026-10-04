@@ -9,6 +9,7 @@ using Test
     include("test_lpt.jl")
     include("test_parameters.jl")
     include("test_catalog.jl")
+    include("test_provenance.jl")
     include("test_ellipsoidalcollapse.jl")
     include("test_peakfind.jl")
     include("test_radialshell.jl")

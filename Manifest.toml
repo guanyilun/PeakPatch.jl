@@ -1,8 +1,8 @@
 # This file is machine-generated - editing it directly is not advised
 
-julia_version = "1.12.6"
+julia_version = "1.12.5"
 manifest_format = "2.0"
-project_hash = "3e0d47226978772bee49f6d108f2e710fe4b9ea3"
+project_hash = "f848eb65bb28644712a5e331aa1ec270bca914fd"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "f7304359109c768cf32dc5fa2d371565bb63b68a"
@@ -1160,7 +1160,7 @@ uuid = "79d7bb75-1356-48c1-b8c0-6832512096c2"
 version = "1.13.0"
 
 [[deps.PeakPatch]]
-deps = ["DelimitedFiles", "FFTW", "Interpolations", "LinearAlgebra", "MPIPreferences", "OrdinaryDiffEq", "QuadGK", "Random", "Random123", "StaticArrays", "Statistics", "TOML"]
+deps = ["DelimitedFiles", "FFTW", "Interpolations", "LinearAlgebra", "MPIPreferences", "OrdinaryDiffEq", "Printf", "QuadGK", "Random", "Random123", "SHA", "StaticArrays", "Statistics", "TOML"]
 path = "."
 uuid = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 version = "0.1.0"

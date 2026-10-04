@@ -9,8 +9,10 @@
 # Usage:
 #   julia ... apply_abundance_match_fullsky.jl table <table.txt> <tail_N> <z_max> <cat_oct000> ... <cat_oct111>
 #       (catalog file names must contain "octZYX"; the observer comes from those bits)
-#   julia ... apply_abundance_match_fullsky.jl apply <table.txt> <in.pksc> <out.pksc> <ZYX>
-using PeakPatch, Printf
+#   julia ... apply_abundance_match_fullsky.jl apply <table.txt> <in.pksc> <out.pksc> <ZYX> [compact.h5]
+#       writes <out.pksc>.prov.toml: the raw catalog's provenance (its sidecar) + an "am" lineage stage (table hash,
+#       code state); with a 5th argument also a self-contained compact HDF5 catalog carrying the same provenance
+using PeakPatch, Printf, HDF5
 
 const COSMO = CosmologyParams(0.31, 0.049, 0.69, 0.68, 0.965, 0.81)   # Om total 0.31 (see apply_abundance_match.jl)
 const RHO_M = 2.775e11 * 0.31
@@ -42,21 +44,31 @@ function make_table(out, tail_N, z_max, cats)
     @info "wrote table" out tail_N
 end
 
-function apply_table(tpath, inp, out, zyx)
+function apply_table(tpath, inp, out, zyx, compact=nothing)
+    side_in = inp * ".prov.toml"
+    prov = isfile(side_in) ? read_provenance_sidecar(side_in) : Dict{String,String}("lineage.raw.provenance" => "missing (raw catalog predates provenance)")
+    add_stage!(prov, "am"; scripts=[@__FILE__], inputs=Dict("table" => tpath, "raw_catalog" => inp),
+               notes=Dict("octant" => zyx, "method" => "full-sky Tinker08 abundance matching (one table, tail_N in table header)"))
     t = load_abundance_table(tpath)
     halos, _, z_out = read_pksc(inp)
     report("RAW", halos)
     am = abundance_match(halos, t, COSMO; obs=obs_of(zyx))
     report("AM fullsky", am)
     write_pksc(out, am, Float32(maximum(h.RTHL for h in am)), Float32(z_out))
-    @info "wrote" out
+    prov["run.n_halos"] = string(length(am))
+    prov["run.product"] = "abundance-matched catalog (Eulerian positions, km/s velocities, AM masses)"
+    @info "wrote" out side = write_provenance_sidecar(out, prov)
+    if compact !== nothing
+        write_compact_catalog(compact, am, prov)
+        @info "wrote compact catalog" compact size_GB = round(filesize(compact) / 1e9; digits=2)
+    end
 end
 
 mode = ARGS[1]
 if mode == "table"
     make_table(ARGS[2], parse(Float64, ARGS[3]), parse(Float64, ARGS[4]), ARGS[5:end])
 elseif mode == "apply"
-    apply_table(ARGS[2], ARGS[3], ARGS[4], ARGS[5])
+    apply_table(ARGS[2], ARGS[3], ARGS[4], ARGS[5], length(ARGS) >= 6 ? ARGS[6] : nothing)
 else
     error("mode must be table or apply")
 end

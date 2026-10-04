@@ -27,6 +27,9 @@ function main()
 
     config = TOML.parsefile(config_path)
     cfg = PipelineConfig(config)
+    # Reproduction metadata, captured first so a dirty code tree fails before any GPU time is spent
+    # (PEAKPATCH_ALLOW_DIRTY=1 embeds the diff instead). Written next to the catalog as <catalog>.prov.toml.
+    prov = capture_provenance(config_path; scripts=[@__FILE__])
 
     # Run parameters
     run_cfg = get(config, "run", Dict{String,Any}())
@@ -67,6 +70,9 @@ function main()
 
     devices = collect(0:ndev-1)
     @info "Using $ndev GPUs: $devices"
+    prov["env.gpu"] = join(unique(CUDA.name(d) for d in CUDA.devices()), ", ") * " × $ndev"
+    prov["env.cuda_runtime"] = string(CUDA.runtime_version())
+    prov["env.cuda_driver"] = string(CUDA.driver_version())
 
     # ---- Geometry summary ----
     nmesh = cfg.n
@@ -113,6 +119,11 @@ function main()
     pksc_path = joinpath(outdir, basename(cfg.fileout))
     write_pksc(pksc_path, halos, RTHLmax, z_out)
     @info "Wrote catalog: $pksc_path ($(length(halos)) halos)"
+    prov["run.n_halos"] = string(length(halos))
+    prov["run.pipeline_minutes"] = string(round(elapsed / 60; digits=2))
+    prov["run.product"] = "raw catalog (merged + finalized; Eulerian positions, km/s velocities; masses before AM)"
+    side = write_provenance_sidecar(pksc_path, prov)
+    @info "Wrote provenance: $side"
 
     @info "Done: $(length(halos)) halos in $(round(elapsed/60; digits=1)) minutes"
 end
