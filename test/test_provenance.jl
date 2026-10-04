@@ -54,6 +54,6 @@ using HDF5
     @test maximum(abs.(c.vz .- [h.vz for h in hs])) <= 0.5 + 1e-3
     Mt = [4π / 3 * 2.775e11 * 0.31 * Float64(h.RTHL)^3 for h in hs]
     @test maximum(abs.(c.M ./ Mt .- 1)) < 1.2e-4
-    @test maximum(abs.(c.zform .- [h.zform for h in hs])) <= 1.0001e-4
+    @test maximum(abs.(c.zform .- [h.zform for h in hs])) <= 1e-4 + 1e-6      # half step + Float32 rounding
     @test c.provenance == q
 end
