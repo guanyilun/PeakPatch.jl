@@ -319,6 +319,41 @@ painting systematics. The remaining ψ2 error is subdominant, because |ψ2| ≈ 
 - a production-size lightcone octant (time, memory, full-sky Tier-A shift);
 - the user's decision on v5.
 
+## 10. Production-size test: one lightcone octant with gaussian_split (2026-10-04)
+
+Setup:
+- `production_v5test/config_v5test_oct000.toml` = v4 oct000 + `gaussian_split = true`.
+- Catalog job 5926585 (4×L40S), AM with the **v4** full-sky table (job 5926586), Tier-A on the 39 full-sky caps
+  in octant 000 (job 5926587, `tierA_octant_ab.jl`).
+- Results: `results/tierA_octant_ab_oct000_v4_v5test.txt`.
+
+**Cost.** The job ran 1 h 43 m (v4: 1 h 37–39 m); the pipeline itself took 58.1 min (v4 ≈ 53 min), about +9%.
+The gaussian_split step is 26% of the pipeline and replaces the old ψ isolated FFTs. Host RSS was 96 GB.
+113.5M halos after merge (v4: 112.4M).
+
+**Clustering** (paired over caps, same seed):
+
+| | W/v4 | W/v5test | v5test/v4 |
+|---|---|---|---|
+| ξ(3–15) | 0.942 ± 0.006 | **0.980 ± 0.006** | 0.962 ± 0.002 (box prediction 0.965) |
+| b, 5e12–1.3e13 | 0.956 | **0.997** | 0.960 |
+| b, 1.3–3.2e13 | 0.947 | **0.990** | 0.957 |
+| b, 3.2–7.9e13 | 0.934 | **0.977** | 0.957 |
+| σ_vr | 0.989–0.995 | 0.992–0.997 | 0.995–0.999 |
+| v12 (5–30 Mpc/h) | 0.975 | 0.988 | 0.987 |
+
+The Websky clustering gap closes from 5.8% to 2.0% in ξ, and the bias now agrees within 0.3–2.3%. The
+remainder is close to the ~2-point code difference expected from the two Fortran get_homel bugs (§2), plus
+the filter bank.
+
+**Caveat: dN/dz moved because the AM table was not rebuilt.** v5test/v4 at fixed mass is 1.00–1.03 at z < 1
+and rises to 1.08–1.16 at z ≈ 3–4.5 (M > 3e12), with more for M > 1e13. The raw mass function changes with
+the more accurate field (rare high-z peaks are sensitive to its small-scale amplitude). A fixed rank-mapping
+table built from v4 raw counts therefore no longer reproduces the Tinker abundance.
+
+A full v5 rebuilds the table from its own raw catalogs, which restores N(>M|z). That re-AM could also move ξ
+slightly: at z ≈ 0.6–0.75, v5test has 1–4% more halos at fixed mass, worth roughly ≤ 1 point of ξ.
+
 ## Files
 
 - `matched/matched_julia.jl` (field / exact / split), `matched/gen_fortran_inputs.py`.
