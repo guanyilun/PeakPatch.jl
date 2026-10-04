@@ -21,6 +21,7 @@ boxsize = 1130.264  # total box extent [Mpc/h]
 nbuff   = 22        # buffer cells per side
 
 [run]
+gaussian_split = false   # legacy splice (explicit since the default flipped on 2026-10-04)
 z_out     = 0.0
 ilpt      = 2
 seed      = 13579

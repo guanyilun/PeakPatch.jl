@@ -18,7 +18,7 @@ import PeakPatch.Cosmology: CosmologyParams, build_chi_to_z, chi_to_z, chi
         "grid" => Dict{String,Any}("n" => nmesh, "boxsize" => nmesh * alatt, "nbuff" => nbuff,
                                    "cenx" => obs[1], "ceny" => obs[2], "cenz" => obs[3]),
         "run" => Dict{String,Any}("ievol" => 1, "z_max" => 0.1, "z_out" => 0.0, "ilpt" => 2,
-                                  "ioutshear" => 0),
+                                  "ioutshear" => 0, "gaussian_split" => false),   # legacy splice; gaussian_split tested below
         "files" => Dict{String,Any}("pk" => joinpath(datadir, "pk_websky.dat"),
                                     "filterbank" => joinpath(datadir, "filters_websky.dat"),
                                     "homeltab" => joinpath(datadir, "HomelTab_websky.dat"),

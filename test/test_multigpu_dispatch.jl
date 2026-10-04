@@ -36,7 +36,7 @@ function make_config(dir; n, boxsize, ilpt, nbuff=8, ioutshear=0)
         z_out=0.0, ilpt=ilpt, ioutshear=ioutshear, rmax2rs=0.0,
         ievol=0, z_max=0.0, cenx=0.0, ceny=0.0, cenz=0.0,
         Omx=0.261, OmB=0.049, Omvac=0.69, h=0.68,
-        NonGauss=0, fNL=0.0, wsmooth=1,
+        NonGauss=0, fNL=0.0, wsmooth=1, gaussian_split=false,   # legacy-splice test geometry (block > nbuff)
     )
 end
 

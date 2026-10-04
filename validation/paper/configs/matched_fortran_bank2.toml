@@ -17,6 +17,7 @@ ceny    = 0.0
 cenz    = 0.0
 
 [run]
+gaussian_split = false   # legacy splice (explicit since the default flipped on 2026-10-04)
 z_out     = 0.7
 z_max     = 4.5
 ievol     = 0

@@ -403,7 +403,8 @@ function run_multitile_fieldmap(cfg::PipelineConfig; ntile::Int, seed::Integer=4
     elseif coarse_factor > 0
         M = ntile * coarse_factor
     else
-        target_block = nmesh ÷ 3
+        # gaussian_split needs block ≤ nbuff (handoff guard); the original splice prefers ~nmesh/3
+        target_block = cfg.gaussian_split ? clamp(nbuff ÷ 2, 2, nbuff) : nmesh ÷ 3
         best_M = 0; best_dist = N
         for m in 2:N÷2
             N % m == 0 || continue

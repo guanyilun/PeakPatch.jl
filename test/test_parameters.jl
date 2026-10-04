@@ -126,6 +126,7 @@
 
     @testset "PipelineConfig from TOML — defaults" begin
         cfg = PipelineConfig(Dict{String,Any}())
+        @test cfg.gaussian_split == true          # default on since 2026-10-04 (MATCHED_FORTRAN_2026-10.md §9–10)
         @test cfg.Omx ≈ 0.315 - 0.049
         @test cfg.n == 142
         @test cfg.z_out ≈ 0.0

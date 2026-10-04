@@ -51,7 +51,7 @@ function _make_config(dir; n=68, boxsize=226.67, z=0.0, ilpt=1, nbuff=8,
         ievol=ievol, z_max=Float64(z_max),
         cenx=cenx, ceny=ceny, cenz=cenz,
         Omx=0.261, OmB=0.049, Omvac=0.69, h=0.68,
-        NonGauss=0, fNL=0.0, wsmooth=1,
+        NonGauss=0, fNL=0.0, wsmooth=1, gaussian_split=false,   # legacy-splice test geometry (block > nbuff)
     )
 end
 

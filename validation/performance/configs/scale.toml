@@ -14,6 +14,7 @@ ceny    = -664.727
 cenz    = -664.727
 
 [run]
+gaussian_split = false   # legacy splice (explicit since the default flipped on 2026-10-04)
 z_out     = 0.0
 z_max     = 1.016
 ievol     = 1

@@ -123,7 +123,7 @@ distributed FFT needed.
 
 ```julia
 halos = run_multitile_split(cfg; ntile=4, seed=42,
-                            coarse_factor=5,  # optimal for halo counts
+                            coarse_factor=0,  # auto (gaussian_split: block ≈ nbuff/2)
                             verbose=true)
 ```
 
@@ -132,11 +132,24 @@ The algorithm uses the Hoffman-Ribak constrained noise split: residual noise
 while long-wavelength modes are captured by a periodic FFT on the coarse grid
 and interpolated to each tile via tri-cubic Catmull-Rom interpolation.
 
-**Accuracy**: 1.2% halo count agreement vs global FFT on test grids (N=120,
-ntile=2). The `coarse_factor` parameter controls the coarse/fine split; cf=5
-is the default and optimal for halo counts. See
-[`docs/multi_resolution_fft.md`](docs/multi_resolution_fft.md) for the full
-accuracy analysis and error budget.
+**Gaussian long/short handoff (`[run] gaussian_split`, default on since 2026-10-04).**
+- The original splice (subtract the block mean, add the interpolated coarse field) leaves aliased
+  images just above the coarse Nyquist uncancelled. That costs ~4.5% rms error in δ and ~14% in the 1LPT
+  displacements ψ. Tested against the exact global field on the same noise, it makes halos +3.5% too
+  clustered in ξ and +1.7% in bias.
+- With the handoff, the coarse grid carries only G·(δ, ψ, φ), G = exp(−k² r_s²). The tile carries the
+  short part of the noise convolution, and ψ comes from an isolated Poisson solve of that short δ (as in
+  MUSIC). On the same field, halo ξ and bias agree with the exact field to 0.1%, and 99.3% of peaks
+  land in the same cell.
+- Requirement: block = N/(ntile·coarse_factor) ≤ nbuff, with r_s ∈ [block/2, nbuff/2]. The default
+  r_s is min(0.75·block, nbuff/2), and the code errors otherwise. With `coarse_factor = 0` the
+  automatic choice targets block ≈ nbuff/2.
+- `gaussian_split = false` restores the legacy splice. Every pre-2026-10 config sets it explicitly.
+- Details: `validation/paper/MATCHED_FORTRAN_2026-10.md` §8–10 and
+  `docs/split_psi_fix_literature_2026-10.md`.
+
+**Legacy accuracy notes** (original splice): 1.2% halo count agreement vs global FFT on test grids (N=120,
+ntile=2). See [`docs/multi_resolution_fft.md`](docs/multi_resolution_fft.md) for that analysis.
 
 > **ℹ️ Note on P(k) file normalization (root cause of a 2026-06 Websky bug, now fixed):**
 > The field-generation convolution uses `amp = sqrt(P·dk³·n³) = sqrt(P/dx³)·(2π)^1.5`, so

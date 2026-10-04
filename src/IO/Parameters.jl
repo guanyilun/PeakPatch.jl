@@ -51,9 +51,10 @@ Base.@kwdef struct PipelineConfig
     # Multires splice with a Gaussian long/short handoff G = exp(−k² r_s²) (docs/split_psi_fix_literature_2026-10.md):
     #   δ = interp(G·δ_coarse) + isolated[√P·residual + (1 − G)·√P·spread(block mean)]
     #   ψ = interp(G·ψ_coarse) + isolated Poisson solve of the short part of δ
-    # false = the original splice (all catalogues up to v4): ~4.5% rms δ and ~14% rms ψ error from uncancelled
-    # aliasing just above the coarse Nyquist (validation/paper/MATCHED_FORTRAN_2026-10.md §8). CPU and GPU.
-    gaussian_split::Bool = false
+    # Default ON since 2026-10-04. false = the original splice (legacy; all catalogues up to v4, whose configs set
+    # it explicitly): ~4.5% rms δ and ~14% rms ψ error from uncancelled aliasing just above the coarse Nyquist,
+    # +3.5% ξ / +1.7% bias in halo clustering (validation/paper/MATCHED_FORTRAN_2026-10.md §8–10). CPU and GPU.
+    gaussian_split::Bool = true
     # handoff scale r_s in fine cells for gaussian_split; ≤ 0 → min(0.75 block, nbuff/2); must lie in [block/2, nbuff/2]
     gaussian_split_rs::Float64 = 0.0
     ioutshear::Int = 0
@@ -142,7 +143,7 @@ function PipelineConfig(config::Dict{String,Any})
         ilpt      = Int(get(run, "ilpt", 2)),
         coarse_compensation = Bool(get(run, "coarse_compensation", false)),
         peak_threshold_per_tile = Bool(get(run, "peak_threshold_per_tile", false)),
-        gaussian_split = Bool(get(run, "gaussian_split", false)),
+        gaussian_split = Bool(get(run, "gaussian_split", true)),
         gaussian_split_rs = Float64(get(run, "gaussian_split_rs", 0.0)),
         ioutshear = Int(get(run, "ioutshear", 0)),
         wsmooth   = Int(get(run, "wsmooth", 0)),
