@@ -24,8 +24,8 @@ const HUB = 0.68; const RHO_M = 2.775e11 * 0.31
 const COSMO = CosmologyParams(0.31, 0.049, 0.69, 0.68, 0.965, 0.81)
 const CHI2Z = build_chi_to_z(COSMO; z_max=6.0)
 const CAMP = get(ENV, "TIERA_CAMP", "v3")          # catalogs_<CAMP>/catalog_websky_6144_<CAMP>_octZYX[_AMfs].pksc
-const S3 = "/home/yguan/scratch/websky_6144/catalogs_$(CAMP)"
-const WSKY = "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref/halos_10x10.pksc"
+const S3 = joinpath(get(ENV, "WS_CATS", "/home/yguan/scratch/websky_6144"), "catalogs_$(CAMP)")
+const WSKY = joinpath(get(ENV, "WS_REF", "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref"), "halos_10x10.pksc")
 const OCTS = split(get(ENV, "TIERA_OCTS", "000,001,010,011,100,101,110,111"), ",")   # smoke test: TIERA_OCTS=000
 const MAXH = parse(Int, get(ENV, "TIERA_MAXH", "0"))                              # smoke test: read only the first MAXH halos per file
 const OUT = MAXH > 0 ? "/tmp/tierA_smoke.txt" : joinpath(@__DIR__, "results", "tierA_$(CAMP)fs.txt")

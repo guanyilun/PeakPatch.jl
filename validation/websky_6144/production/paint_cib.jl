@@ -18,7 +18,7 @@ import Unitful
 const hub = 0.68
 const rho_mh = 2.775e11 * 0.31
 const MMIN_MSUN = 1.0e12                     # CIB model min_mass (as ../run_cib.jl)
-const WREF = "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref"
+const WREF = get(ENV, "WS_REF", "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref")
 
 OCT = ARGS[1]; CAT = ARGS[2]; OUTD = ARGS[3]
 nside = length(ARGS) >= 4 ? parse(Int, ARGS[4]) : 4096

@@ -3,9 +3,10 @@
 # seams? near-observer holes?); (2) per-octant tSZ ours/ref C_ℓ ratios.
 include(joinpath(@__DIR__, "spectra.jl"))
 const C = get(ENV, "CAMPAIGN", "prod")
-const F = "/home/yguan/projects/aip-aspuru-ab/yguan/websky/fullsky_$(C)"
-const FM = "/home/yguan/projects/aip-aspuru-ab/yguan/websky/fieldmaps_$(C)"
-const W = "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref"
+const D = get(ENV, "WS_ROOT", "/home/yguan/projects/aip-aspuru-ab/yguan/websky")
+const F = joinpath(D, "fullsky_$(C)")
+const FM = joinpath(D, "fieldmaps_$(C)")
+const W = get(ENV, "WS_REF", "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref")
 
 function holes(path)
     m = loadmap(path); res = m.resolution

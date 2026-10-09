@@ -3,10 +3,10 @@
 #   CAMPAIGN=prod|v2 bash run_fullsky_compare.sh [product ...]   products: tsz ksz isw kappa cib
 set -euo pipefail
 C="${CAMPAIGN:-prod}"
-F=/home/yguan/projects/aip-aspuru-ab/yguan/websky/fullsky_${C}
-W=/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref
+F=${WS_ROOT:-/home/yguan/projects/aip-aspuru-ab/yguan/websky}/fullsky_${C}
+W=${WS_REF:-/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref}
 S=validation/paper/compare_auto.jl
-cd /home/yguan/work/PeakPatch.jl
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 J="julia --project=validation -t ${SLURM_CPUS_PER_TASK:-32}"
 P=("$@"); [ ${#P[@]} -eq 0 ] && P=(tsz ksz isw kappa cib)
 for p in "${P[@]}"; do case $p in

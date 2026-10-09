@@ -10,7 +10,7 @@ const COSMO = CosmologyParams(0.31, 0.049, 0.69, 0.68, 0.965, 0.81)
 const Om = 0.31; const rho_m = 2.775e11 * Om
 pk = PeakPatch.PowerSpectrum.load_pk(joinpath(@__DIR__, "..", "websky_6144", "data", "pk_websky_RAW_unnormalized.dat"))
 chi2z = build_chi_to_z(COSMO; z_max=3.0)
-const D = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"
+const D = get(ENV, "WS_ROOT", "/home/yguan/projects/aip-aspuru-ab/yguan/websky")   # maps + legacy catalogs; see production_v5/env.sh
 const OCT = get(ENV, "OCT", "000")
 # octZYX bit = 1 -> observer at +2618 on that axis
 const obsv = (OCT[3] == '1' ? 2618.0 : -2618.0, OCT[2] == '1' ? 2618.0 : -2618.0, OCT[1] == '1' ? 2618.0 : -2618.0)
@@ -36,10 +36,10 @@ function tail(path; Mcut=3e14, zmax=1.0)
     out
 end
 const TAG = get(ENV, "TAG", "v2")   # v2 (nbuff 16) | v3test (nbuff 25)
-# v3/v4 raw and v3fs/v4fs AM catalogs live on scratch (catalogs_<base>/, AM files *_AMfs.pksc)
+# v3/v4/v5 raw and v3fs/v4fs/v5fs AM catalogs live on scratch (catalogs_<base>/, AM files *_AMfs.pksc)
 const BASE = endswith(TAG, "fs") ? TAG[1:end-2] : TAG
-const S3 = "/home/yguan/scratch/websky_6144/catalogs_$(BASE)"
-const RAWD = BASE in ("v3", "v4") ? S3 : D
+const S3 = joinpath(get(ENV, "WS_CATS", "/home/yguan/scratch/websky_6144"), "catalogs_$(BASE)")
+const RAWD = BASE in ("v3", "v4", "v5") ? S3 : D
 raw = tail(joinpath(RAWD, "catalog_websky_6144_$(BASE)_oct$(OCT).pksc"))
 am = tail(endswith(TAG, "fs") ? joinpath(S3, "catalog_websky_6144_$(BASE)_oct$(OCT)_AMfs.pksc") :
           joinpath(D, "catalog_websky_6144_$(TAG)_oct$(OCT)_AM.pksc"))

@@ -11,8 +11,9 @@
 # (the released y map), κ/CIB pairs at Nside 4096 (lmax 4096).
 include(joinpath(@__DIR__, "spectra.jl"))
 const C = get(ENV, "CAMPAIGN", "prod")
-const F = "/home/yguan/projects/aip-aspuru-ab/yguan/websky/fullsky_$(C)"
-const W = "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref"
+const D = get(ENV, "WS_ROOT", "/home/yguan/projects/aip-aspuru-ab/yguan/websky")
+const F = joinpath(D, "fullsky_$(C)")
+const W = get(ENV, "WS_REF", "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref")
 const NUS = ["0143", "0217", "0353", "0545", "0857"]
 
 ours(n) = joinpath(F, "$(n)_$(C)_fullsky_nside4096.fits")

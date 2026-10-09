@@ -7,11 +7,11 @@
 # Gaussian pixel-window approximation applied to the maps (Nside 4096).
 include(joinpath(@__DIR__, "spectra.jl"))
 using DelimitedFiles
-const D = "/home/yguan/projects/aip-aspuru-ab/yguan/websky"
-const W = "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref"
+const D = get(ENV, "WS_ROOT", "/home/yguan/projects/aip-aspuru-ab/yguan/websky")   # maps + legacy catalogs; see production_v5/env.sh
+const W = get(ENV, "WS_REF", "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref")
 const T = joinpath(@__DIR__, "..", "paper_theory", "results")
 const C = get(ENV, "CAMPAIGN", "v2")               # campaign under test; kSZ "before" column = frozen (v2) or v2 (v3)
-const CB = C == "v2" ? "prod" : C == "v3" ? "v2" : C in ("v4fs", "v4kres") ? "v3fs" : "v3"
+const CB = C == "v2" ? "prod" : C == "v3" ? "v2" : C in ("v4fs", "v4kres") ? "v3fs" : C == "v5fs" ? "v4fs" : "v3"
 
 kl = readdlm(joinpath(T, "kappa_limber.txt"); comments=true)          # ell, lin..., halofit...
 kl_ell = kl[:, 1]; kl_lin45 = kl[:, 3]; kl_hf45 = kl[:, 6]
