@@ -8,7 +8,7 @@
 # (no caps) for both catalogs, and Websky full-sky N(>M|z) vs Tinker08.
 #   env: TIERA_CAMP (default v4) for ours; TIERA_MAXH for smoke tests
 include(joinpath(@__DIR__, "tierA_v3fs.jl"))          # helpers (Cap, addhalo!, pairstats, binning); main() guarded
-const WFULL = "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref/halos.pksc"
+const WFULL = joinpath(get(ENV, "WS_REF", "/home/yguan/projects/aip-aspuru-ab/yguan/websky_ref"), "halos.pksc")
 const OUTFS = MAXH > 0 ? "/tmp/tierA_fullsky_smoke.txt" : joinpath(@__DIR__, "results", "tierA_fullsky_$(CAMP)fs.txt")
 
 # ---- cap centres: greedy on a Fibonacci sphere ----

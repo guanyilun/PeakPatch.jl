@@ -25,30 +25,35 @@ Differences from v4 besides the config flag:
   fieldmaps_v5fs/     5 field maps per octant (v5_oct* files + v5fs_oct* symlinks)                 ~31 GB
   halomaps_v5fs/  cibmaps_v5fs/  fullsky_v5fs/                                                     ~81 GB
   websky_ref/         released Websky files (copied from the Killarney backup, md5-checked)        ~41 GB
+  fullsky_v4fs/       only ksz_field_uK_v4fs_*: the "before" column of the theory step (from the backup)
   logs/
 ```
 
 ## Jobs (`bash submit_all.sh` from a clean, committed tree)
 
-| step | n | partition | per job | basis (Killarney, v4/v5test) |
+| step | n | partition | per job | measured, first v5 run on Rusty (2026-10-10) |
 |---|---|---|---|---|
-| catalog | 8 | gpu, a100-80gb&rocky9 | 2 GPU, 32 CPU, 160G, 5 h | 1.62–1.95 h on 4 GPUs (+9% for v5), ~2.7–3 h expected on 2; MaxRSS 89.7 GiB / 96 GB |
-| field maps | 8 | gpu, a100-80gb&rocky9 | 1 GPU, 16 CPU, 64G, 2.5 h | **measured on Rusty A100 (v5): 1.26–1.31 h, MaxRSS 35–40 GiB** |
-| AM table | 1 | genx | 8 CPU, 64G, 1.5 h | 25 min; reads one 15 GB catalog at a time |
-| AM apply | 8 | genx | 8 CPU, 64G, 30 min | 7–8 min; raw + AM copy ≈ 30 GB |
-| halo paint | 8 | genx | 32 CPU, 48G, 45 min | 7 min; MaxRSS 21–31 GiB (frozen campaign) |
-| CIB | 8 | genx | 32 CPU, 128G, 1.5 h | 40 min; memory not measured |
-| analysis + AM tails | 1 | genx | 32 CPU, 128G, 1.5 h | ~26 + 9 min; memory not measured |
-| Tier-A | 1 | genx | 16 CPU, 96G, 1.5 h | 16 min (v4), 30 min (v5test) |
+| catalog | 8 | gpu, a100-80gb&rocky9 | 2 GPU, 32 CPU, 128G, 3.5 h | 1.75–1.82 h; MaxRSS 90.1–93.5 GiB |
+| field maps | 8 | gpu, a100-80gb&rocky9 | 1 GPU, 16 CPU, 64G, 2.5 h | 1.26–1.31 h; MaxRSS 35–40 GiB |
+| AM table | 1 | genx | 8 CPU, 96G, 1.5 h | 19 min; MaxRSS 64.0 GiB (hit the old 64G cap) |
+| AM apply | 8 | genx | 8 CPU, 96G, 30 min | 8 min; MaxRSS 57.8 GiB |
+| halo paint | 8 | genx | 32 CPU, 48G, 45 min | 6.5–7.5 min; MaxRSS 28.5 GiB |
+| CIB | 8 | genx | 32 CPU, 48G, 1.5 h | 34–37 min; MaxRSS 27.2 GiB |
+| analysis + AM tails | 1 | genx | 32 CPU, 64G, 1.5 h | 23.5 min to the cross spectra; MaxRSS 35.7 GiB |
+| Tier-A | 1 | genx | 16 CPU, 128G, 1.5 h | 16.5 min; MaxRSS 96.1 GiB (hit the old 96G cap) |
 
 The gpu QoS allows 16 GPUs per user. Catalogs use 2 GPUs each, so all 8 fit under the cap at once
 (field maps then queue behind them). With 4 GPUs per job they waited many hours for a fully free
 node, while 2 free GPUs on a node are common. The `rocky9` constraint is required: `env.sh` loads
-modules from the Rocky 9 tree. Once the first jobs finish,
-check `seff <jobid>` for one job of each type and tighten the requests, especially the rows whose
-memory was never measured.
+modules from the Rocky 9 tree. Memory requests are about 1.3-1.7× the measured peaks; per-job MaxRSS is from
+`sacct -j <id> -o JobID,MaxRSS` (the `.batch` step).
 
 ## Before the first submission
 1. Instantiate the environments under julia/1.12.7 (`validation/` and `$XGPAINT`).
 2. Commit. `run_gpu_octant.jl` refuses a dirty tree, and `submit_all.sh` checks this up front.
 3. Do not edit `src/` until the catalog jobs have started, because each job loads the live tree.
+
+## Rerunning analysis steps
+`bash validation/websky_6144/production_v5/rerun_analysis.sh [step ...]` resubmits
+`run_analysis.slurm` for some steps (assemble seams autos cross theory tails; default all). It works
+from any directory. The first run (job 7206290) failed at `theory` because `fullsky_v4fs/` was missing.

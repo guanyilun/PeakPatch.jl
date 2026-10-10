@@ -32,18 +32,20 @@ for o in "${OCTS[@]}"; do
     cats="${cats}:${j}"; flds="${flds}:${f}"; CATS="${CATS} ${C}/catalog_websky_6144_v5_oct${o}.pksc"
 done
 
+# Memory from the first v5 run (2026-10-10, MaxRSS): AM table 64.0 GiB and AM apply 57.8 GiB (at/near the
+# old 64G cap), paint 28.5, CIB 27.2, Tier-A 96.1 (at the old 96G cap).
 # CPU steps go through run_jl.slurm. SCRIPT/SARGS are set in the environment rather than in
 # --export because SARGS contains commas.
 AMS=validation/websky_6144/apply_abundance_match_fullsky.jl; TABLE="${C}/am_table_fullsky_tail${TAIL_N}.txt"
 tj=$(SCRIPT=${AMS} SARGS="table ${TABLE} ${TAIL_N} 4.5${CATS}" sbatch --parsable --export=ALL \
-     --dependency=afterok${cats} --job-name=v5fs-amtable --cpus-per-task=8 --mem=64G --time=1:30:00 \
+     --dependency=afterok${cats} --job-name=v5fs-amtable --cpus-per-task=8 --mem=96G --time=1:30:00 \
      --output="${LOGS}/v5fs_amtable_%j.out" "${P}/run_jl.slurm")
 echo "AM table: ${tj}"
 ams=""; maps=""
 for o in "${OCTS[@]}"; do
     AMC="${C}/catalog_websky_6144_v5_oct${o}_AMfs.pksc"; T="v5fs_oct${o}_AM"
     aj=$(SCRIPT=${AMS} SARGS="apply ${TABLE} ${C}/catalog_websky_6144_v5_oct${o}.pksc ${AMC} ${o}" sbatch --parsable \
-         --export=ALL --dependency=afterok:${tj} --job-name="v5fs-am-${o}" --cpus-per-task=8 --mem=64G --time=0:30:00 \
+         --export=ALL --dependency=afterok:${tj} --job-name="v5fs-am-${o}" --cpus-per-task=8 --mem=96G --time=0:30:00 \
          --output="${LOGS}/v5fs_am_oct${o}_%j.out" "${P}/run_jl.slurm")
     pj=$(SCRIPT=validation/websky_6144/production/paint_octant.jl \
          SARGS="${o} ${AMC} ${WS_ROOT}/halomaps_v5fs 4096 kappa,tsz,ksz ${T}" sbatch --parsable --export=ALL \
@@ -51,7 +53,7 @@ for o in "${OCTS[@]}"; do
          --output="${LOGS}/v5fs_paint_oct${o}_%j.out" "${P}/run_jl.slurm")
     cj=$(JPROJECT="${XGPAINT}" SCRIPT=validation/websky_6144/production/paint_cib.jl \
          SARGS="${o} ${AMC} ${WS_ROOT}/cibmaps_v5fs 4096 100,143,217,353,545,857 wcut ${T}" sbatch --parsable --export=ALL \
-         --dependency=afterok:${aj} --job-name="v5fs-cib-${o}" --cpus-per-task=32 --mem=128G --time=1:30:00 \
+         --dependency=afterok:${aj} --job-name="v5fs-cib-${o}" --cpus-per-task=32 --mem=48G --time=1:30:00 \
          --output="${LOGS}/v5fs_cib_oct${o}_%j.out" "${P}/run_jl.slurm")
     echo "oct${o}: am ${aj}  paint ${pj}  cib ${cj}"
     ams="${ams}:${aj}"; maps="${maps}:${pj}:${cj}"
@@ -59,5 +61,5 @@ done
 an=$(sbatch --parsable --export=ALL --dependency=afterok${maps}${flds} \
      --output="${LOGS}/v5fs_analysis_%j.out" "${P}/run_analysis.slurm")
 ta=$(SCRIPT=validation/paper/tierA_v3fs.jl TIERA_CAMP=v5 sbatch --parsable --export=ALL --dependency=afterok${ams} \
-     --job-name=v5fs-tierA --cpus-per-task=16 --mem=96G --time=1:30:00 --output="${LOGS}/v5fs_tierA_%j.out" "${P}/run_jl.slurm")
+     --job-name=v5fs-tierA --cpus-per-task=16 --mem=128G --time=1:30:00 --output="${LOGS}/v5fs_tierA_%j.out" "${P}/run_jl.slurm")
 echo "analysis: ${an}  tierA: ${ta}"

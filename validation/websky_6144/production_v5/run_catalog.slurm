@@ -5,16 +5,16 @@
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=2
 #SBATCH --cpus-per-task=32
-#SBATCH --mem=160G
-#SBATCH --time=5:00:00
+#SBATCH --mem=128G
+#SBATCH --time=3:30:00
 # Production-v5: one octant catalog (halo finding, merge, finalize, write); AM follows with one
 # full-sky table (submit_all.sh). Pass OCT and REPO via --export.
-# Sizing from Killarney (4×L40S): v4 job 1.62-1.95 h, v5test +9%; host MaxRSS 89.7 GiB (v4),
-# 96 GB (v5test), 134.5 GiB (v3, before the per-tile threshold). GPU memory per tile ~22 GiB.
+# Sizing, measured on Rusty (v5, 2×A100, jobs 7206249+2k): 1.75-1.82 h, MaxRSS 90.1-93.5 GiB.
+# (Killarney 4×L40S: v4 1.62-1.95 h, MaxRSS 89.7 GiB; v3 134.5 GiB before the per-tile threshold.)
 # The last ~45-60 min (merge + finalize) is CPU-only with the GPUs idle.
 # 2 GPUs, not 4 (2026-10-09): 4-GPU jobs waited many hours for a fully free node on a busy cluster,
-# while 2 free GPUs on a node are common. Halo finding ~55 min on 4 GPUs -> ~1.8 h on 2, so ~2.7-3 h
-# per octant; 8 jobs x 2 GPUs = the 16-GPU gpu QoS cap, so all octants can run at once. The multi-GPU
+# while 2 free GPUs on a node are common. 8 jobs x 2 GPUs = the 16-GPU gpu QoS cap, so all octants
+# can run at once. The multi-GPU
 # dispatcher matches 1-GPU results (test_multigpu_dispatch.jl, passed on Rusty). Host memory is set by the merge.
 # Do NOT unset CUDA_VISIBLE_DEVICES (the Killarney script did): gpu-partition nodes are shared,
 # and Slurm's value is what limits run_gpu_octant.jl to this job's GPUs.
