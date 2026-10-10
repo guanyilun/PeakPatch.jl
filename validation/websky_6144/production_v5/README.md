@@ -62,3 +62,9 @@ from any directory. The first run (job 7206290) failed at `theory` because `full
 Jobs 7206249–7206291, plus 7211354 (theory + AM tails rerun) and 7211375 (full-sky Tier-A). Results
 are in `../../paper/V5_RESULTS_2026-10-10.md`. Against the full Websky catalog, ξ(3–15 Mpc/h)
 W/ours is 0.978 ± 0.003 (v4: 0.948 ± 0.002).
+
+## Public release
+v5 is released as **Huntian (浑天) v0.1**: `/mnt/ceph/users/yguan/projects/uoft/peakpatch/huntian/v0.1/`.
+It contains hard links (read-only, with MD5SUMS) to the AM catalogs (`halos_octZYX.pksc` + provenance,
+`am_table.txt`) and the 16 full-sky maps, with the campaign tags dropped from the file names. "v5" is the
+internal campaign name only. Public versions follow their own numbering (v0.1, v0.2, …).
