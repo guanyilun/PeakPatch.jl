@@ -57,3 +57,8 @@ modules from the Rocky 9 tree. Memory requests are about 1.3-1.7× the measured 
 `bash validation/websky_6144/production_v5/rerun_analysis.sh [step ...]` resubmits
 `run_analysis.slurm` for some steps (assemble seams autos cross theory tails; default all). It works
 from any directory. The first run (job 7206290) failed at `theory` because `fullsky_v4fs/` was missing.
+
+## First run (2026-10-10)
+Jobs 7206249–7206291, plus 7211354 (theory + AM tails rerun) and 7211375 (full-sky Tier-A). Results
+are in `../../paper/V5_RESULTS_2026-10-10.md`. Against the full Websky catalog, ξ(3–15 Mpc/h)
+W/ours is 0.978 ± 0.003 (v4: 0.948 ± 0.002).
