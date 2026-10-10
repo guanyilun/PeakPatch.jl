@@ -32,8 +32,8 @@ Differences from v4 besides the config flag:
 
 | step | n | partition | per job | basis (Killarney, v4/v5test) |
 |---|---|---|---|---|
-| catalog | 8 | gpu, a100-80gb | 4 GPU, 32 CPU, 160G, 4 h | 1.62–1.95 h (+9% for v5); MaxRSS 89.7 GiB / 96 GB |
-| field maps | 8 | gpu, a100-80gb | 1 GPU, 16 CPU, 96G, 3 h | ~1.35 h (v3); memory not measured |
+| catalog | 8 | gpu, a100-80gb&rocky9 | 2 GPU, 32 CPU, 160G, 5 h | 1.62–1.95 h on 4 GPUs (+9% for v5), ~2.7–3 h expected on 2; MaxRSS 89.7 GiB / 96 GB |
+| field maps | 8 | gpu, a100-80gb&rocky9 | 1 GPU, 16 CPU, 64G, 2.5 h | **measured on Rusty A100 (v5): 1.26–1.31 h, MaxRSS 35–40 GiB** |
 | AM table | 1 | genx | 8 CPU, 64G, 1.5 h | 25 min; reads one 15 GB catalog at a time |
 | AM apply | 8 | genx | 8 CPU, 64G, 30 min | 7–8 min; raw + AM copy ≈ 30 GB |
 | halo paint | 8 | genx | 32 CPU, 48G, 45 min | 7 min; MaxRSS 21–31 GiB (frozen campaign) |
@@ -41,7 +41,10 @@ Differences from v4 besides the config flag:
 | analysis + AM tails | 1 | genx | 32 CPU, 128G, 1.5 h | ~26 + 9 min; memory not measured |
 | Tier-A | 1 | genx | 16 CPU, 96G, 1.5 h | 16 min (v4), 30 min (v5test) |
 
-The gpu QoS allows 16 GPUs per user, so catalogs run 4 at a time. Once the first jobs finish,
+The gpu QoS allows 16 GPUs per user. Catalogs use 2 GPUs each, so all 8 fit under the cap at once
+(field maps then queue behind them). With 4 GPUs per job they waited many hours for a fully free
+node, while 2 free GPUs on a node are common. The `rocky9` constraint is required: `env.sh` loads
+modules from the Rocky 9 tree. Once the first jobs finish,
 check `seff <jobid>` for one job of each type and tighten the requests, especially the rows whose
 memory was never measured.
 

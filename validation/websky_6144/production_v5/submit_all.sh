@@ -1,9 +1,9 @@
 #!/bin/bash
 # Production-v5 campaign ("v5fs") on Flatiron Rusty, end to end:
-#   8 catalog jobs (gpu, 4×A100) -> one full-sky AM table from the 8 v5 raw catalogs (tail_N) ->
+#   8 catalog jobs (gpu, 2×A100) -> one full-sky AM table from the 8 v5 raw catalogs (tail_N) ->
 #   AM per octant -> halo paint + CIB per octant (genx) -> full-sky analysis + AM tails, and Tier-A.
 #   8 field-map jobs (gpu, 1×A100) run alongside the catalogs; the analysis waits for them too.
-# 43 jobs in total. The gpu QoS caps a user at 16 GPUs, so catalogs run 4 at a time (~2 rounds).
+# 43 jobs in total. The gpu QoS caps a user at 16 GPUs: the 8 catalogs (2 GPUs each) fill it.
 # Run by hand from a clean, committed tree:  bash validation/websky_6144/production_v5/submit_all.sh
 # Every job loads the live working tree: do not edit src/ until the catalog jobs have started.
 set -euo pipefail

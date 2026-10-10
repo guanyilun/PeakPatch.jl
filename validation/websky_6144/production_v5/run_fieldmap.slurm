@@ -1,17 +1,18 @@
 #!/bin/bash
 #SBATCH --job-name=v5-fld
 #SBATCH --partition=gpu
-#SBATCH --constraint=a100-80gb
+#SBATCH --constraint=a100-80gb&rocky9
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=96G
-#SBATCH --time=3:00:00
+#SBATCH --mem=64G
+#SBATCH --time=2:30:00
 # Production-v5 full-matter field maps (kappa/mass/tau/ksz/isw, Nside 4096, GPU pixelization,
 # cf32, z_max 4.5) for one octant. Not reusable from v3/v4: gaussian_split also changes the field
 # (FieldMap.jl, c880c24). Halo-independent, so it runs in parallel with the catalogs.
-# Sizing: v3 field maps took ~1.35 h on 1 L40S; memory was never measured (96G is the v3 request).
+# Sizing (v5 on Rusty A100, jobs 7206250+2k): 1.26-1.31 h, MaxRSS 35-40 GiB (v3 on L40S: ~1.35 h).
 # Pass OCT and REPO via --export.
+# rocky9: env.sh loads modules from the Rocky 9 tree; the 3 Rocky 8 A100 nodes (workergpu038-040) are untested.
 set -euo pipefail
 : "${REPO:?}" "${OCT:?}"
 source "${REPO}/validation/websky_6144/production_v5/env.sh"
