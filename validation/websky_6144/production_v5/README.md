@@ -68,3 +68,9 @@ v5 is released as **Huntian (浑天) v0.1**: `/mnt/ceph/users/yguan/projects/uof
 It contains hard links (read-only, with MD5SUMS) to the AM catalogs (`halos_octZYX.pksc` + provenance,
 `am_table.txt`) and the 16 full-sky maps, with the campaign tags dropped from the file names. "v5" is the
 internal campaign name only. Public versions follow their own numbering (v0.1, v0.2, …).
+
+The public CIB maps are **calibrated** (2026-10-10): the painted maps (`cibmaps_v5fs/`, `fullsky_v5fs/cib_*`,
+shang_I0 = 92) were 1.27× Planck 2013 at 545 GHz, ℓ = 411–592. `cib_calibrate.jl` (job 7212136, `run_cib_calibrate.sh`)
+scales them by 0.88597 (effective shang_I0 = 103.84) into `websky_6144/cib_calibrated_v5/`, which the release links to.
+Internal analysis results (`results/*_v5fs_cib*`, Lee 2024 repro) use the uncalibrated maps. The release has a
+`SOURCES.tsv` mapping every file to its internal source (inode-checked).
